@@ -4,7 +4,16 @@
 /// The plugin's commands (`plugin:sew-voice|<name>`), frozen with K2 (a change breaks K2's
 /// webview).
 #[cfg(feature = "tauri")]
-const COMMANDS: &[&str] = &["join", "leave", "mute", "devices", "set_device", "state"];
+const COMMANDS: &[&str] = &[
+    "join",
+    "leave",
+    "mute",
+    "devices",
+    "set_device",
+    "state",
+    "consent",
+    "withdraw_consent",
+];
 
 fn main() {
     #[cfg(feature = "tauri")]

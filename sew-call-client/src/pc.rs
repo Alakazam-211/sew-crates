@@ -43,6 +43,14 @@ pub(crate) enum PcEvent {
     Connected,
     /// One received RTP packet.
     Rtp(RtpRx),
+    /// str0m's peer stats (about once a second): the selected pair's local candidate address
+    /// and its ICE round-trip time.
+    Peer {
+        /// The local candidate of the selected pair.
+        local: Option<std::net::SocketAddr>,
+        /// Its latest STUN round-trip time.
+        rtt: Option<Duration>,
+    },
 }
 
 /// The ICE connection state.
@@ -422,6 +430,13 @@ impl Pc {
                     timestamp: p.header.timestamp,
                     payload: p.payload.clone(),
                 }));
+            }
+            Event::PeerStats(p) => {
+                let pair = p.selected_candidate_pair.as_ref();
+                events.push(PcEvent::Peer {
+                    local: pair.map(|c| c.local.addr),
+                    rtt: pair.and_then(|c| c.current_round_trip_time).or(p.rtt),
+                });
             }
             _ => {}
         }

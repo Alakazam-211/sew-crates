@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-consent"
+description = "Enables the consent command without any pre-configured scope."
+commands.allow = ["consent"]
+
+[[permission]]
+identifier = "deny-consent"
+description = "Denies the consent command without any pre-configured scope."
+commands.deny = ["consent"]

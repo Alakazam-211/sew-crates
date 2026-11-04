@@ -13,9 +13,11 @@
 //!   [`SubscribeGuard`], and the publication counts only once the server echoed GCM
 //!   ([`PublishGuard`], [`KeySession::published`]).
 //! - **events** to the engine: `Active{epoch}` when a key epoch is active and the local sender
-//!   has its key, `Members` from the verified roster, `VoiceStates` and `ServerUpdated` from the
-//!   call socket, `Warning` (`key_storage_file`, `pins_reset`), `Refused` and
-//!   `CredentialLost`.
+//!   has its key, `Members` from the verified roster, `VoiceStates`, `ServerUpdated` and
+//!   `Recording` from the call socket, `Warning` (`key_storage_file`, `pins_reset`), `Refused`
+//!   and `CredentialLost`.
+//! - **recording**: the engine's [`KeySession::recording`] reaches the key session
+//!   ([`MlsSession::set_recording`]) in order, through the bridge.
 //! - **renewal**: the engine renews the credential; each new token reaches the key routes and
 //!   the call socket's REAUTH here.
 
@@ -26,7 +28,7 @@ use std::time::Duration;
 
 use sew_e2ee::{JoinId, LeftReason, LkIdentity};
 use sew_lkproto::livekit::{TrackInfo, TrackType};
-use sew_proto::e2ee::{E2eeJoin, RemoveReason};
+use sew_proto::e2ee::{ConsentState, E2eeJoin, RemoveReason};
 use sew_proto::id::Id;
 use sew_proto::voice::VoiceStateUpdated;
 use tokio::sync::{Notify, mpsc};
@@ -239,8 +241,10 @@ impl MlsKeys {
         let keys = session.media_keys();
         let stop = Arc::new(Notify::new());
         let clock = self.clock.clone();
+        let (recording_tx, recording_rx) = mpsc::unbounded_channel();
         let ks = Arc::new(MlsKeySession {
             session: session.clone(),
+            recording: recording_tx,
             send: SendGate::new(&keys),
             recv: RecvGate::new(&keys, clock),
             subscribe: SubscribeGuard::new(&keys),
@@ -257,6 +261,7 @@ impl MlsKeys {
             ctx.credential.clone(),
             stop,
             me,
+            recording_rx,
         ));
         Ok(ks)
     }
@@ -275,6 +280,8 @@ impl E2eeProvider for MlsKeys {
 /// One join's keys as the engine's media path sees them.
 struct MlsKeySession {
     session: Arc<MlsSession<LkGcm>>,
+    /// The engine's recording state, to the bridge (applied in order).
+    recording: mpsc::UnboundedSender<(Option<Id>, ConsentState)>,
     keys: MediaKeys<LkGcm>,
     send: SendGate<LkGcm>,
     recv: RecvGate<LkGcm>,
@@ -378,6 +385,14 @@ impl KeySession for MlsKeySession {
         let _ = full;
     }
 
+    fn recording(&self, recording_id: Option<Id>, my_consent: ConsentState) {
+        let _ = self.recording.send((recording_id, my_consent));
+    }
+
+    fn device_id(&self) -> Option<String> {
+        Some(self.session.device_id().to_string())
+    }
+
     fn close(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.stop.notify_one();
@@ -401,6 +416,7 @@ async fn bridge(
     mut credential: CredentialHandle,
     stop: Arc<Notify>,
     me: Id,
+    mut recording: mpsc::UnboundedReceiver<(Option<Id>, ConsentState)>,
 ) {
     let mut last_epoch: Option<u64> = None;
     let mut last_members: Vec<(String, String)> = Vec::new();
@@ -415,6 +431,10 @@ async fn bridge(
                 Some(e) => Some(e),
                 None => return,
             },
+            Some((rid, consent)) = recording.recv() => {
+                session.set_recording(rid, consent).await;
+                None
+            }
             r = credential.changed(), if renewals => {
                 match r {
                     Ok(()) => match credential.current() {
@@ -434,6 +454,7 @@ async fn bridge(
             match ev {
                 KeySessionEvent::Status(_) | KeySessionEvent::Roster => {}
                 KeySessionEvent::VoiceServerUpdated(u) => out.push(E2eeEvent::ServerUpdated(*u)),
+                KeySessionEvent::Recording(r) => out.push(E2eeEvent::Recording(r)),
                 KeySessionEvent::VoiceStateUpdated(u) => {
                     if let Some(reason) = self_left(&u, me) {
                         out.push(E2eeEvent::Ended { reason });

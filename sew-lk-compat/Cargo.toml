@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-lk-compat"
-version = "0.7.2"
+version = "0.7.3"
 build = false
 include = [
     "src/**",
@@ -57,7 +57,7 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-lkproto]
-version = "0.7.2"
+version = "0.7.3"
 
 [dependencies.thiserror]
 version = "2"

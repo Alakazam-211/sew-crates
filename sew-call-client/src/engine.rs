@@ -15,9 +15,17 @@
 //!   (20 s) from the first loss;
 //! - after the window, or when the engine refuses the token: a **re-join** through the
 //!   [`JoinProvider`] (a new join answer, credential and key session).
+//!
+//! Recording (Sew 0.7.3): a join that Sew refuses `409 recording_consent_required` is **held**
+//! ([`hold`]: no media, no keys) until the host answers the notice (the join again, with the
+//! answer as `recording_notice`) or leaves; a re-join refused that way holds the same way. In a
+//! call, the call's recording as Sew says it (the join answer, a move, the call socket's
+//! `recording_updated` and READY, a consent answer) is fed to the keys
+//! ([`KeySession::recording`]) and shown to the host; the engine never sets it from its own
+//! state.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -30,8 +38,8 @@ use tokio::task::JoinHandle;
 
 use crate::api;
 use crate::call::{
-    BusyGuard, CallCounters, CallErrorEvent, CallEvent, CallMoved, CallSnapshot, CallState, Cmd,
-    EndReason, OpusFrame, Participant, RecvItem, RecvOpus, Speaking,
+    BusyGuard, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallRecording,
+    CallSnapshot, CallState, Cmd, EndReason, OpusFrame, Participant, RecvItem, RecvOpus, Speaking,
 };
 use crate::config::ClientConfig;
 use crate::e2ee::{
@@ -40,10 +48,15 @@ use crate::e2ee::{
 };
 use crate::pc::{IceState, Pc, PcEvent};
 use crate::provider::{
-    CallCredential, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RejoinReason,
+    CallCredential, ConsentAnswer, ConsentRequired, JoinAnswer, JoinProvider, JoinRequest,
+    ProviderError, RejoinReason,
 };
 use crate::signal::{self, ConnectError, SignalIn, SignalLink};
-use crate::transport::{Gather, Transport, TransportError, TransportEvent};
+use crate::stats::{BeaconOutcome, CallStatsReport, Meter, PlayoutStats, StatsWindow};
+use crate::transport::{Gather, LocalKind, Transport, TransportError, TransportEvent};
+use sew_proto::e2ee::ConsentState;
+use sew_proto::id::Id;
+use sew_proto::recording::{Recording, RecordingNotice, RecordingRef};
 
 /// First retry delay.
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
@@ -73,6 +86,29 @@ pub(crate) struct Shared {
     pub(crate) events: broadcast::Sender<CallEvent>,
     pub(crate) snapshot: Arc<Mutex<CallSnapshot>>,
     pub(crate) send_queue_drops: AtomicU64,
+    /// The stats windows and the beacon's terms ([`crate::Call::stats`]).
+    pub(crate) stats: Mutex<CallStatsReport>,
+    /// The audio pipeline's playout counters ([`crate::Call::set_playout_stats`]).
+    pub(crate) playout: Mutex<Option<Arc<dyn PlayoutStats>>>,
+    /// Sew refused a sample with `call_stats_off`: no more samples this call.
+    pub(crate) beacon_stopped: AtomicBool,
+}
+
+impl Shared {
+    /// Records a finished window: [`crate::Call::stats`] and [`CallEvent::Stats`].
+    pub(crate) fn record_window(&self, w: StatsWindow) {
+        if let BeaconOutcome::Refused {
+            reason: Some(r), ..
+        } = &w.beacon
+            && r == sew_proto::voice::reasons::CALL_STATS_OFF
+        {
+            self.beacon_stopped.store(true, Ordering::Release);
+        }
+        if let Ok(mut s) = self.stats.lock() {
+            s.push(w.clone());
+        }
+        let _ = self.events.send(CallEvent::Stats(Box::new(w)));
+    }
 }
 
 /// Everything the engine task starts with.
@@ -81,7 +117,7 @@ pub(crate) struct Start {
     pub(crate) e2ee: Arc<dyn E2eeProvider>,
     pub(crate) provider: Arc<dyn JoinProvider>,
     pub(crate) req: JoinRequest,
-    pub(crate) answer: JoinAnswer,
+    pub(crate) first: First,
     pub(crate) shared: Arc<Shared>,
     pub(crate) cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     pub(crate) push_rx: mpsc::Receiver<OpusFrame>,
@@ -89,88 +125,400 @@ pub(crate) struct Start {
     pub(crate) busy: BusyGuard,
 }
 
-/// Starts the engine task.
+/// The first join's outcome.
+pub(crate) enum First {
+    /// Sew's answer: the engine starts.
+    Answer(Box<JoinAnswer>),
+    /// Sew's `409 recording_consent_required`: the call is held for the person's answer.
+    Held(Box<ConsentRequired>),
+}
+
+/// What outlives one join: the call's handle side, settings and counters, handed from a held
+/// join to the engine and back.
+struct Parts {
+    cfg: ClientConfig,
+    tls: Arc<rustls::ClientConfig>,
+    http: reqwest::Client,
+    e2ee: Arc<dyn E2eeProvider>,
+    provider: Arc<dyn JoinProvider>,
+    req: JoinRequest,
+    shared: Arc<Shared>,
+    cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    push_rx: mpsc::Receiver<OpusFrame>,
+    frames_tx: mpsc::Sender<RecvItem>,
+    busy: BusyGuard,
+    counters: CallCounters,
+}
+
+/// Starts the call's task.
 pub(crate) fn spawn(s: Start) -> Result<(), String> {
     let tls = crate::config::tls_config(&s.cfg).map_err(|e| format!("TLS roots: {e}"))?;
     let http = api::http_client(&tls)?;
-    let now = Instant::now();
-    let (sig_tx, sig_rx) = mpsc::unbounded_channel();
-    let (e2ee_tx, e2ee_rx) = mpsc::unbounded_channel();
-    let (cred_tx, _) = watch::channel(s.answer.call_credential().cloned());
-    let relay_only = s.answer.join.media.as_ref().is_some_and(|m| m.relay_only);
-    let self_member = s.answer.join.state.member_id.to_string();
-    let speak_denied = s.answer.join.state.speak_denied;
-    let mut e = Engine {
+    let parts = Parts {
         cfg: s.cfg,
         tls,
         http,
         e2ee: s.e2ee,
         provider: s.provider,
-        req: s.req.clone(),
-        answer: s.answer,
+        req: s.req,
         shared: s.shared,
         cmd_rx: s.cmd_rx,
         push_rx: s.push_rx,
         frames_tx: s.frames_tx,
-        _busy: s.busy,
-        cred_tx,
-        renew_at: None,
-        renewing: None,
-        keys: None,
-        keys_active: false,
-        keys_start: None,
-        e2ee_tx,
-        e2ee_rx,
-        session: Session::new(now),
-        link: None,
-        link_id: 0,
-        sig_tx,
-        sig_rx,
-        attempt: None,
-        rejoining: None,
-        opening: None,
-        transport: None,
-        pc: None,
-        pc_down_since: None,
-        relay_only,
-        identity: None,
-        sid: None,
-        cid: format!("mic-{:08x}", rand::random::<u32>()),
-        track_sid: None,
-        published: None,
-        send: None,
-        send_seq: u64::from(rand::random::<u16>()),
-        media_up: false,
-        reconnect: None,
-        connect_deadline: now + Duration::from_secs(0),
-        moving: false,
-        tracks: HashMap::new(),
-        next_track_id: 1,
-        self_muted: s.req.muted,
-        deafened: s.req.deafened,
-        muted_before_deafen: s.req.muted,
-        server_muted: false,
-        self_member,
-        joined_speak_denied: speak_denied,
-        mic_denied: false,
-        speak_was_denied: speak_denied,
-        publishing: false,
-        cid_on_pc: false,
-        pending_end: None,
-        members: HashMap::new(),
-        voice: HashMap::new(),
-        engine_levels: HashMap::new(),
-        local_level: 0.0,
-        next_speaking: now,
-        next_snapshot: now,
-        last_speaking: Vec::new(),
-        state: CallState::Connecting,
+        busy: s.busy,
         counters: CallCounters::default(),
-        ended: None,
     };
-    e.connect_deadline = now + e.cfg.connect_timeout;
-    tokio::spawn(async move { e.run().await });
+    tokio::spawn(supervise(parts, s.first));
     Ok(())
+}
+
+/// The call: the engine for each answer, a hold for each `409 recording_consent_required`,
+/// until it ends.
+async fn supervise(mut parts: Parts, mut next: First) {
+    loop {
+        match next {
+            First::Answer(answer) => {
+                let mut e = Engine::new(parts, *answer);
+                e.run().await;
+                match e.into_held() {
+                    Some((p, c)) => {
+                        parts = p;
+                        next = First::Held(c);
+                    }
+                    None => return,
+                }
+            }
+            First::Held(c) => match hold(&mut parts, *c).await {
+                Some(answer) => next = First::Answer(Box::new(answer)),
+                None => return,
+            },
+        }
+    }
+}
+
+/// A held join (`consent_required`): no media and no keys; frames are dropped. Waits for the
+/// host: an answer joins again with it as `recording_notice` (Sew's answer starts the engine; a
+/// changed notice holds again with the new one; any other refusal ends the call), a leave
+/// ends it. Mute and deafen are kept for the join.
+async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
+    let mut c = first;
+    let mut frames_open = true;
+    loop {
+        held_publish(p, &c);
+        loop {
+            let cmd = tokio::select! {
+                biased;
+                cmd = p.cmd_rx.recv() => cmd,
+                f = p.push_rx.recv(), if frames_open => {
+                    match f {
+                        Some(_) => p.counters.frames_not_sent += 1,
+                        None => frames_open = false,
+                    }
+                    continue;
+                }
+            };
+            match cmd {
+                None => {
+                    held_end(p, EndReason::Left);
+                    return None;
+                }
+                Some(Cmd::Leave(reply)) => {
+                    held_end(p, EndReason::Left);
+                    let _ = reply.send(());
+                    return None;
+                }
+                Some(Cmd::Mute {
+                    muted,
+                    deafened,
+                    reply,
+                }) => {
+                    if let Some(d) = deafened {
+                        p.req.deafened = d;
+                    }
+                    if let Some(m) = muted {
+                        p.req.muted = m;
+                    }
+                    p.req.muted |= p.req.deafened;
+                    let _ = reply.send(());
+                }
+                Some(Cmd::Consent {
+                    granted,
+                    notice_version,
+                    reply,
+                }) => {
+                    p.req.recording_notice = Some(RecordingNotice {
+                        recording_id: c.consent_prompt.recording_id,
+                        consent: Some(granted),
+                        notice_version: Some(
+                            notice_version.unwrap_or(c.consent_prompt.notice_version),
+                        ),
+                    });
+                    tracing::info!(target: "sew_call_client", granted, "joining with the recording notice answered");
+                    match p.provider.join(p.req.clone()).await {
+                        Ok(a) => {
+                            let _ = reply.send(Ok(()));
+                            return Some(a);
+                        }
+                        Err(ProviderError::ConsentRequired(next)) => {
+                            // The notice changed meanwhile: hold with the current one.
+                            c = (*next).clone();
+                            let _ = reply.send(Err(CallError::Provider(
+                                ProviderError::ConsentRequired(next),
+                            )));
+                            break;
+                        }
+                        Err(e) => {
+                            held_failed(p, &e);
+                            let _ = reply.send(Err(CallError::Provider(e)));
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The held state and the notice of a join held from the start, in the snapshot (no event:
+/// nobody has subscribed yet).
+pub(crate) fn preset_held(snapshot: &Mutex<CallSnapshot>, c: &ConsentRequired) {
+    if let Ok(mut s) = snapshot.lock() {
+        s.state = CallState::ConsentRequired {
+            recording_id: c.consent_prompt.recording_id.to_string(),
+            notice_version: c.consent_prompt.notice_version,
+        };
+        s.recording = Some(CallRecording::from_consent_required(c));
+    }
+}
+
+/// The held state and its notice, to the host.
+fn held_publish(p: &Parts, c: &ConsentRequired) {
+    let st = CallState::ConsentRequired {
+        recording_id: c.consent_prompt.recording_id.to_string(),
+        notice_version: c.consent_prompt.notice_version,
+    };
+    let rec = CallRecording::from_consent_required(c);
+    let had_participants = {
+        let Ok(mut s) = p.shared.snapshot.lock() else {
+            return;
+        };
+        let had = !s.participants.is_empty();
+        s.state = st.clone();
+        s.participants.clear();
+        s.recording = Some(rec.clone());
+        s.counters = p.counters.clone();
+        had
+    };
+    if had_participants {
+        let _ = p.shared.events.send(CallEvent::Participants(Vec::new()));
+    }
+    let _ = p
+        .shared
+        .events
+        .send(CallEvent::Recording(Some(Box::new(rec))));
+    let _ = p.shared.events.send(CallEvent::State(st));
+}
+
+/// A held call is over.
+fn held_end(p: &Parts, reason: EndReason) {
+    let st = CallState::Ended { reason };
+    let had = {
+        let Ok(mut s) = p.shared.snapshot.lock() else {
+            return;
+        };
+        s.state = st.clone();
+        s.counters = p.counters.clone();
+        s.recording.take().is_some()
+    };
+    if had {
+        let _ = p.shared.events.send(CallEvent::Recording(None));
+    }
+    let _ = p.shared.events.send(CallEvent::State(st));
+}
+
+/// The join with the answer was refused (not for the notice): the call ends as a re-join's
+/// refusal would.
+fn held_failed(p: &Parts, e: &ProviderError) {
+    let reason = match e {
+        ProviderError::SigninRequired => EndReason::SigninRequired,
+        ProviderError::Refused { code, detail } => {
+            let _ = p.shared.events.send(CallEvent::Error(CallErrorEvent {
+                code: code.clone(),
+                detail: detail.to_string(),
+            }));
+            EndReason::Refused(code.clone())
+        }
+        e => {
+            let _ = p.shared.events.send(CallEvent::Error(CallErrorEvent {
+                code: "network".to_owned(),
+                detail: e.to_string(),
+            }));
+            EndReason::Network
+        }
+    };
+    held_end(p, reason);
+}
+
+/// A consent answer sent through the host, back to the engine.
+struct Consented {
+    result: Result<Recording, ProviderError>,
+    granted: bool,
+    notice_version: Option<u32>,
+    reply: tokio::sync::oneshot::Sender<Result<(), CallError>>,
+}
+
+impl Engine {
+    fn new(p: Parts, answer: JoinAnswer) -> Engine {
+        let now = Instant::now();
+        let (sig_tx, sig_rx) = mpsc::unbounded_channel();
+        let (e2ee_tx, e2ee_rx) = mpsc::unbounded_channel();
+        let (consent_tx, consent_rx) = mpsc::unbounded_channel();
+        let (cred_tx, _) = watch::channel(answer.call_credential().cloned());
+        let relay_only = answer.join.media.as_ref().is_some_and(|m| m.relay_only);
+        let self_member = answer.join.state.member_id.to_string();
+        let speak_denied = answer.join.state.speak_denied;
+        let channel = answer.join.state.channel_id;
+        let terms = answer.join.stats;
+        if let Ok(mut r) = p.shared.stats.lock() {
+            r.terms = terms;
+        }
+        let req = p.req;
+        let mut e = Engine {
+            cfg: p.cfg,
+            tls: p.tls,
+            http: p.http,
+            e2ee: p.e2ee,
+            provider: p.provider,
+            req: req.clone(),
+            answer,
+            shared: p.shared,
+            cmd_rx: p.cmd_rx,
+            push_rx: p.push_rx,
+            frames_tx: p.frames_tx,
+            _busy: p.busy,
+            held: None,
+            recording: None,
+            channel,
+            consent_tx,
+            consent_rx,
+            cred_tx,
+            renew_at: None,
+            renewing: None,
+            keys: None,
+            keys_active: false,
+            keys_start: None,
+            e2ee_tx,
+            e2ee_rx,
+            session: Session::new(now),
+            link: None,
+            link_id: 0,
+            sig_tx,
+            sig_rx,
+            attempt: None,
+            rejoining: None,
+            opening: None,
+            transport: None,
+            pc: None,
+            pc_down_since: None,
+            relay_only,
+            identity: None,
+            sid: None,
+            cid: format!("mic-{:08x}", rand::random::<u32>()),
+            track_sid: None,
+            published: None,
+            send: None,
+            send_seq: u64::from(rand::random::<u16>()),
+            media_up: false,
+            reconnect: None,
+            connect_deadline: now + Duration::from_secs(0),
+            moving: false,
+            tracks: HashMap::new(),
+            next_track_id: 1,
+            self_muted: req.muted,
+            deafened: req.deafened,
+            muted_before_deafen: req.muted,
+            server_muted: false,
+            self_member,
+            joined_speak_denied: speak_denied,
+            mic_denied: false,
+            speak_was_denied: speak_denied,
+            publishing: false,
+            cid_on_pc: false,
+            pending_end: None,
+            members: HashMap::new(),
+            voice: HashMap::new(),
+            engine_levels: HashMap::new(),
+            local_level: 0.0,
+            next_speaking: now,
+            next_snapshot: now,
+            last_speaking: Vec::new(),
+            state: CallState::Connecting,
+            counters: p.counters,
+            ended: None,
+            meter: Meter::new(now, terms.as_ref()),
+            terms,
+        };
+        e.connect_deadline = now + e.cfg.connect_timeout;
+        e
+    }
+
+    /// After [`Engine::run`]: the parts for a hold, when a re-join was refused for the notice.
+    fn into_held(self) -> Option<(Parts, Box<ConsentRequired>)> {
+        let Engine {
+            cfg,
+            tls,
+            http,
+            e2ee,
+            provider,
+            req,
+            shared,
+            cmd_rx,
+            push_rx,
+            frames_tx,
+            _busy: busy,
+            counters,
+            held,
+            ..
+        } = self;
+        let held = held?;
+        Some((
+            Parts {
+                cfg,
+                tls,
+                http,
+                e2ee,
+                provider,
+                req,
+                shared,
+                cmd_rx,
+                push_rx,
+                frames_tx,
+                busy,
+                counters,
+            },
+            held,
+        ))
+    }
+}
+
+/// One beacon request (sent off the engine task: a slow door never holds the call up).
+struct BeaconPost {
+    http: reqwest::Client,
+    base: url::Url,
+    token: String,
+    sample: sew_proto::voice::CallStatsSample,
+}
+
+impl BeaconPost {
+    async fn send(self) -> BeaconOutcome {
+        api::stats(&self.http, &self.base, &self.token, &self.sample).await
+    }
+}
+
+/// A closed window: to send, or done (nothing to send, and why).
+enum Prepared {
+    Send(StatsWindow, Box<BeaconPost>),
+    Done(StatsWindow),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -221,6 +569,15 @@ struct Engine {
     push_rx: mpsc::Receiver<OpusFrame>,
     frames_tx: mpsc::Sender<RecvItem>,
     _busy: BusyGuard,
+    /// A re-join was refused for the recording notice: the loop stops and the call holds.
+    held: Option<Box<ConsentRequired>>,
+    /// The call's active recording as Sew said it last (this member's own view).
+    recording: Option<Recording>,
+    /// The call's channel (the join's, a move's destination): recordings of other rooms are
+    /// not this call's.
+    channel: Id,
+    consent_tx: mpsc::UnboundedSender<Consented>,
+    consent_rx: mpsc::UnboundedReceiver<Consented>,
     cred_tx: watch::Sender<Option<CallCredential>>,
     renew_at: Option<Instant>,
     renewing: Option<JoinHandle<Result<api::Renewed, api::ApiError>>>,
@@ -290,6 +647,10 @@ struct Engine {
     state: CallState,
     counters: CallCounters,
     ended: Option<EndReason>,
+    /// The stats windows.
+    meter: Meter,
+    /// The beacon's terms of the current join (`None`: off).
+    terms: Option<sew_proto::voice::CallStatsBeacon>,
 }
 
 async fn opt_join<T>(h: &mut Option<JoinHandle<T>>) -> Result<T, tokio::task::JoinError> {
@@ -342,6 +703,7 @@ enum Step {
     Rejoined(Result<Result<JoinAnswer, ProviderError>, tokio::task::JoinError>),
     Opened(Result<Result<Transport, TransportError>, tokio::task::JoinError>),
     Renewed(Result<Result<api::Renewed, api::ApiError>, tokio::task::JoinError>),
+    Consented(Option<Consented>),
     Timeout,
 }
 
@@ -385,10 +747,14 @@ impl Engine {
             // Joined without SPEAK: capture stays off until it is granted.
             self.frames_item(RecvItem::Capture(false));
         }
-        self.start_keys(None);
+        // The join answer's recording (this member's view), replacing a held join's notice.
+        let joined = self.answer.join.recording.clone();
+        self.apply_recording(joined);
+        self.sync_recording_view();
+        self.start_keys(self.req.rejoin);
         self.start_attempt(Kind::Full);
         self.schedule_renew(Instant::now());
-        while self.ended.is_none() {
+        while self.ended.is_none() && self.held.is_none() {
             self.pump();
             let deadline = self.poll_timeout();
             let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
@@ -403,6 +769,7 @@ impl Engine {
                 r = opt_join(&mut self.rejoining) => Step::Rejoined(r),
                 r = opt_join(&mut self.opening) => Step::Opened(r),
                 r = opt_join(&mut self.renewing) => Step::Renewed(r),
+                d = self.consent_rx.recv() => Step::Consented(d),
                 p = self.push_rx.recv() => Step::Push(p),
                 () = sleep => Step::Timeout,
             };
@@ -424,6 +791,13 @@ impl Engine {
                     self.leave().await;
                     let _ = reply.send(());
                 }
+                Step::Cmd(Some(Cmd::Consent {
+                    granted,
+                    notice_version,
+                    reply,
+                })) => self.start_consent(granted, notice_version, reply),
+                Step::Consented(Some(d)) => self.on_consented(d),
+                Step::Consented(None) => {}
                 Step::Push(Some(f)) => self.send_frame(now, f),
                 Step::Push(None) => {}
                 Step::Signal(Some((id, msg))) => {
@@ -467,6 +841,7 @@ impl Engine {
                         }
                         self.keys = Some(k);
                         self.send_roster();
+                        self.feed_recording();
                     }
                     Ok(Err(e)) => {
                         self.error(&e.code, &e.detail);
@@ -483,6 +858,7 @@ impl Engine {
                 Step::Renewed(r) => self.on_renewed(now, r).await,
                 Step::Timeout => self.on_timeout(now).await,
             }
+            self.stats_tick(now);
             if now >= self.next_snapshot {
                 // Counters reach `Call::snapshot` at most 100 ms late.
                 self.next_snapshot = now + SPEAKING_EVERY;
@@ -516,6 +892,9 @@ impl Engine {
         }
         if let Some(d) = self.pc_down_since {
             t = t.min(d + PC_FAIL_GRACE);
+        }
+        if let Some(m) = self.meter.deadline() {
+            t = t.min(m);
         }
         for s in self.tracks.values() {
             if let Some((_, at)) = s.gaps.front() {
@@ -576,6 +955,10 @@ impl Engine {
             return;
         }
         self.state = st.clone();
+        if st == CallState::Connected {
+            // The first window starts when the call first connects.
+            self.meter.start(Instant::now(), &self.counters);
+        }
         self.snapshot_update();
         let _ = self.shared.events.send(CallEvent::State(st));
     }
@@ -643,6 +1026,7 @@ impl Engine {
                 server_muted: self.server_muted || f.server_mute,
                 server_deafened: f.server_deaf,
                 speak_denied: self.speak_denied(),
+                recorder: false,
             });
         }
         for p in self.session.remotes().values() {
@@ -662,9 +1046,177 @@ impl Engine {
                 server_muted: f.server_mute,
                 server_deafened: f.server_deaf,
                 speak_denied: f.speak_denied,
+                recorder: p.kind == sew_lkproto::livekit::participant_info::Kind::Egress as i32,
             });
         }
         out
+    }
+
+    // ------------------------------------------------------------------ recording
+
+    /// Sew's word on the call's recording (this member's own view; `None`: none active). A
+    /// recording of another room is not this call's; a stopped one clears the call's only if
+    /// it is the call's. Fed to the keys and shown to the host when it changed.
+    fn apply_recording(&mut self, rec: Option<Recording>) {
+        let next = match rec {
+            Some(r) if r.channel_id != self.channel => return,
+            Some(r) if !r.state.is_active() => match &self.recording {
+                Some(cur) if cur.id == r.id => None,
+                _ => return,
+            },
+            other => other,
+        };
+        if next == self.recording {
+            return;
+        }
+        // The answer kept for re-joins names this recording (or an auto channel's), else it
+        // is gone.
+        let keep = match (&self.req.recording_notice, &next) {
+            (Some(n), Some(r)) => {
+                n.recording_id == RecordingRef::Id(r.id) || n.recording_id == RecordingRef::Auto
+            }
+            _ => false,
+        };
+        if !keep {
+            self.req.recording_notice = None;
+        }
+        self.recording = next;
+        self.feed_recording();
+        self.sync_recording_view();
+    }
+
+    /// The keys get the call's recording state (Sew's; `pending` until Sew says otherwise).
+    fn feed_recording(&self) {
+        if let Some(k) = &self.keys {
+            let (rid, consent) = self
+                .recording
+                .as_ref()
+                .map_or((None, ConsentState::Pending), Recording::e2ee_input);
+            k.recording(rid, consent);
+        }
+    }
+
+    /// The host's view ([`crate::Call::recording`], the `recording` event) follows the
+    /// engine's.
+    fn sync_recording_view(&self) {
+        let view = self.recording.as_ref().map(CallRecording::from_sew);
+        let changed = match self.shared.snapshot.lock() {
+            Ok(mut s) if s.recording != view => {
+                s.recording.clone_from(&view);
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            let _ = self
+                .shared
+                .events
+                .send(CallEvent::Recording(view.map(Box::new)));
+        }
+    }
+
+    /// The host's answer to the live recording's notice, sent through the provider off the
+    /// loop.
+    fn start_consent(
+        &mut self,
+        granted: bool,
+        notice_version: Option<u32>,
+        reply: tokio::sync::oneshot::Sender<Result<(), CallError>>,
+    ) {
+        let Some(rec) = &self.recording else {
+            let _ = reply.send(Err(CallError::NoRecording));
+            return;
+        };
+        let answer = ConsentAnswer {
+            target: self.req.target.clone(),
+            room: self.req.room.clone(),
+            recording_id: rec.id,
+            consent: granted,
+            notice_version,
+            device_id: self.keys.as_ref().and_then(|k| k.device_id()),
+        };
+        let provider = self.provider.clone();
+        let tx = self.consent_tx.clone();
+        tokio::spawn(async move {
+            let result = provider.consent(answer).await;
+            let _ = tx.send(Consented {
+                result,
+                granted,
+                notice_version,
+                reply,
+            });
+        });
+    }
+
+    /// Sew's answer to a consent: its recording view is the call's (a grant releases the key
+    /// from here on, a withdrawal rekeys); the answer is kept for re-joins.
+    fn on_consented(&mut self, d: Consented) {
+        match d.result {
+            Ok(rec) => {
+                match (d.notice_version, &mut self.req.recording_notice) {
+                    (Some(v), n) => {
+                        *n = Some(RecordingNotice {
+                            recording_id: RecordingRef::Id(rec.id),
+                            consent: Some(d.granted),
+                            notice_version: Some(v),
+                        });
+                    }
+                    (None, Some(n)) if n.recording_id == RecordingRef::Id(rec.id) => {
+                        n.consent = Some(d.granted);
+                    }
+                    (None, _) => {}
+                }
+                self.apply_recording(Some(rec));
+                let _ = d.reply.send(Ok(()));
+            }
+            Err(ProviderError::ConsentRequired(c)) => {
+                // A changed notice: the current one is shown; nothing else changes.
+                if let Some(mut r) = c.recording.clone() {
+                    if r.consent_prompt.is_none() {
+                        r.consent_prompt = Some(c.consent_prompt.clone());
+                    }
+                    self.apply_recording(Some(r));
+                }
+                let _ = d
+                    .reply
+                    .send(Err(CallError::Provider(ProviderError::ConsentRequired(c))));
+            }
+            Err(e) => {
+                let _ = d.reply.send(Err(CallError::Provider(e)));
+            }
+        }
+    }
+
+    /// A re-join was refused for the recording notice: media and keys go and the call holds
+    /// ([`hold`]) for the person's answer.
+    async fn go_held(&mut self, c: Box<ConsentRequired>) {
+        tracing::info!(target: "sew_call_client", "the re-join needs the recording notice answered; holding");
+        self.teardown_media();
+        if let Some(l) = self.link.take() {
+            l.close().await;
+        }
+        if let Some((a, _)) = self.attempt.take() {
+            a.abort();
+        }
+        if let Some(o) = self.opening.take() {
+            o.abort();
+        }
+        if let Some(r) = self.renewing.take() {
+            r.abort();
+        }
+        if let Some(k) = self.keys_start.take() {
+            k.abort();
+        }
+        if let Some(k) = self.keys.take() {
+            k.close().await;
+        }
+        self.reconnect = None;
+        self.recording = None;
+        // The join after the answer is this call's re-join, as muted as the call was.
+        self.req.rejoin = Some(RejoinReason::AdmitLost);
+        self.req.muted = self.effective_muted();
+        self.req.deafened = self.deafened;
+        self.held = Some(c);
     }
 
     /// Muted by self, deafened, or muted by a moderator (what Sew's self state and the
@@ -829,6 +1381,9 @@ impl Engine {
                     s.moved = Some(moved.clone());
                 }
                 let _ = self.shared.events.send(CallEvent::Moved(moved));
+                // The destination's recording (`pending` for the moved member), or none.
+                self.channel = u.channel_id;
+                self.apply_recording(u.recording.clone());
                 self.answer.join.url = u.url;
                 self.answer.join.token = u.token;
                 self.answer.join.room = u.room;
@@ -856,6 +1411,7 @@ impl Engine {
                 tracing::info!(target: "sew_call_client", %reason, "Sew ended the join");
                 self.ended_soon(end_for_sew_reason(&reason));
             }
+            E2eeEvent::Recording(r) => self.apply_recording(r.map(|b| *b)),
         }
     }
 
@@ -889,6 +1445,8 @@ impl Engine {
         if self.ended.is_none() {
             self.teardown_media();
             self.link = None;
+            self.recording = None;
+            self.sync_recording_view();
             self.ended = Some(reason.clone());
             self.publish_state(CallState::Ended { reason });
             if let Some(k) = self.keys.take() {
@@ -908,6 +1466,8 @@ impl Engine {
         if let Some(k) = self.keys.take() {
             k.close().await;
         }
+        self.recording = None;
+        self.sync_recording_view();
         self.ended = Some(reason.clone());
         self.publish_state(CallState::Ended { reason });
     }
@@ -915,6 +1475,25 @@ impl Engine {
     async fn leave(&mut self) {
         if self.ended.is_some() {
             return;
+        }
+        // The leave sample first: Sew takes samples only from a caller still in voice.
+        if self.meter.started() {
+            let src = self.playout_source();
+            let w = self
+                .meter
+                .close(Instant::now(), &self.counters, src.as_deref(), true);
+            let w = match self.beacon_prepare(w) {
+                Prepared::Send(mut w, post) => {
+                    w.beacon = tokio::time::timeout(LEAVE_TIMEOUT, post.send())
+                        .await
+                        .unwrap_or_else(|_| BeaconOutcome::Failed {
+                            error: "timed out".to_owned(),
+                        });
+                    w
+                }
+                Prepared::Done(w) => w,
+            };
+            self.shared.record_window(w);
         }
         let cred = self.cred_tx.borrow().clone();
         if let Some(c) = cred {
@@ -932,6 +1511,87 @@ impl Engine {
             }
         }
         self.end(EndReason::Left).await;
+    }
+
+    // ------------------------------------------------------------------ stats
+
+    /// The host's playout counters, when a pipeline reports them.
+    fn playout_source(&self) -> Option<Arc<dyn PlayoutStats>> {
+        self.shared.playout.lock().ok().and_then(|p| p.clone())
+    }
+
+    /// The beacon's per-loop work: the playout counters once a second, and the window's end.
+    fn stats_tick(&mut self, now: Instant) {
+        if !self.meter.started() || self.ended.is_some() {
+            return;
+        }
+        let src = self.playout_source();
+        self.meter.poll(now, src.as_deref(), false);
+        if !self.meter.due(now) {
+            return;
+        }
+        let w = self.meter.close(now, &self.counters, src.as_deref(), false);
+        match self.beacon_prepare(w) {
+            Prepared::Send(mut w, post) => {
+                let shared = self.shared.clone();
+                tokio::spawn(async move {
+                    w.beacon = post.send().await;
+                    shared.record_window(w);
+                });
+            }
+            Prepared::Done(w) => self.shared.record_window(w),
+        }
+    }
+
+    /// The sample of `w` and its request, or `w` with why nothing is sent.
+    fn beacon_prepare(&self, mut w: StatsWindow) -> Prepared {
+        let Some(terms) = &self.terms else {
+            w.beacon = BeaconOutcome::Off;
+            return Prepared::Done(w);
+        };
+        if self.shared.beacon_stopped.load(Ordering::Acquire) {
+            w.beacon = BeaconOutcome::Stopped;
+            return Prepared::Done(w);
+        }
+        let Some(cred) = self.cred_tx.borrow().clone() else {
+            w.beacon = BeaconOutcome::NoCredential;
+            return Prepared::Done(w);
+        };
+        match crate::stats::sample(&w, terms) {
+            Ok(sample) => {
+                w.sample = Some(sample.clone());
+                let post = BeaconPost {
+                    http: self.http.clone(),
+                    base: self.answer.api_base.clone(),
+                    token: cred.token,
+                    sample,
+                };
+                Prepared::Send(w, Box::new(post))
+            }
+            Err(error) => {
+                tracing::warn!(target: "sew_call_client", %error, "stats sample not sent");
+                w.beacon = BeaconOutcome::Failed { error };
+                Prepared::Done(w)
+            }
+        }
+    }
+
+    /// The beacon's name for the selected pair's local candidate `addr`.
+    fn path_of(&self, addr: std::net::SocketAddr) -> Option<crate::stats::Path> {
+        use sew_proto::voice::{CallStatsCandidate as C, CallStatsRelayProtocol as P};
+        let t = self.transport.as_ref()?;
+        let l = t.local_candidates().iter().find(|l| l.addr == addr)?;
+        Some(match &l.kind {
+            LocalKind::Host => (C::Host, None),
+            LocalKind::Relayed { via, .. } => (
+                C::Relay,
+                Some(match via {
+                    crate::transport::Via::Udp => P::Udp,
+                    crate::transport::Via::Tcp => P::Tcp,
+                    crate::transport::Via::Tls => P::Tls,
+                }),
+            ),
+        })
     }
 
     // ------------------------------------------------------------------ credential
@@ -1156,14 +1816,16 @@ impl Engine {
         self.publishing = false;
         self.cid_on_pc = false;
         self.pc_down_since = None;
-        let ids: Vec<u64> = self
+        let slots: Vec<(u64, bool)> = self
             .tracks
             .drain()
-            .filter(|(_, s)| s.announced)
-            .map(|(_, s)| s.id)
+            .map(|(_, s)| (s.id, s.announced))
             .collect();
-        for id in ids {
-            self.frames_item(RecvItem::Removed { participant: id });
+        for (id, announced) in slots {
+            self.meter.on_removed(id);
+            if announced {
+                self.frames_item(RecvItem::Removed { participant: id });
+            }
         }
     }
 
@@ -1226,11 +1888,19 @@ impl Engine {
         match r {
             Ok(Ok(answer)) => {
                 self.counters.rejoins += 1;
+                self.terms = answer.join.stats;
+                self.meter.set_terms(self.terms.as_ref());
+                if let Ok(mut r) = self.shared.stats.lock() {
+                    r.terms = self.terms;
+                }
                 self.relay_only = answer.join.media.as_ref().is_some_and(|m| m.relay_only);
                 self.cred_tx.send_replace(answer.call_credential().cloned());
                 self.self_member = answer.join.state.member_id.to_string();
                 self.joined_speak_denied = answer.join.state.speak_denied;
+                self.channel = answer.join.state.channel_id;
+                let rec = answer.join.recording.clone();
                 self.answer = answer;
+                self.apply_recording(rec);
                 self.schedule_renew(now);
                 if let Some(k) = self.keys.take() {
                     k.close().await;
@@ -1249,6 +1919,7 @@ impl Engine {
                 self.update_state();
             }
             Ok(Err(ProviderError::SigninRequired)) => self.end(EndReason::SigninRequired).await,
+            Ok(Err(ProviderError::ConsentRequired(c))) => self.go_held(c).await,
             Ok(Err(ProviderError::Refused { code, detail })) => {
                 self.error(&code, &detail.to_string());
                 self.end(EndReason::Refused(code)).await;
@@ -1560,6 +2231,10 @@ impl Engine {
             PcEvent::Ice(IceState::Connected) => self.pc_down_since = None,
             PcEvent::Ice(IceState::Checking) => {}
             PcEvent::Rtp(r) => self.on_rtp(now, r),
+            PcEvent::Peer { local, rtt } => {
+                let path = local.and_then(|a| self.path_of(a));
+                self.meter.on_peer(path, rtt);
+            }
         }
     }
 
@@ -1688,6 +2363,7 @@ impl Engine {
                 }
             }
             if !unsubscribe && slot.allowed == Subscribe::Yes {
+                self.meter.on_packet(slot.id, r.seq, r.timestamp, now);
                 // Loss marks: gaps that do not fill within LOSS_GRACE.
                 match slot.highest {
                     None => slot.highest = Some(r.seq),
@@ -1790,10 +2466,11 @@ impl Engine {
             .cloned()
             .collect();
         for k in gone {
-            if let Some(s) = self.tracks.remove(&k)
-                && s.announced
-            {
-                self.frames_item(RecvItem::Removed { participant: s.id });
+            if let Some(s) = self.tracks.remove(&k) {
+                self.meter.on_removed(s.id);
+                if s.announced {
+                    self.frames_item(RecvItem::Removed { participant: s.id });
+                }
             }
         }
     }

@@ -1791,6 +1791,7 @@ impl Example for CallReady {
                 user: CallReadyUser { id: ID_ME },
                 install_id: ID_INSTALL,
                 call_keys: Some(call_keys::ready_call_keys_full()),
+                recording: Some(recording::recording_full()),
             },
         )]
     }

@@ -7,13 +7,14 @@
 //! kessel-audio never sees a key or a ciphertext; the engine never touches PCM.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use kessel_audio::{AudioEngine, EngineConfig, Level, RecvFrame};
 use tokio::task::JoinHandle;
 
 use crate::call::{Call, FrameSender, FrameStream, OpusFrame, RecvItem};
+use crate::stats::{PlayoutStats, PlayoutTotals};
 
 /// How often the bridge moves frames (well under one 20 ms frame).
 const TICK: Duration = Duration::from_millis(5);
@@ -69,6 +70,8 @@ impl AudioBridge {
     pub fn start(call: &Call, cfg: EngineConfig) -> Result<AudioBridge, AudioBridgeError> {
         let frames = call.frames().ok_or(AudioBridgeError::FramesTaken)?;
         let engine = Arc::new(AudioEngine::start(cfg)?);
+        // The beacon's played and concealed audio are kessel-audio's own counters.
+        call.set_playout_stats(Arc::new(KesselPlayout(Arc::downgrade(&engine))));
         let identities = Identities::default();
         let task = tokio::spawn(bridge(
             engine.clone(),
@@ -105,6 +108,29 @@ impl AudioBridge {
                 .filter_map(|(p, l)| ids.get(p).map(|i| (i.clone(), *l)))
                 .collect(),
         }
+    }
+}
+
+/// kessel-audio's per-participant playout counters for the stats windows (none once the
+/// bridge is gone).
+struct KesselPlayout(Weak<AudioEngine>);
+
+impl PlayoutStats for KesselPlayout {
+    fn playout_totals(&self) -> Vec<(u64, PlayoutTotals)> {
+        let Some(engine) = self.0.upgrade() else {
+            return Vec::new();
+        };
+        engine
+            .stats()
+            .participants
+            .iter()
+            .map(|(id, p)| {
+                (
+                    *id,
+                    PlayoutTotals::new(p.frames_decoded, p.frames_fec, p.frames_concealed),
+                )
+            })
+            .collect()
     }
 }
 

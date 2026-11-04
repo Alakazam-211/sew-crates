@@ -11,6 +11,13 @@
 //! 5. drive `sew-e2ee`'s `CallSession`: `call_keys_delivered` in, the call key routes out,
 //!    `KeyEvent`s into [`MediaKeys`], the media path's reports back as `report` inputs.
 //!
+//! Recording (Sew 0.7.3): the call socket's own `recording_updated` and READY's
+//! `recording` reach the owner as [`KeySessionEvent::Recording`]; the owner (the engine)
+//! decides which recording is the call's and feeds it back with [`MlsSession::set_recording`],
+//! which `sew-e2ee` turns into the recorder key release (only for `granted`) or a rekey on a
+//! withdrawal. The last state is applied again to every new key session (a move, a re-join), so
+//! a new session never starts from a stale `granted`: it starts `pending` until fed.
+//!
 //! The credential is renewed at half its life and the socket re-authenticated (REAUTH). A device
 //! the server refuses (revoked, or its certificate failed) is forgotten, enrolled once and the
 //! step retried once (Sew 0.7.1's rule); the pins are kept. A pin mismatch ends with
@@ -29,8 +36,9 @@ use sew_e2ee::{
     LeftReason, LkIdentity, Output, PreparedKp, SessionState, SinkAck, SoftwareSigner,
     TrustAnchors, UnknownCallBuffer,
 };
-use sew_proto::e2ee::{CallKeysInit, CallScope, E2eeJoin};
+use sew_proto::e2ee::{CallKeysInit, CallScope, ConsentState, E2eeJoin};
 use sew_proto::id::Id;
+use sew_proto::recording::Recording;
 use sew_proto::voice::{VoiceServerUpdated, VoiceStateUpdated};
 use tokio::sync::mpsc;
 use url::Url;
@@ -212,6 +220,10 @@ pub enum KeySessionEvent {
     VoiceServerUpdated(Box<VoiceServerUpdated>),
     /// `voice_state_updated` of the call's channel (the plugin's `participants`).
     VoiceStateUpdated(Box<VoiceStateUpdated>),
+    /// A recording as this member sees it (the socket's own `recording_updated`, or the call
+    /// socket's READY `recording`); `None`: READY says the call has no active recording. Never
+    /// fed to the keys by the session itself: see [`MlsSession::set_recording`].
+    Recording(Option<Box<Recording>>),
     /// A warning for the host (`key_storage_file`, `pins_reset`).
     Warning(DeviceWarning),
     /// A move's key join failed.
@@ -231,6 +243,9 @@ struct Core<C: FrameCrypto> {
     voice_members: BTreeSet<Id>,
     channel: Option<Id>,
     last_verified: BTreeSet<LkIdentity>,
+    /// The recording state the owner fed last ([`MlsSession::set_recording`]): applied to every
+    /// new `CallSession`.
+    recording: Option<(Option<Id>, ConsentState)>,
     ended: bool,
 }
 
@@ -342,6 +357,9 @@ impl<C: FrameCrypto> MlsSession<C> {
         for w in vault.take_warnings() {
             let _ = ev_tx.send(KeySessionEvent::Warning(w));
         }
+        if let Some(r) = ready.recording.clone() {
+            let _ = ev_tx.send(KeySessionEvent::Recording(r.map(Box::new)));
+        }
         let trust = trust_from_ready(&ready, install, &mut vault, &http).await?;
         let now = (cfg.clock)();
         let (identity, signer) = vault.ensure_device(&http, &trust, member, now).await?;
@@ -360,6 +378,7 @@ impl<C: FrameCrypto> MlsSession<C> {
                 voice_members: BTreeSet::new(),
                 channel: None,
                 last_verified: BTreeSet::new(),
+                recording: None,
                 ended: false,
             }),
             http,
@@ -519,6 +538,36 @@ impl<C: FrameCrypto> MlsSession<C> {
     pub fn renewed(&self, token: Bearer) {
         self.shared.http.bearer().set(token);
         self.socket.reauth();
+    }
+
+    /// The call's recording state as Sew said it (never local state): the live recording of
+    /// the call's room (`None`: none) and this member's consent for it. `sew-e2ee` releases this
+    /// device's key to the recorder only while the recording is announced, live and
+    /// `Granted`, and asks for an immediate rekey when `Granted` ends (a withdrawal). Kept and
+    /// applied again to each new key session of this socket.
+    pub async fn set_recording(&self, recording_id: Option<Id>, my_consent: ConsentState) {
+        {
+            let mut guard = lock(&self.shared.core);
+            let c = &mut *guard;
+            if c.recording == Some((recording_id, my_consent)) {
+                return;
+            }
+            c.recording = Some((recording_id, my_consent));
+        }
+        tracing::debug!(target: "sew_call_client::keys", recording = ?recording_id, consent = ?my_consent, "recording state");
+        input(
+            &self.shared,
+            Input::Recording {
+                recording_id,
+                my_consent,
+            },
+        )
+        .await;
+    }
+
+    /// The recording state last given to [`MlsSession::set_recording`].
+    pub fn recording(&self) -> Option<(Option<Id>, ConsentState)> {
+        lock(&self.shared.core).recording
     }
 
     /// The active key epoch, when the session has one.
@@ -682,9 +731,20 @@ async fn start_session<C: FrameCrypto>(
         c.session = Some(session);
         c.prepared.clear();
         let held = c.buffer.take(now, &call_id);
+        let recording = c.recording;
         if let Some(s) = c.session.as_mut() {
             for m in held {
                 let _ = s.handle(now, Input::Server(m));
+            }
+            // A new session starts `pending`: the recording state as last fed.
+            if let Some((recording_id, my_consent)) = recording {
+                let _ = s.handle(
+                    now,
+                    Input::Recording {
+                        recording_id,
+                        my_consent,
+                    },
+                );
             }
         }
     }
@@ -849,6 +909,9 @@ async fn on_socket<C: FrameCrypto>(shared: &Arc<Shared<C>>, ev: SocketEvent) -> 
         }
         SocketEvent::Ready(r) => {
             // A new gateway session (RESUME refused): re-bind with the `state` route.
+            if let Some(rec) = r.recording.clone() {
+                shared.emit(KeySessionEvent::Recording(rec.map(Box::new)));
+            }
             {
                 let mut guard = lock(&shared.core);
                 let c = &mut *guard;
@@ -897,6 +960,10 @@ async fn on_socket<C: FrameCrypto>(shared: &Arc<Shared<C>>, ev: SocketEvent) -> 
             };
             shared.emit(KeySessionEvent::VoiceStateUpdated(u));
             input(shared, Input::VoiceMembers(members)).await;
+            None
+        }
+        SocketEvent::RecordingUpdated(r) => {
+            shared.emit(KeySessionEvent::Recording(Some(r)));
             None
         }
         SocketEvent::Closed(SocketClosed::Revoked) => Some(KeyEnd::CredentialLost {

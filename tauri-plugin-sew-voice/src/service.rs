@@ -1,8 +1,11 @@
-//! The plugin's core logic, without Tauri: the six commands, the state machine and the event
+//! The plugin's core logic, without Tauri: the eight commands, the state machine and the event
 //! pumps. `plugin.rs` wires it to Tauri; tests drive it directly with the fake engine.
 //!
 //! States: `idle` → `connecting` (join) → `connected` ⇄ `reconnecting {attempt}` → `ended
-//! {reason}`; `ended` → `connecting` on the next join. One call per app.
+//! {reason}`; `ended` → `connecting` on the next join. One call per app. A join into a recorded
+//! room (Sew 0.7.3) goes `connecting` → `consent_required` (held: no media) until `consent`
+//! (→ `connecting` → `connected`) or `leave`; a re-join that Sew refuses for the notice holds
+//! the same way. The `recording` event follows the call's recording.
 //!
 //! Devices are the engine's from the first use on: the first `devices`, `set_device` or
 //! `join` subscribes to the engine's device events (and so starts its device listing), not
@@ -19,8 +22,8 @@ use crate::engine::{
     BoxFuture, CallEvent, CallHandle, CallSnapshot, JoinProvider, JoinRequest, VoiceEngine,
 };
 use crate::wire::{
-    CallState, DeviceList, ErrorInfo, JoinArgs, JoinResult, MuteArgs, Participant, PluginEvent,
-    SetDeviceArgs, Speaking, StateEvent, StateSnapshot, code, reason,
+    CallState, ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinResult, MuteArgs, Participant,
+    PluginEvent, RecordingInfo, SetDeviceArgs, Speaking, StateEvent, StateSnapshot, code, reason,
 };
 
 /// The `speaking` event's floor: at most 10 a second.
@@ -71,6 +74,8 @@ struct Slot {
     target: Option<String>,
     room: Option<String>,
     participants: Vec<Participant>,
+    /// The call's active recording (Sew 0.7.3).
+    recording: Option<RecordingInfo>,
     call: Option<Arc<dyn CallHandle>>,
     call_id: Option<String>,
     /// Bumped by every join and leave; a task or answer from an older generation is ignored.
@@ -98,6 +103,7 @@ impl VoiceService {
                     target: None,
                     room: None,
                     participants: Vec::new(),
+                    recording: None,
                     call: None,
                     call_id: None,
                     generation: 0,
@@ -154,6 +160,8 @@ impl VoiceService {
             muted: args.muted.unwrap_or(false) || deafened,
             deafened,
             rejoin: None,
+            // Answered later, with `consent`, when Sew holds the join for its notice.
+            recording_notice: None,
         };
         let generation = {
             let mut slot = self.lock();
@@ -170,6 +178,7 @@ impl VoiceService {
             if had_participants {
                 self.inner.sink.emit(&PluginEvent::Participants(Vec::new()));
             }
+            set_recording(&self.inner, &mut slot, None);
             self.set_state(&mut slot, CallState::Connecting);
             slot.generation
         };
@@ -208,12 +217,14 @@ impl VoiceService {
                 return Err(info);
             }
         };
+        // Empty while the join is held for the recording notice (the room comes with Sew's
+        // answer; the `state` command's `call_id` follows).
         let call_id = call.call_id();
         // Subscribe before the snapshot, so nothing between them is lost.
         let rx = call.events();
         let stop = Arc::new(Notify::new());
         slot.call = Some(Arc::clone(&call));
-        slot.call_id = Some(call_id.clone());
+        slot.call_id = (!call_id.is_empty()).then(|| call_id.clone());
         slot.stop = Some(Arc::clone(&stop));
         let ended = self.apply_snapshot(&mut slot, call.snapshot());
         drop(slot);
@@ -248,6 +259,7 @@ impl VoiceService {
                 slot.participants.clear();
                 self.inner.sink.emit(&PluginEvent::Participants(Vec::new()));
             }
+            set_recording(&self.inner, &mut slot, None);
             self.set_state(
                 &mut slot,
                 CallState::Ended {
@@ -281,6 +293,33 @@ impl VoiceService {
         call.mute(args.muted, args.deafened)
             .await
             .map_err(|e| e.to_info())
+    }
+
+    /// `consent {granted, notice_version}`: the person's answer to the recording notice (Sew
+    /// 0.7.3). Held at `consent_required`, the call joins with it; in a call, the host's
+    /// provider sends it with the person's session. This device is recorded only once Sew says
+    /// `granted` (the `recording` event). Errors: `not_in_call`, `no_recording`,
+    /// `recording_consent_required` (the notice changed: `detail` has the new one), the
+    /// provider's refusals.
+    pub async fn consent(&self, args: ConsentArgs) -> Result<(), ErrorInfo> {
+        let call = self.live_call()?;
+        call.consent(args.granted, args.notice_version)
+            .await
+            .map_err(|e| e.to_info())
+    }
+
+    /// `withdraw_consent`: "Stop recording me" (Sew stops capturing this person and the keys
+    /// rekey, so the recorder gets nothing later). Before an answer it is a decline.
+    pub async fn withdraw_consent(&self) -> Result<(), ErrorInfo> {
+        let call = self.live_call()?;
+        call.withdraw_consent().await.map_err(|e| e.to_info())
+    }
+
+    fn live_call(&self) -> Result<Arc<dyn CallHandle>, ErrorInfo> {
+        self.lock()
+            .call
+            .clone()
+            .ok_or_else(|| ErrorInfo::new(code::NOT_IN_CALL))
     }
 
     /// `devices` → the device list.
@@ -318,6 +357,7 @@ impl VoiceService {
             room: slot.room.clone(),
             participants: slot.participants.clone(),
             call_id: slot.call_id.clone(),
+            recording: slot.recording.clone(),
         }
     }
 
@@ -360,6 +400,23 @@ fn set_room(inner: &Inner, slot: &mut Slot, room: String) {
     }
 }
 
+fn set_recording(inner: &Inner, slot: &mut Slot, recording: Option<RecordingInfo>) {
+    if slot.recording != recording {
+        slot.recording.clone_from(&recording);
+        inner.sink.emit(&PluginEvent::Recording(recording));
+    }
+}
+
+/// A call held for the notice has its room once Sew let it in.
+fn refresh_call_id(slot: &mut Slot, call: &dyn CallHandle) {
+    if slot.call_id.is_none() {
+        let id = call.call_id();
+        if !id.is_empty() {
+            slot.call_id = Some(id);
+        }
+    }
+}
+
 fn set_participants(inner: &Inner, slot: &mut Slot, participants: Vec<Participant>) {
     if slot.participants != participants {
         slot.participants = participants.clone();
@@ -373,10 +430,14 @@ fn end(inner: &Inner, slot: &mut Slot, reason: String) {
     slot.call_id = None;
     slot.stop = None;
     set_participants(inner, slot, Vec::new());
+    set_recording(inner, slot, None);
     set_state(inner, slot, CallState::Ended { reason });
 }
 
 fn apply_snapshot(inner: &Inner, slot: &mut Slot, snap: CallSnapshot) -> bool {
+    if !matches!(snap.state, CallState::Ended { .. }) {
+        set_recording(inner, slot, snap.recording);
+    }
     match snap.state {
         CallState::Ended { reason } => {
             end(inner, slot, reason);
@@ -460,6 +521,13 @@ impl Pump {
                     }
                     set_room(&self.inner, &mut slot, room);
                 }
+                Ok(CallEvent::Recording(r)) => {
+                    let mut slot = lock(&self.inner.slot);
+                    if slot.generation != self.generation {
+                        return;
+                    }
+                    set_recording(&self.inner, &mut slot, r);
+                }
                 Ok(CallEvent::State(state)) => {
                     let mut slot = lock(&self.inner.slot);
                     if slot.generation != self.generation {
@@ -471,7 +539,10 @@ impl Pump {
                             return;
                         }
                         CallState::Idle => {}
-                        state => set_state(&self.inner, &mut slot, state),
+                        state => {
+                            refresh_call_id(&mut slot, self.call.as_ref());
+                            set_state(&self.inner, &mut slot, state);
+                        }
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {

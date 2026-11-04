@@ -31,7 +31,7 @@ The crate is not on crates.io yet. It is published in the read-only
 
 ```toml
 [dependencies]
-sew-lk-compat = "0.7.2"
+sew-lk-compat = "0.7.3"
 
 [patch.crates-io]
 sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }

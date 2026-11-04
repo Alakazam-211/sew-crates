@@ -104,6 +104,8 @@ impl Builder {
                 crate::commands::devices,
                 crate::commands::set_device,
                 crate::commands::state,
+                crate::commands::consent,
+                crate::commands::withdraw_consent,
             ])
             .setup(move |app, _api| {
                 let engine = match engine {

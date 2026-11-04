@@ -1,6 +1,14 @@
 //! The public engine API: [`CallClient`] (one per app) and [`Call`] (one live
 //! call), their events, and the frame API the audio pipeline (kessel-audio, or a host's own)
 //! drives.
+//!
+//! Recording (Sew 0.7.3): the call's recording as Sew says it is
+//! [`Call::recording`] and [`CallEvent::Recording`]; the person answers its notice with
+//! [`Call::consent`] and withdraws with [`Call::withdraw_consent`] ("Stop recording me"), both
+//! through the host ([`JoinProvider::consent`]). A join into a recorded room that has no answer
+//! is held at [`CallState::ConsentRequired`] (no media, no keys, nothing captured) until the
+//! host answers or leaves. No answer is never consent: this device's key reaches the recorder
+//! only after Sew says `granted`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,7 +21,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::config::ClientConfig;
 use crate::e2ee::E2eeProvider;
 use crate::engine;
-use crate::provider::{JoinProvider, JoinRequest, ProviderError};
+use crate::provider::{ConsentRequired, JoinProvider, JoinRequest, ProviderError};
+use crate::stats::{CallStatsReport, PlayoutStats, StatsWindow};
 
 /// Frames the send queue holds (20 ms each: one second).
 pub(crate) const SEND_QUEUE: usize = 50;
@@ -65,6 +74,18 @@ pub enum CallState {
         /// The attempt.
         attempt: u32,
     },
+    /// Held (Sew 0.7.3): the room is recorded and Sew refused the join until the person
+    /// answers its notice (`409 recording_consent_required`). No media, no keys, nothing is
+    /// captured or sent. The notice is [`Call::recording`]'s `consent_prompt`; answer with
+    /// [`Call::consent`] (the engine re-joins with the answer) or give up with
+    /// [`Call::leave`]. Waits as long as the host does (a lock-screen answer may take a while).
+    ConsentRequired {
+        /// The recording (Sew's id, a decimal string), or `auto` for an auto-record channel's
+        /// first join.
+        recording_id: String,
+        /// The notice's version: what [`Call::consent`] echoes.
+        notice_version: u32,
+    },
     /// Over.
     Ended {
         /// Why.
@@ -94,6 +115,117 @@ pub struct Participant {
     /// engine's permission): nothing is captured or published until it is granted again. Not a
     /// moderator mute (`server_muted`).
     pub speak_denied: bool,
+    /// The recorder (Sew Notes): the engine's recorder participant, which has no member.
+    pub recorder: bool,
+}
+
+/// A person's answer to a recording's notice, as Sew stores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RecordingConsent {
+    /// Not answered (never recorded).
+    Pending,
+    /// Agreed: recorded while captured.
+    Granted,
+    /// Declined (unrecorded, or not joined when declining means not joining).
+    Declined,
+    /// Agreed, then withdrew ("Stop recording me").
+    Withdrawn,
+}
+
+impl RecordingConsent {
+    /// From Sew's consent (`None`: not a participant yet, so `pending`; a value this engine
+    /// does not know is not a grant, so `declined`).
+    pub fn from_sew(c: Option<sew_proto::recording::Consent>) -> RecordingConsent {
+        use sew_proto::recording::Consent as C;
+        match c {
+            None | Some(C::Pending) => RecordingConsent::Pending,
+            Some(C::Granted) => RecordingConsent::Granted,
+            Some(C::Withdrawn) => RecordingConsent::Withdrawn,
+            Some(_) => RecordingConsent::Declined,
+        }
+    }
+}
+
+/// One participant of the recording, as everyone in the call sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct RecordingMember {
+    /// The member (Sew's id, a decimal string).
+    pub member_id: String,
+    /// Their answer.
+    pub consent: RecordingConsent,
+    /// The recorder captures them now (granted and captured).
+    pub recorded: bool,
+}
+
+/// The call's recording as Sew says it (`recording` event, [`Call::recording`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct CallRecording {
+    /// The recording (Sew's id, a decimal string), or `auto` while a join into an auto-record
+    /// channel waits for an answer.
+    pub recording_id: String,
+    /// Started by an auto-record channel.
+    pub auto: bool,
+    /// Who started it (Sew's member id), when known.
+    pub started_by: Option<String>,
+    /// This person's answer.
+    pub my_consent: RecordingConsent,
+    /// The notice to show while this person has not answered (`pending`), with its
+    /// `notice_version`; `None` once answered.
+    pub consent_prompt: Option<sew_proto::recording::ConsentPrompt>,
+    /// Everyone in it.
+    pub participants: Vec<RecordingMember>,
+}
+
+impl CallRecording {
+    /// The recording in Sew's shape (the member's own view).
+    pub fn from_sew(r: &sew_proto::recording::Recording) -> CallRecording {
+        use sew_proto::recording::Capture;
+        CallRecording {
+            recording_id: r.id.to_string(),
+            auto: r.auto,
+            started_by: Some(r.started_by.to_string()),
+            my_consent: RecordingConsent::from_sew(r.my_consent),
+            consent_prompt: r.consent_prompt.clone(),
+            participants: r
+                .participants
+                .iter()
+                .map(|p| RecordingMember {
+                    member_id: p.member_id.to_string(),
+                    consent: RecordingConsent::from_sew(Some(p.consent)),
+                    recorded: p.capture == Some(Capture::Recorded),
+                })
+                .collect(),
+        }
+    }
+
+    /// The recording a held join shows: Sew's `409`'s recording with its prompt, or (an
+    /// auto-record channel's first join) the prompt alone.
+    pub fn from_consent_required(c: &ConsentRequired) -> CallRecording {
+        match &c.recording {
+            Some(r) => {
+                let mut out = CallRecording::from_sew(r);
+                out.consent_prompt = Some(c.consent_prompt.clone());
+                out.my_consent = RecordingConsent::Pending;
+                out
+            }
+            None => CallRecording {
+                recording_id: c.consent_prompt.recording_id.to_string(),
+                auto: c.auto,
+                started_by: c
+                    .consent_prompt
+                    .started_by
+                    .as_ref()
+                    .map(|m| m.member_id.to_string()),
+                my_consent: RecordingConsent::Pending,
+                consent_prompt: Some(c.consent_prompt.clone()),
+                participants: Vec::new(),
+            },
+        }
+    }
 }
 
 /// A speaking level (`speaking` event).
@@ -144,6 +276,12 @@ pub enum CallEvent {
     /// destination. Sent before the engine reconnects there; a re-join after it asks the
     /// provider for [`CallMoved::room`].
     Moved(CallMoved),
+    /// A stats window ended: its numbers, the beacon sample sent (if any) and Sew's answer
+    /// (also in [`Call::stats`]).
+    Stats(Box<StatsWindow>),
+    /// The call's recording changed (Sew 0.7.3): started, someone answered, this person's
+    /// prompt, or `None` once no recording is active (also [`Call::recording`]).
+    Recording(Option<Box<CallRecording>>),
 }
 
 /// Where a moderator move took the call (Sew's `voice_server_updated`).
@@ -224,6 +362,9 @@ pub struct CallSnapshot {
     /// The last moderator move, if any ([`CallEvent::Moved`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub moved: Option<CallMoved>,
+    /// The call's active recording, if any ([`CallEvent::Recording`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording: Option<CallRecording>,
 }
 
 impl Default for CallSnapshot {
@@ -235,6 +376,7 @@ impl Default for CallSnapshot {
             relay_only: false,
             counters: CallCounters::default(),
             moved: None,
+            recording: None,
         }
     }
 }
@@ -333,6 +475,9 @@ pub enum CallError {
     /// The engine could not set itself up (TLS roots, HTTP client).
     #[error("setup: {0}")]
     Setup(String),
+    /// No recording is active (or held) to answer.
+    #[error("no_recording")]
+    NoRecording,
 }
 
 pub(crate) enum Cmd {
@@ -342,6 +487,11 @@ pub(crate) enum Cmd {
         reply: oneshot::Sender<()>,
     },
     Leave(oneshot::Sender<()>),
+    Consent {
+        granted: bool,
+        notice_version: Option<u32>,
+        reply: oneshot::Sender<Result<(), CallError>>,
+    },
 }
 
 /// The engine of one app: at most one live call.
@@ -379,6 +529,11 @@ impl CallClient {
     }
 
     /// Joins through `provider` and starts the call.
+    ///
+    /// A room that is recorded (Sew's `409 recording_consent_required`, the provider's
+    /// [`ProviderError::ConsentRequired`]) is not an error: the call comes back held at
+    /// [`CallState::ConsentRequired`], with the notice in [`Call::recording`], until the host
+    /// answers ([`Call::consent`]) or leaves.
     pub async fn join(
         &self,
         provider: Arc<dyn JoinProvider>,
@@ -388,7 +543,11 @@ impl CallClient {
             return Err(CallError::AlreadyInCall);
         }
         let busy = BusyGuard(self.busy.clone());
-        let answer = provider.join(req.clone()).await?;
+        let first = match provider.join(req.clone()).await {
+            Ok(answer) => engine::First::Answer(Box::new(answer)),
+            Err(ProviderError::ConsentRequired(c)) => engine::First::Held(c),
+            Err(e) => return Err(e.into()),
+        };
         let (events, _) = broadcast::channel(256);
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (push_tx, push_rx) = mpsc::channel(SEND_QUEUE);
@@ -398,13 +557,21 @@ impl CallClient {
             events: events.clone(),
             snapshot: snapshot.clone(),
             send_queue_drops: std::sync::atomic::AtomicU64::new(0),
+            stats: Mutex::new(CallStatsReport::default()),
+            playout: Mutex::new(None),
+            beacon_stopped: AtomicBool::new(false),
         });
+        if let engine::First::Held(c) = &first {
+            // Held before `join` returns: a host that reads the snapshot at once (to decide
+            // whether to open the microphone) sees `consent_required`, never `connecting`.
+            engine::preset_held(&snapshot, c);
+        }
         engine::spawn(engine::Start {
             cfg: self.cfg.clone(),
             e2ee: self.e2ee.clone(),
             provider,
             req,
-            answer,
+            first,
             shared: shared.clone(),
             cmd_rx,
             push_rx,
@@ -484,6 +651,26 @@ impl Call {
         s
     }
 
+    /// The stats windows so far (the latest 256) and the beacon's terms: the same numbers the
+    /// beacon sends, measured whether or not it is on (see the `stats` module docs for how
+    /// each is derived).
+    pub fn stats(&self) -> CallStatsReport {
+        self.shared
+            .stats
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    /// Where the beacon's played and concealed audio come from: the host's own audio
+    /// pipeline (one that does not use [`crate::AudioBridge`], which reports kessel-audio's).
+    /// Without one, the engine reports what it handed the pipeline.
+    pub fn set_playout_stats(&self, source: Arc<dyn PlayoutStats>) {
+        if let Ok(mut p) = self.shared.playout.lock() {
+            *p = Some(source);
+        }
+    }
+
     /// Mute and deafen (`None` leaves it). Deafened implies muted; un-deafening returns
     /// `muted` to its value before the deafen.
     pub async fn mute(&self, muted: Option<bool>, deafened: Option<bool>) -> Result<(), CallError> {
@@ -496,6 +683,45 @@ impl Call {
             })
             .map_err(|_| CallError::Ended)?;
         rx.await.map_err(|_| CallError::Ended)
+    }
+
+    /// The call's active recording as Sew says it (or the notice of a held join), if any.
+    pub fn recording(&self) -> Option<CallRecording> {
+        self.shared
+            .snapshot
+            .lock()
+            .ok()
+            .and_then(|s| s.recording.clone())
+    }
+
+    /// The person's answer to the recording's notice (`notice_version`: the version they saw,
+    /// [`CallState::ConsentRequired`]'s or the prompt's). Held at `consent_required`, the
+    /// engine re-joins with the answer (a decline joins unrecorded, or is refused when declining
+    /// means not joining: the call ends). In a call, the host sends it
+    /// ([`JoinProvider::consent`]). Either way this device's key reaches the recorder only
+    /// once Sew says `granted`. A notice that changed meanwhile answers
+    /// `Provider(ConsentRequired)` with the current one (the call stays as it was).
+    pub async fn consent(&self, granted: bool, notice_version: u32) -> Result<(), CallError> {
+        self.answer(granted, Some(notice_version)).await
+    }
+
+    /// "Stop recording me": withdraws a granted consent through the host (Sew stops capturing
+    /// this person at once and the keys rekey so the recorder gets no later key). Before an
+    /// answer it is a decline.
+    pub async fn withdraw_consent(&self) -> Result<(), CallError> {
+        self.answer(false, None).await
+    }
+
+    async fn answer(&self, granted: bool, notice_version: Option<u32>) -> Result<(), CallError> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd
+            .send(Cmd::Consent {
+                granted,
+                notice_version,
+                reply,
+            })
+            .map_err(|_| CallError::Ended)?;
+        rx.await.map_err(|_| CallError::Ended)?
     }
 
     /// Leaves (Sew's leave with the credential, then the engine's).

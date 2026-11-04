@@ -40,7 +40,7 @@ root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-e2ee = "0.7.2"
+sew-e2ee = "0.7.3"
 
 [patch.crates-io]
 sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }

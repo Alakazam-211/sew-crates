@@ -7,10 +7,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Sew's consent modal data (`recording`'s `consent_prompt`), from `sew-proto` unchanged.
+pub use sew_call_client::ConsentPrompt;
+
 /// The call's state: the `state` event and the `state` command's snapshot.
 ///
-/// `{"state": "idle" | "connecting" | "connected"}`, `{"state": "reconnecting", "attempt": n}`
-/// or `{"state": "ended", "reason": "..."}`. `connected` means media is up and a key epoch is
+/// `{"state": "idle" | "connecting" | "connected"}`, `{"state": "reconnecting", "attempt": n}`,
+/// `{"state": "consent_required", "recording_id": "...", "notice_version": n}` or
+/// `{"state": "ended", "reason": "..."}`. `connected` means media is up and a key epoch is
 /// active (you can hear and be heard).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 // No deny_unknown_fields: it is flattened into StateSnapshot, which carries more fields.
@@ -27,6 +31,17 @@ pub enum CallState {
         /// 1 for the first attempt.
         attempt: u32,
     },
+    /// Held (Sew 0.7.3): the room is recorded and Sew lets the join in only with the person's
+    /// answer to its notice (the `recording` event's `consent_prompt`). No microphone, no
+    /// media, no keys. Answer with `consent {granted, notice_version}` (the call then joins,
+    /// recorded only after a grant) or give up with `leave`. It waits as long as the app does.
+    ConsentRequired {
+        /// The recording (Sew's id, a decimal string), or `auto` for an auto-record channel's
+        /// first join.
+        recording_id: String,
+        /// The notice's version, to echo in `consent`.
+        notice_version: u32,
+    },
     /// The call is over. `reason` is Sew's voice leave reason as it arrived (Sew 0.7.2:
     /// `perms_lost`, `removed_from_space`, `timed_out`, `channel_archived`, `account_removed`,
     /// `removed_by_moderator`, `session_revoked`, `device_revoked`, `media_path_down`, ...),
@@ -41,11 +56,15 @@ pub enum CallState {
 }
 
 impl CallState {
-    /// `connecting`, `connected` or `reconnecting`: a second `join` is refused.
+    /// `connecting`, `connected`, `reconnecting` or `consent_required`: a second `join` is
+    /// refused.
     pub fn is_live(&self) -> bool {
         matches!(
             self,
-            CallState::Connecting | CallState::Connected | CallState::Reconnecting { .. }
+            CallState::Connecting
+                | CallState::Connected
+                | CallState::Reconnecting { .. }
+                | CallState::ConsentRequired { .. }
         )
     }
 }
@@ -80,6 +99,22 @@ pub mod reason {
     pub const SESSION_REVOKED: &str = "session_revoked";
     /// The device was revoked.
     pub const DEVICE_REVOKED: &str = "device_revoked";
+    /// Sew's recording leave reasons (Sew 0.7.3; only where declining means not joining,
+    /// `recording.require_consent_to_join`), as they arrive.
+    pub const RECORDING: [&str; 3] = [
+        RECORDING_DECLINED,
+        RECORDING_WITHDRAWN,
+        RECORDING_CONSENT_TIMEOUT,
+    ];
+    /// The person declined the recording notice.
+    pub const RECORDING_DECLINED: &str = "recording_declined";
+    /// The person withdrew their consent ("Stop recording me").
+    pub const RECORDING_WITHDRAWN: &str = "recording_withdrawn";
+    /// The notice stayed unanswered too long.
+    pub const RECORDING_CONSENT_TIMEOUT: &str = "recording_consent_timeout";
+    /// A held join's decline was refused because declining means not joining (Sew's refusal
+    /// reason, passed through as a refusal code).
+    pub const RECORDING_CONSENT_REQUIRED_TO_JOIN: &str = "recording_consent_required_to_join";
     /// The engine removed the participant and Sew gave no reason within 1.5 s (a fallback).
     pub const KICKED: &str = "kicked";
     /// The engine closed the room and Sew gave no reason within 1.5 s (a fallback).
@@ -213,6 +248,13 @@ pub mod code {
     pub const PROVIDER_ERROR: &str = "provider_error";
     /// The provider's `SigninRequired`.
     pub const SIGNIN_REQUIRED: &str = "signin_required";
+    /// `consent` or `withdraw_consent` with no recording to answer.
+    pub const NO_RECORDING: &str = "no_recording";
+    /// The notice changed before the answer reached Sew: `detail` is Sew's refusal
+    /// (`{recording, auto, consent_prompt}`); show the new notice and answer again.
+    pub const RECORDING_CONSENT_REQUIRED: &str = "recording_consent_required";
+    /// The host's provider sends no consent (its `JoinProvider::consent` is the default).
+    pub const CONSENT_UNSUPPORTED: &str = "consent_unsupported";
 }
 
 /// `join`'s arguments: `{target, room, muted?, deafened?}`. `target` and `room` are opaque to
@@ -272,6 +314,111 @@ pub struct SetDeviceArgs {
 
 /// `set_device`'s `"default"`: the OS default, followed when it changes.
 pub const DEFAULT_DEVICE: &str = "default";
+
+/// `consent`'s arguments: `{granted, notice_version}`, the person's answer to the notice they
+/// saw (the `recording` event's `consent_prompt.notice_version`, or `consent_required`'s).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsentArgs {
+    /// Agree to be recorded (`true`), or decline (`false`).
+    pub granted: bool,
+    /// The notice's version the person saw.
+    pub notice_version: u32,
+}
+
+/// A person's answer to the recording notice, as Sew stores it: `pending` (not answered:
+/// never recorded), `granted`, `declined` or `withdrawn`.
+pub mod consent {
+    /// Not answered: never recorded.
+    pub const PENDING: &str = "pending";
+    /// Agreed.
+    pub const GRANTED: &str = "granted";
+    /// Declined.
+    pub const DECLINED: &str = "declined";
+    /// Agreed, then withdrew ("Stop recording me").
+    pub const WITHDRAWN: &str = "withdrawn";
+
+    /// The engine's answer as the wire writes it (a value the engine adds later is never a
+    /// grant: `declined`).
+    pub fn of(c: sew_call_client::RecordingConsent) -> &'static str {
+        use sew_call_client::RecordingConsent as C;
+        match c {
+            C::Pending => PENDING,
+            C::Granted => GRANTED,
+            C::Withdrawn => WITHDRAWN,
+            _ => DECLINED,
+        }
+    }
+}
+
+/// One person in the `recording` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingParticipant {
+    /// Sew's member id.
+    pub member_id: String,
+    /// Their answer ([`consent`]).
+    pub consent: String,
+    /// The recorder captures them now.
+    pub recorded: bool,
+}
+
+/// The `recording` event (and the `state` command's `recording`): the call's active recording
+/// as Sew says it, or `null` once none is active (Sew 0.7.3).
+///
+/// `{"recording_id": "...", "auto": false, "started_by": "...", "my_consent": "pending",
+/// "consent_prompt": {...}, "participants": [...], "recorder_present": true}`. Show the
+/// recording badge while it is non-null; show the consent modal from `consent_prompt` while
+/// `my_consent` is `pending` (it is written only then), and "Stop recording me" while it is
+/// `granted`. This device is recorded only after Sew says `granted`: no answer is never
+/// consent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingInfo {
+    /// The recording (Sew's id), or `auto` while a held join into an auto-record channel waits.
+    pub recording_id: String,
+    /// Started by an auto-record channel.
+    pub auto: bool,
+    /// Who started it (Sew's member id), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
+    /// This person's answer ([`consent`]).
+    pub my_consent: String,
+    /// The notice (Sew's `ConsentPrompt`, unchanged) while `my_consent` is `pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent_prompt: Option<ConsentPrompt>,
+    /// Everyone in it.
+    pub participants: Vec<RecordingParticipant>,
+    /// The recorder (Sew Notes) is in the call's media now. It is never in `participants`
+    /// (it is not a member).
+    pub recorder_present: bool,
+}
+
+impl RecordingInfo {
+    /// The engine's recording (`sew-call-client`'s), with `recorder_present`.
+    pub fn from_engine(
+        r: &sew_call_client::CallRecording,
+        recorder_present: bool,
+    ) -> RecordingInfo {
+        RecordingInfo {
+            recording_id: r.recording_id.clone(),
+            auto: r.auto,
+            started_by: r.started_by.clone(),
+            my_consent: consent::of(r.my_consent).to_owned(),
+            consent_prompt: r.consent_prompt.clone(),
+            participants: r
+                .participants
+                .iter()
+                .map(|p| RecordingParticipant {
+                    member_id: p.member_id.clone(),
+                    consent: consent::of(p.consent).to_owned(),
+                    recorded: p.recorded,
+                })
+                .collect(),
+            recorder_present,
+        }
+    }
+}
 
 impl SetDeviceArgs {
     /// The input's choice: `None` (unchanged), the OS default or a device id.
@@ -357,12 +504,16 @@ pub struct StateSnapshot {
     pub room: Option<String>,
     /// The current participants (`[]` with no call).
     pub participants: Vec<Participant>,
-    /// The call's id while there is one.
+    /// The call's id while there is one (not yet while `consent_required`).
     pub call_id: Option<String>,
+    /// The call's active recording (Sew 0.7.3), as the `recording` event; absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<RecordingInfo>,
 }
 
 /// The plugin's events. Each window gets every event as `sew-voice://<name>`.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum PluginEvent {
     /// `state`: [`StateEvent`] (the [`CallState`] with the call's `target` and `room`).
     State(StateEvent),
@@ -374,16 +525,26 @@ pub enum PluginEvent {
     Errors(ErrorInfo),
     /// `devices`: [`DeviceList`].
     Devices(DeviceList),
+    /// `recording`: [`RecordingInfo`], or `null` when no recording is active.
+    Recording(Option<RecordingInfo>),
 }
 
 /// The prefix of every event name the plugin emits: `sew-voice://state` and so on.
 pub const EVENT_PREFIX: &str = "sew-voice://";
 
-/// The five event names, without [`EVENT_PREFIX`].
-pub const EVENT_NAMES: [&str; 5] = ["state", "participants", "speaking", "errors", "devices"];
+/// The six event names, without [`EVENT_PREFIX`].
+pub const EVENT_NAMES: [&str; 6] = [
+    "state",
+    "participants",
+    "speaking",
+    "errors",
+    "devices",
+    "recording",
+];
 
 impl PluginEvent {
-    /// The event's frozen name: `state`, `participants`, `speaking`, `errors` or `devices`.
+    /// The event's frozen name: `state`, `participants`, `speaking`, `errors`, `devices` or
+    /// `recording`.
     pub fn name(&self) -> &'static str {
         match self {
             PluginEvent::State(_) => "state",
@@ -391,6 +552,7 @@ impl PluginEvent {
             PluginEvent::Speaking(_) => "speaking",
             PluginEvent::Errors(_) => "errors",
             PluginEvent::Devices(_) => "devices",
+            PluginEvent::Recording(_) => "recording",
         }
     }
 
@@ -407,6 +569,7 @@ impl PluginEvent {
             PluginEvent::Speaking(s) => serde_json::to_value(s),
             PluginEvent::Errors(e) => serde_json::to_value(e),
             PluginEvent::Devices(d) => serde_json::to_value(d),
+            PluginEvent::Recording(r) => serde_json::to_value(r),
         };
         // These types are plain structs of strings, bools and numbers; serde_json cannot fail
         // on them (a NaN level is written as null).

@@ -1,12 +1,14 @@
-//! The six Tauri commands. Each one is a thin call into [`VoiceService`]; the argument
+//! The eight Tauri commands. Each one is a thin call into [`VoiceService`]; the argument
 //! names are the JSON keys the webview sends (`invoke('plugin:sew-voice|join', {target, room,
-//! muted, deafened})`).
+//! muted, deafened})`, `invoke('plugin:sew-voice|consent', {granted, notice_version})`: snake_case,
+//! as every other key on the wire).
 
 use tauri::State;
 
 use crate::service::VoiceService;
 use crate::wire::{
-    DeviceList, ErrorInfo, JoinArgs, JoinResult, MuteArgs, SetDeviceArgs, StateSnapshot,
+    ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinResult, MuteArgs, SetDeviceArgs,
+    StateSnapshot,
 };
 
 #[tauri::command]
@@ -39,6 +41,25 @@ pub(crate) async fn mute(
     deafened: Option<bool>,
 ) -> Result<(), ErrorInfo> {
     service.mute(MuteArgs { muted, deafened }).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn consent(
+    service: State<'_, VoiceService>,
+    granted: bool,
+    notice_version: u32,
+) -> Result<(), ErrorInfo> {
+    service
+        .consent(ConsentArgs {
+            granted,
+            notice_version,
+        })
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn withdraw_consent(service: State<'_, VoiceService>) -> Result<(), ErrorInfo> {
+    service.withdraw_consent().await
 }
 
 #[tauri::command]

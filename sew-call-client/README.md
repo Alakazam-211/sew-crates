@@ -14,6 +14,10 @@ Everything below the user interface for one call:
   and the device key store (`device`). Remote frames are decrypted and verified before the
   audio pipeline sees them; nothing is ever sent unencrypted;
 - mute and deafen, the participant list, speaking levels, and the call credential's renewal;
+- the call-stats beacon: when Sew's join answer carries its terms, one anonymous sample per
+  window (played and concealed audio, packet loss, jitter, the longest gap, the path) to Sew,
+  and the same numbers for the host (`Call::stats`, `CallEvent::Stats`; the `stats` module
+  says how each is derived);
 - with the `audio` features, the bridge to the `kessel-audio` audio pipeline (capture,
   processing, Opus, playout on the system's devices).
 
@@ -42,7 +46,7 @@ that repository's README lists the `[patch.crates-io]` rows to copy into your wo
 
 ```toml
 [dependencies]
-sew-call-client = "0.1.0"
+sew-call-client = "0.2.0"
 ```
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
@@ -125,6 +129,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 muted: false,
                 deafened: false,
                 rejoin: None,
+                recording_notice: None,
             },
         )
         .await?;
@@ -141,7 +146,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For a Tauri 2 app, `tauri-plugin-sew-voice` wraps this engine in six commands and five events.
+### Recording consent (Sew 0.7.3)
+
+A recorded call never records this device without the person's yes, and no answer is never a
+yes: the engine feeds the call keys the recording state Sew sends (the join answer, the call
+socket's own `recording_updated`, Sew's answer to a consent), and the keys release this
+device's key to the recorder only while Sew says `granted`.
+
+- A join that Sew refuses `409 recording_consent_required` (your provider returns
+  `ProviderError::ConsentRequired`; `ProviderError::from_sew_error` reads Sew's error body)
+  comes back held: `CallState::ConsentRequired { recording_id, notice_version }`, no media and
+  no keys, the notice in `Call::recording()`. `call.consent(granted, notice_version)` joins
+  again with the answer as `JoinRequest::recording_notice` (forward it as the voice join's
+  `recording_notice`); `leave()` gives up.
+- In a call, `Call::recording()` and `CallEvent::Recording` are the call's recording as Sew
+  says it; `call.consent(..)` and `call.withdraw_consent()` ("Stop recording me") go through
+  your provider's `JoinProvider::consent` with the person's own session (`ConsentAnswer::path`
+  and `body` are Sew's route and body). The default `consent` sends nothing
+  (`consent_unsupported`): the person stays unrecorded.
+- `Participant::recorder` marks the recorder in the roster.
+
+For a Tauri 2 app, `tauri-plugin-sew-voice` wraps this engine in eight commands and six events.
 
 **Known advisory (RUSTSEC-2026-0387, P-256).** Through `sew-e2ee`, every join signs with a P-256
 device key via `p256` 0.13, whatever the call's MLS suite; see `sew-e2ee`'s README for what that

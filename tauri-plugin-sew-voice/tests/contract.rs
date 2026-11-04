@@ -10,9 +10,10 @@ use serde_json::{Value, json};
 use tauri_plugin_sew_voice::fake::fake_answer;
 use tauri_plugin_sew_voice::wire::{EVENT_NAMES, EVENT_PREFIX};
 use tauri_plugin_sew_voice::{
-    COMMANDS, CallState, DEFAULT_DEVICE, Device, DeviceChoice, DeviceList, ErrorInfo, JoinArgs,
-    JoinRequest, JoinResult, MuteArgs, PLUGIN_NAME, Participant, PluginEvent, ProviderError,
-    RejoinReason, SetDeviceArgs, Speaking, StateEvent, StateSnapshot, app_server_answer,
+    COMMANDS, CallState, ConsentArgs, DEFAULT_DEVICE, Device, DeviceChoice, DeviceList,
+    EngineError, ErrorInfo, JoinArgs, JoinRequest, JoinResult, MuteArgs, PLUGIN_NAME, Participant,
+    PluginEvent, ProviderError, RecordingInfo, RejoinReason, SetDeviceArgs, Speaking, StateEvent,
+    StateSnapshot, app_server_answer,
 };
 
 /// `v` serializes to exactly `want` and `want` parses back to `v`.
@@ -42,9 +43,25 @@ fn state_values() {
         },
         json!({"state": "ended", "reason": "channel_archived"}),
     );
+    exact(
+        &CallState::ConsentRequired {
+            recording_id: "48831765147549720".into(),
+            notice_version: 3141,
+        },
+        json!({"state": "consent_required", "recording_id": "48831765147549720", "notice_version": 3141}),
+    );
+    assert!(
+        CallState::ConsentRequired {
+            recording_id: "auto".into(),
+            notice_version: 1
+        }
+        .is_live(),
+        "a held join is a call: a second join is refused, leave ends it"
+    );
     refused::<CallState>(json!({"state": "ringing"}));
     refused::<CallState>(json!({"state": "reconnecting"}));
     refused::<CallState>(json!({"state": "ended"}));
+    refused::<CallState>(json!({"state": "consent_required", "recording_id": "1"}));
 }
 
 #[test]
@@ -141,6 +158,7 @@ fn fixture_ended_payloads_are_the_state_event() {
         reasons("fallbacks"),
         vec![reason::KICKED, reason::ROOM_CLOSED, reason::CREDENTIAL_LOST]
     );
+    assert_eq!(reasons("recording_reasons"), reason::RECORDING.to_vec());
     // The kicked fallback is also what a Sew older than 0.7.1 ends a removal with.
     assert!(
         f["ended"]["fallbacks"][0]["cause"]
@@ -308,6 +326,7 @@ fn state_snapshot_is_the_state_event_plus_roster() {
             room: Some("123".into()),
             participants: vec![],
             call_id: Some("r_x".into()),
+            recording: None,
         },
         json!({
             "state": "reconnecting", "attempt": 1, "target": "k2", "room": "123",
@@ -321,6 +340,7 @@ fn state_snapshot_is_the_state_event_plus_roster() {
             room: None,
             participants: vec![],
             call_id: None,
+            recording: None,
         },
         json!({"state": "idle", "participants": [], "call_id": null}),
     );
@@ -337,13 +357,91 @@ fn state_snapshot_is_the_state_event_plus_roster() {
     }
 }
 
+/// Sew 0.7.3: the held join's `state` and `recording`, the `recording` event in a call and once
+/// it stopped, the `consent` arguments and the `state` command's `recording`, as the fixture
+/// writes them.
+#[test]
+fn fixture_recording_round_trips() {
+    let f = fixture();
+    let r = &f["recording"];
+    assert_eq!(r["event"], json!("sew-voice://recording"));
+    let held: StateEvent = serde_json::from_value(r["held"]["state"].clone()).expect("held");
+    assert_eq!(
+        held.state,
+        CallState::ConsentRequired {
+            recording_id: "48831765147549720".into(),
+            notice_version: 3141
+        }
+    );
+    exact(&held, r["held"]["state"].clone());
+    for k in ["granted", "withdrawn"] {
+        let info: RecordingInfo = serde_json::from_value(r[k].clone()).expect(k);
+        exact(&info, r[k].clone());
+        assert!(info.consent_prompt.is_none(), "{k}: answered, no prompt");
+        let ev = PluginEvent::Recording(Some(info));
+        assert_eq!(ev.event_name(), "sew-voice://recording");
+        assert_eq!(ev.payload(), r[k], "{k}");
+    }
+    let pending: RecordingInfo =
+        serde_json::from_value(r["held"]["recording"].clone()).expect("pending");
+    exact(&pending, r["held"]["recording"].clone());
+    let prompt = pending
+        .consent_prompt
+        .as_ref()
+        .expect("the notice while pending");
+    assert_eq!(prompt.notice_version, 3141);
+    assert_eq!(pending.my_consent, "pending");
+    // The recorder is no participant: no name, no member, only `recorder_present`.
+    assert!(pending.participants.is_empty());
+    assert_eq!(r["stopped"], Value::Null);
+    assert_eq!(PluginEvent::Recording(None).payload(), Value::Null);
+    let args: ConsentArgs =
+        serde_json::from_value(r["held"]["consent"]["args"].clone()).expect("args");
+    exact(&args, json!({"granted": true, "notice_version": 3141}));
+    assert!(COMMANDS.contains(&"consent") && COMMANDS.contains(&"withdraw_consent"));
+    refused::<ConsentArgs>(json!({"granted": true}));
+    refused::<ConsentArgs>(json!({"granted": true, "notice_version": 1, "device": "x"}));
+    let mut extra = r["granted"].clone();
+    extra["name"] = json!("Avery");
+    refused::<RecordingInfo>(extra);
+    // The `state` command while held: no call id yet, the notice in `recording`.
+    let s: StateSnapshot =
+        serde_json::from_value(f["state_snapshot"]["consent_required"].clone()).expect("snap");
+    assert_eq!(s.call_id, None);
+    assert_eq!(s.recording.as_ref(), Some(&pending));
+    assert_eq!(
+        serde_json::to_value(&s).expect("json"),
+        f["state_snapshot"]["consent_required"]
+    );
+}
+
+/// A notice that changed before the answer reached Sew: the command error carries Sew's
+/// refusal details for the app to show the new notice.
+#[test]
+fn a_changed_notice_is_the_consent_error() {
+    let c = tauri_plugin_sew_voice::fake::consent_required(48831765147549720, 7);
+    let e = EngineError::Provider(ProviderError::ConsentRequired(Box::new(c)));
+    let info = e.to_info();
+    assert_eq!(info.code, "recording_consent_required");
+    assert_eq!(info.detail["consent_prompt"]["notice_version"], json!(7));
+    assert_eq!(info.detail["auto"], json!(false));
+    assert_eq!(e.end_reason(), "recording_consent_required");
+}
+
 #[test]
 fn event_names_are_frozen() {
     assert_eq!(PLUGIN_NAME, "sew-voice");
     assert_eq!(EVENT_PREFIX, "sew-voice://");
     assert_eq!(
         EVENT_NAMES,
-        ["state", "participants", "speaking", "errors", "devices"]
+        [
+            "state",
+            "participants",
+            "speaking",
+            "errors",
+            "devices",
+            "recording"
+        ]
     );
     let events = [
         PluginEvent::State(StateEvent::bare(CallState::Idle)),
@@ -351,6 +449,7 @@ fn event_names_are_frozen() {
         PluginEvent::Speaking(vec![]),
         PluginEvent::Errors(ErrorInfo::new("x")),
         PluginEvent::Devices(DeviceList::default()),
+        PluginEvent::Recording(None),
     ];
     let names: Vec<&str> = events.iter().map(PluginEvent::name).collect();
     assert_eq!(names, EVENT_NAMES);
@@ -368,18 +467,29 @@ fn manifest_file(rel: &str) -> String {
 fn commands_build_script_and_permissions_agree() {
     assert_eq!(
         COMMANDS,
-        ["join", "leave", "mute", "devices", "set_device", "state"]
+        [
+            "join",
+            "leave",
+            "mute",
+            "devices",
+            "set_device",
+            "state",
+            "consent",
+            "withdraw_consent"
+        ]
     );
     let build = manifest_file("build.rs");
-    let listed = COMMANDS
-        .iter()
-        .map(|c| format!("\"{c}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    assert!(
-        build.contains(&format!("&[{listed}]")),
-        "build.rs's COMMANDS must be [{listed}]"
-    );
+    let start = build
+        .find("const COMMANDS: &[&str] = &[")
+        .expect("build.rs's COMMANDS");
+    let list = &build[start..];
+    let list = &list[list.find("= &[").expect("[") + 4..list.find("];").expect("];")];
+    let listed: Vec<String> = list
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert_eq!(listed, COMMANDS, "build.rs's COMMANDS");
     let default = manifest_file("permissions/default.toml");
     assert!(default.contains("[default]"));
     for c in COMMANDS {
@@ -389,7 +499,7 @@ fn commands_build_script_and_permissions_agree() {
     assert_eq!(
         default.matches("\"allow-").count(),
         COMMANDS.len(),
-        "sew-voice:default allows exactly the six commands"
+        "sew-voice:default allows exactly the eight commands"
     );
 }
 
@@ -402,6 +512,7 @@ fn provider_http_shapes() {
         muted: false,
         deafened: false,
         rejoin: None,
+        recording_notice: None,
     };
     exact(
         &req,
@@ -417,6 +528,23 @@ fn provider_http_shapes() {
     exact(
         &RejoinReason::CredentialExpired,
         json!("credential_expired"),
+    );
+    // Sew 0.7.3: the answer to a held join's notice, forwarded as the voice join's
+    // `recording_notice` (written only when there is one).
+    let held = tauri_plugin_sew_voice::fake::consent_required(48831765147549720, 3141);
+    exact(
+        &JoinRequest {
+            target: "acme".into(),
+            room: "48831765147549698".into(),
+            muted: false,
+            deafened: false,
+            rejoin: None,
+            recording_notice: Some(held.notice(true)),
+        },
+        json!({"target": "acme", "room": "48831765147549698", "muted": false, "deafened": false,
+               "rejoin": null,
+               "recording_notice": {"recording_id": "48831765147549720", "consent": true,
+                                    "notice_version": 3141}}),
     );
     // And what it answers: Sew's VoiceJoinResponse unchanged, plus the door.
     let answer = fake_answer("48831765147549699").expect("fake answer");

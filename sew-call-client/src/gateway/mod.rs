@@ -2,11 +2,14 @@
 //!
 //! - **Connect** `GET <door>/api/v1/gateway?v=1&encoding=json` with `Authorization: Bearer
 //!   sewcc_…` on the upgrade (K2's lane needs it), then IDENTIFY with the same token.
-//! - **READY** of a call socket is `{v, session_id, user: {id}}`; a full READY (a `sews_` session
-//!   in tests) is read the same way. `session_id` is the join's `e2ee.gateway_session`.
+//! - **READY** of a call socket is `{v, session_id, user: {id}, install_id, call_keys,
+//!   recording}`; a full READY (a `sews_` session in tests) is read the same way. `session_id`
+//!   is the join's `e2ee.gateway_session`; `recording` (Sew 0.7.3) is the call channel's active
+//!   recording as the member sees it, `null` for none.
 //! - **Delivered** (and the only dispatches passed on, whatever the server sends):
-//!   `call_keys_delivered`, `voice_server_updated`, `voice_state_updated`. Everything else is
-//!   dropped and counted (defence in depth; the server filters too).
+//!   `call_keys_delivered`, `voice_server_updated`, `voice_state_updated` and (Sew 0.7.3) the
+//!   member's own `recording_updated`. Everything else is dropped and counted (defence in depth;
+//!   the server filters too).
 //! - **Ops sent**: HEARTBEAT, IDENTIFY once, RESUME after a drop, REAUTH with the renewed token
 //!   of the same credential (the `session_id` stays). Nothing else.
 //! - **Closes**: `4011` (credential revoked: the call is over for this engine; since Sew 0.7.2 its
@@ -32,6 +35,7 @@ use sew_proto::gateway::client::{
 };
 use sew_proto::gateway::{Frame, Opcode};
 use sew_proto::id::Id;
+use sew_proto::recording::{Recording, RecordingUpdated};
 use sew_proto::voice::{VoiceServerUpdated, VoiceStateUpdated, call_close};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -51,6 +55,7 @@ pub const CALL_SOCKET_EVENTS: &[&str] = &[
     "call_keys_delivered",
     "voice_server_updated",
     "voice_state_updated",
+    "recording_updated",
 ];
 
 /// Connect and handshake timeout.
@@ -76,6 +81,10 @@ pub enum SocketEvent {
     VoiceServerUpdated(Box<VoiceServerUpdated>),
     /// `voice_state_updated` of the call's channel.
     VoiceStateUpdated(Box<VoiceStateUpdated>),
+    /// `recording_updated`: a recording as this member sees it (its own `my_consent`, the
+    /// prompt while it has not answered). On a full session's socket it may be another
+    /// channel's: the engine keeps only its call channel's.
+    RecordingUpdated(Box<Recording>),
     /// The socket is gone for good.
     Closed(SocketClosed),
 }
@@ -92,6 +101,10 @@ pub struct CallReadyInfo {
     pub install_id: Option<Id>,
     /// The trust anchors (`call_keys`), when the READY has them.
     pub call_keys: Option<ReadyCallKeys>,
+    /// The call channel's active recording (`CallReady.recording`, Sew 0.7.3): `None` when the
+    /// READY has no `recording` field (an older Sew, or a full READY), `Some(None)` when it
+    /// says none is active.
+    pub recording: Option<Option<Recording>>,
 }
 
 impl fmt::Debug for CallReadyInfo {
@@ -100,6 +113,10 @@ impl fmt::Debug for CallReadyInfo {
             .field("member_id", &self.member_id)
             .field("install_id", &self.install_id)
             .field("call_keys", &self.call_keys.is_some())
+            .field(
+                "recording",
+                &self.recording.as_ref().map(|r| r.as_ref().map(|r| r.id)),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -376,11 +393,19 @@ struct IdOnly {
 /// Reads a READY body (minimal or full).
 pub fn parse_ready(d: &Value) -> Option<CallReadyInfo> {
     let w: ReadyWire = serde_json::from_value(d.clone()).ok()?;
+    // Only a call socket's READY says which recording its call has (a full READY's
+    // `recordings` is every room's); `null` there means none.
+    let recording = match (&w.user, d.get("recording")) {
+        (Some(_), Some(Value::Null)) => Some(None),
+        (Some(_), Some(r)) => Some(Some(serde_json::from_value::<Recording>(r.clone()).ok()?)),
+        _ => None,
+    };
     Some(CallReadyInfo {
         session_id: w.session_id,
         member_id: w.user.or(w.member).map(|m| m.id),
         install_id: w.install_id.or(w.install.map(|i| i.id)),
         call_keys: w.call_keys,
+        recording,
     })
 }
 
@@ -396,6 +421,9 @@ pub fn filter_dispatch(t: &str, d: &Value) -> Option<SocketEvent> {
         "voice_state_updated" => serde_json::from_value::<VoiceStateUpdated>(d.clone())
             .ok()
             .map(|m| SocketEvent::VoiceStateUpdated(Box::new(m))),
+        "recording_updated" => serde_json::from_value::<RecordingUpdated>(d.clone())
+            .ok()
+            .map(|m| SocketEvent::RecordingUpdated(Box::new(m.recording))),
         _ => None,
     }
 }
@@ -670,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn only_three_dispatch_types_pass() {
+    fn only_four_dispatch_types_pass() {
         let msg = serde_json::json!({"id": "1", "channel_id": "2"});
         for t in [
             "message_created",
@@ -685,6 +713,41 @@ mod tests {
             filter_dispatch("voice_state_updated", &vs),
             Some(SocketEvent::VoiceStateUpdated(_))
         ));
+        let rec = serde_json::json!({"recording": recording_json()});
+        match filter_dispatch("recording_updated", &rec) {
+            Some(SocketEvent::RecordingUpdated(r)) => {
+                assert_eq!(r.id, Id::new(77).unwrap());
+                assert_eq!(r.my_consent, Some(sew_proto::recording::Consent::Pending));
+            }
+            other => panic!("recording_updated: {other:?}"),
+        }
+    }
+
+    fn recording_json() -> Value {
+        serde_json::json!({
+            "id": "77", "channel_id": "2002", "state": "recording", "started_by": "1001",
+            "started_at": "2026-11-04T10:00:00Z", "auto": false, "message_id": "88",
+            "mixed": false, "audio_keep_days": 30, "max_duration_ms": 14400000,
+            "participants": [], "my_consent": "pending"
+        })
+    }
+
+    #[test]
+    fn a_call_ready_says_which_recording_its_call_has() {
+        let base = serde_json::json!({"v": 1, "session_id": "gw_3", "user": {"id": "42"}});
+        // An older Sew: no field, nothing known.
+        assert_eq!(parse_ready(&base).unwrap().recording, None);
+        let mut none = base.clone();
+        none["recording"] = Value::Null;
+        assert_eq!(parse_ready(&none).unwrap().recording, Some(None));
+        let mut some = base;
+        some["recording"] = recording_json();
+        let r = parse_ready(&some).unwrap().recording.unwrap().unwrap();
+        assert_eq!(r.channel_id, Id::new(2002).unwrap());
+        // A full READY's `recording` field (it has none) is not read as the call's.
+        let full =
+            serde_json::json!({"session_id": "gw_4", "member": {"id": "42"}, "recording": null});
+        assert_eq!(parse_ready(&full).unwrap().recording, None);
     }
 
     #[test]

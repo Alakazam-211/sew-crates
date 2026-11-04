@@ -2,11 +2,12 @@
 
 [default]
 description = """
-Everything a call UI needs: join, leave, mute, list devices, switch devices and read the call
-state (`sew-voice:allow-join`, `allow-leave`, `allow-mute`, `allow-devices`, `allow-set-device`,
-`allow-state`). Every window gets every event (`sew-voice://state`, `participants`, `speaking`,
-`errors`, `devices`). A window that should only watch a call can list `sew-voice:allow-state`
-and `sew-voice:allow-devices` alone instead of this set.
+Everything a call UI needs: join, leave, mute, list devices, switch devices, read the call
+state and answer a recording's notice (`sew-voice:allow-join`, `allow-leave`, `allow-mute`,
+`allow-devices`, `allow-set-device`, `allow-state`, `allow-consent`,
+`allow-withdraw-consent`). Every window gets every event (`sew-voice://state`, `participants`,
+`speaking`, `errors`, `devices`, `recording`). A window that should only watch a call can list
+`sew-voice:allow-state` and `sew-voice:allow-devices` alone instead of this set.
 """
 permissions = [
   "allow-join",
@@ -15,4 +16,6 @@ permissions = [
   "allow-devices",
   "allow-set-device",
   "allow-state",
+  "allow-consent",
+  "allow-withdraw-consent",
 ]

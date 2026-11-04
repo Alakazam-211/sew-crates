@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-call-client"
-version = "0.1.0"
+version = "0.2.0"
 build = false
 include = [
     "src/**",
@@ -108,16 +108,16 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-e2ee]
-version = "0.7.2"
+version = "0.7.3"
 
 [dependencies.sew-lk-compat]
-version = "0.7.2"
+version = "0.7.3"
 
 [dependencies.sew-lkproto]
-version = "0.7.2"
+version = "0.7.3"
 
 [dependencies.sew-proto]
-version = "0.7.2"
+version = "0.7.3"
 
 [dependencies.str0m]
 version = "=0.24.0"

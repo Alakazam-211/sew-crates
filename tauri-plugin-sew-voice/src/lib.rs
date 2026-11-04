@@ -1,10 +1,12 @@
 //! `tauri-plugin-sew-voice`: Sew native voice calls in a Tauri 2 app.
 //!
-//! The webview draws the UI and sends six commands (`plugin:sew-voice|join`, `leave`, `mute`,
-//! `devices`, `set_device`, `state`); the plugin answers and emits five events
-//! (`sew-voice://state`, `participants`, `speaking`, `errors`, `devices`). Sign-in stays in the
-//! host's Rust: the host registers a [`JoinProvider`] that obtains Sew's join answer, so no
-//! token ever reaches the webview.
+//! The webview draws the UI and sends eight commands (`plugin:sew-voice|join`, `leave`, `mute`,
+//! `devices`, `set_device`, `state`, and for recording consent `consent` and
+//! `withdraw_consent`); the plugin answers and emits six events (`sew-voice://state`,
+//! `participants`, `speaking`, `errors`, `devices`, `recording`). Sign-in stays in the host's
+//! Rust: the host registers a [`JoinProvider`] that obtains Sew's join answer (and sends the
+//! person's recording consent with the person's own session), so no token ever reaches the
+//! webview.
 //!
 //! ```ignore
 //! tauri::Builder::default()
@@ -31,9 +33,9 @@ mod commands;
 mod plugin;
 
 pub use engine::{
-    AnswerError, BoxFuture, CallCredential, CallEvent, CallHandle, CallSnapshot, EngineError,
-    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RejoinReason, VoiceEngine,
-    app_server_answer,
+    AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, CallEvent, CallHandle,
+    CallSnapshot, ConsentAnswer, ConsentRequired, EngineError, JoinAnswer, JoinProvider,
+    JoinRequest, ProviderError, RejoinReason, VoiceEngine, app_server_answer,
 };
 #[cfg(feature = "tauri")]
 pub use plugin::{Builder, TauriSink};
@@ -46,12 +48,22 @@ pub use sew_call_client::device::{
     DeviceError, DeviceKeyId, DeviceKeyRecord, DeviceKeyStore, MemoryDeviceKeyStore, StoredDevice,
 };
 pub use wire::{
-    CallState, DEFAULT_DEVICE, Device, DeviceChoice, DeviceList, ErrorInfo, JoinArgs, JoinResult,
-    MuteArgs, Participant, PluginEvent, SetDeviceArgs, Speaking, StateEvent, StateSnapshot,
+    CallState, ConsentArgs, ConsentPrompt, DEFAULT_DEVICE, Device, DeviceChoice, DeviceList,
+    ErrorInfo, JoinArgs, JoinResult, MuteArgs, Participant, PluginEvent, RecordingInfo,
+    RecordingParticipant, SetDeviceArgs, Speaking, StateEvent, StateSnapshot,
 };
 
 /// The plugin's name: commands are `plugin:sew-voice|<command>`, permissions `sew-voice:*`.
 pub const PLUGIN_NAME: &str = "sew-voice";
 
-/// The six commands, as the webview invokes them after `plugin:sew-voice|`.
-pub const COMMANDS: [&str; 6] = ["join", "leave", "mute", "devices", "set_device", "state"];
+/// The eight commands, as the webview invokes them after `plugin:sew-voice|`.
+pub const COMMANDS: [&str; 8] = [
+    "join",
+    "leave",
+    "mute",
+    "devices",
+    "set_device",
+    "state",
+    "consent",
+    "withdraw_consent",
+];

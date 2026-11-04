@@ -15,6 +15,11 @@
 //!   only while something is subscribed to the device events.
 //! - **One call per app**, as the engine: `Call` sits in an `RwLock<Option<Call>>` because
 //!   `Call::leave(self)` consumes it.
+//! - **Recording** (Sew 0.7.3). A join held for the recording notice (`consent_required`) opens
+//!   no microphone: kessel-audio starts when the call first leaves that state (after
+//!   `consent`). The `recording` event is the engine's recording with `recorder_present` from
+//!   its roster (the recorder is never a `participants` entry: it is no member). `consent` and
+//!   `withdraw_consent` are the engine's, through the host's provider.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -24,7 +29,9 @@ use serde_json::{Value, json};
 use sew_call_client::kessel_audio::{
     self, AudioError, DeviceChoice, DeviceSelection, EngineConfig, ErrorCode, Event as AudioEvent,
 };
-use sew_call_client::{AudioBridge, BridgeLevels, Call, CallClient, CallError, EndReason};
+use sew_call_client::{
+    AudioBridge, BridgeLevels, Call, CallClient, CallError, CallRecording, EndReason,
+};
 use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 
@@ -33,7 +40,8 @@ use crate::engine::{
     JoinRequest, ProviderError, VoiceEngine,
 };
 use crate::wire::{
-    CallState, Device, DeviceChoice as Choice, DeviceList, ErrorInfo, Participant, Speaking, reason,
+    CallState, Device, DeviceChoice as Choice, DeviceList, ErrorInfo, Participant, RecordingInfo,
+    Speaking, reason,
 };
 
 /// How often the `speaking` levels are sampled (at most 10 a second).
@@ -233,6 +241,17 @@ impl EngineInner {
         }
     }
 
+    /// kessel-audio for `call` on the chosen devices.
+    fn start_audio(&self, call: &Call) -> Result<AudioBridge, ErrorInfo> {
+        let (input, output) = {
+            let st = lock(&self.state);
+            (st.input.clone(), st.output.clone())
+        };
+        let cfg = (self.audio)(choice(input), choice(output));
+        AudioBridge::start(call, cfg)
+            .map_err(|e| ErrorInfo::with_detail("mic_unavailable", e.to_string()))
+    }
+
     fn call_over(&self, call: &Arc<CallShared>) {
         let mut st = lock(&self.state);
         if st.live().is_some_and(|l| Arc::ptr_eq(&l, call)) {
@@ -323,29 +342,30 @@ impl VoiceEngine for CallClientEngine {
                 .join(recorder, req)
                 .await
                 .map_err(join_error)?;
-            let (input, output) = {
-                let st = lock(&self.inner.state);
-                (st.input.clone(), st.output.clone())
-            };
-            let cfg = (self.inner.audio)(choice(input), choice(output));
-            let bridge = match AudioBridge::start(&call, cfg) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = call.leave().await;
-                    return Err(EngineError::Failed(ErrorInfo::with_detail(
-                        "mic_unavailable",
-                        e.to_string(),
-                    )));
+            // Held for the recording notice: no microphone until the person answered.
+            let held = matches!(
+                call.snapshot().state,
+                sew_call_client::CallState::ConsentRequired { .. }
+            );
+            let bridge = if held {
+                None
+            } else {
+                match self.inner.start_audio(&call) {
+                    Ok(b) => Some(b),
+                    Err(e) => {
+                        let _ = call.leave().await;
+                        return Err(EngineError::Failed(e));
+                    }
                 }
             };
             let real = RealCall::start(call, bridge, room, Arc::downgrade(&self.inner));
             {
                 let mut st = lock(&self.inner.state);
                 st.live = Some(Arc::downgrade(&real.shared));
-                st.list = real
-                    .shared
-                    .with_bridge(|b| b.engine().devices())
-                    .unwrap_or_default();
+                // A held join has no kessel-audio yet: the list stays until it starts.
+                if let Some(list) = real.shared.with_bridge(|b| b.engine().devices()) {
+                    st.list = list;
+                }
                 self.inner.emit_devices(&st);
             }
             let handle: Arc<dyn CallHandle> = Arc::new(real);
@@ -447,6 +467,10 @@ impl std::fmt::Debug for RealCall {
 struct CallShared {
     call: RwLock<Option<Call>>,
     bridge: Mutex<Option<AudioBridge>>,
+    /// kessel-audio was started (a held join starts it after the answer; once only).
+    audio_started: AtomicBool,
+    /// The engine's recording, and the `recording` event last sent.
+    recording: Mutex<(Option<CallRecording>, Option<RecordingInfo>)>,
     /// The plugin's events; dropped when the engine's stream closes (the plugin then ends the
     /// call `engine_stopped`).
     tx: Mutex<Option<broadcast::Sender<CallEvent>>>,
@@ -460,16 +484,19 @@ struct CallShared {
 impl RealCall {
     fn start(
         call: Call,
-        bridge: AudioBridge,
+        bridge: Option<AudioBridge>,
         room: Arc<Mutex<Option<String>>>,
         engine: Weak<EngineInner>,
     ) -> RealCall {
         let (tx, _) = broadcast::channel(256);
         let rx = call.events();
-        let last = map_snapshot(&call.snapshot());
+        let snap = call.snapshot();
+        let last = map_snapshot(&snap);
         let shared = Arc::new(CallShared {
             call: RwLock::new(Some(call)),
-            bridge: Mutex::new(Some(bridge)),
+            audio_started: AtomicBool::new(bridge.is_some()),
+            bridge: Mutex::new(bridge),
+            recording: Mutex::new((snap.recording.clone(), last.recording.clone())),
             tx: Mutex::new(Some(tx)),
             room,
             last: Mutex::new(last),
@@ -501,6 +528,80 @@ impl CallShared {
 
     fn with_bridge<T>(&self, f: impl FnOnce(&AudioBridge) -> T) -> Option<T> {
         lock(&self.bridge).as_ref().map(f)
+    }
+
+    /// A held join was let in: kessel-audio starts now (once). If it cannot, the call is left
+    /// (`mic_unavailable`), as a join that could not open the microphone: `false`.
+    async fn start_audio_late(self: &Arc<Self>) -> bool {
+        if self.audio_started.swap(true, Ordering::AcqRel) {
+            return true;
+        }
+        let Some(engine) = self.engine.upgrade() else {
+            return true;
+        };
+        let started = {
+            let g = self.call.read().await;
+            match g.as_ref() {
+                Some(call) => engine.start_audio(call),
+                None => return true,
+            }
+        };
+        match started {
+            Ok(bridge) => {
+                let list = bridge.engine().devices();
+                *lock(&self.bridge) = Some(bridge);
+                let mut st = lock(&engine.state);
+                st.list = list;
+                engine.emit_devices(&st);
+                true
+            }
+            Err(e) => {
+                self.send(CallEvent::Error(e.clone()));
+                let call = self.call.write().await.take();
+                if let Some(call) = call {
+                    let _ = call.leave().await;
+                }
+                *lock(&self.last) = CallSnapshot {
+                    state: CallState::Ended {
+                        reason: e.code.clone(),
+                    },
+                    participants: Vec::new(),
+                    recording: None,
+                };
+                self.send(CallEvent::State(CallState::Ended { reason: e.code }));
+                self.finish();
+                false
+            }
+        }
+    }
+
+    /// The `recording` event for the engine's recording (`rec`, when it changed) and roster
+    /// (`participants`, for `recorder_present`): sent when it changed.
+    fn update_recording(
+        &self,
+        rec: Option<Option<CallRecording>>,
+        participants: &[sew_call_client::Participant],
+    ) {
+        let info = {
+            let mut r = lock(&self.recording);
+            if let Some(rec) = rec {
+                r.0 = rec;
+            }
+            let info = map_recording(r.0.as_ref(), participants);
+            if info == r.1 {
+                return;
+            }
+            r.1.clone_from(&info);
+            info
+        };
+        self.send(CallEvent::Recording(info));
+    }
+
+    /// The engine's roster now (empty while the call is being left).
+    fn engine_participants(&self) -> Vec<sew_call_client::Participant> {
+        self.engine_snapshot()
+            .map(|s| s.participants)
+            .unwrap_or_default()
     }
 
     /// The engine's snapshot now, when the call is not being left.
@@ -551,6 +652,32 @@ impl CallHandle for RealCall {
         Some(moved.room().to_owned())
     }
 
+    fn consent(
+        &self,
+        granted: bool,
+        notice_version: u32,
+    ) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(async move {
+            let g = self.shared.call.read().await;
+            let call = g
+                .as_ref()
+                .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+            call.consent(granted, notice_version)
+                .await
+                .map_err(consent_error)
+        })
+    }
+
+    fn withdraw_consent(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(async move {
+            let g = self.shared.call.read().await;
+            let call = g
+                .as_ref()
+                .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+            call.withdraw_consent().await.map_err(consent_error)
+        })
+    }
+
     fn mute(
         &self,
         muted: Option<bool>,
@@ -580,6 +707,7 @@ impl CallHandle for RealCall {
                     reason: reason::LEFT.into(),
                 },
                 participants: Vec::new(),
+                recording: None,
             };
             self.shared.finish();
             Ok(())
@@ -600,13 +728,24 @@ async fn forward(
             Ok(E::State(s)) => {
                 let state = map_state(&s);
                 let ended = matches!(state, CallState::Ended { .. });
+                let held = matches!(state, CallState::ConsentRequired { .. });
                 sh.send(CallEvent::State(state));
                 if ended {
                     sh.finish();
                     return;
                 }
+                if !held && !sh.start_audio_late().await {
+                    return;
+                }
             }
-            Ok(E::Participants(p)) => sh.send(CallEvent::Participants(map_participants(&p))),
+            Ok(E::Participants(p)) => {
+                sh.send(CallEvent::Participants(map_participants(&p)));
+                sh.update_recording(None, &p);
+            }
+            Ok(E::Recording(r)) => {
+                let p = sh.engine_participants();
+                sh.update_recording(Some(r.map(|b| *b)), &p);
+            }
             // The engine's levels are the media server's; kessel-audio's are the plugin's.
             Ok(E::Speaking(_)) => {}
             Ok(E::Error(e)) => sh.send(CallEvent::Error(map_error(&e))),
@@ -618,6 +757,9 @@ async fn forward(
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 let snap = sh.snapshot();
                 let ended = matches!(snap.state, CallState::Ended { .. });
+                if let Some(engine) = sh.engine_snapshot() {
+                    sh.update_recording(Some(engine.recording.clone()), &engine.participants);
+                }
                 sh.send(CallEvent::Participants(snap.participants));
                 sh.send(CallEvent::State(snap.state));
                 if ended {
@@ -650,7 +792,11 @@ async fn audio(shared: Weak<CallShared>) {
             }
             (b.levels(), events)
         }) else {
-            return;
+            // A held join has no audio yet; once started, no bridge means the call is over.
+            if sh.audio_started.load(Ordering::Acquire) {
+                return;
+            }
+            continue;
         };
         let engine = sh.engine.upgrade();
         for e in events {
@@ -729,6 +875,13 @@ pub(crate) fn map_state(s: &sew_call_client::CallState) -> CallState {
         S::Ended { reason } => CallState::Ended {
             reason: end_reason(reason),
         },
+        S::ConsentRequired {
+            recording_id,
+            notice_version,
+        } => CallState::ConsentRequired {
+            recording_id: recording_id.clone(),
+            notice_version: *notice_version,
+        },
         // A state sew-call-client adds later: the call is not up.
         _ => CallState::Connecting,
     }
@@ -775,6 +928,24 @@ pub(crate) fn map_snapshot(s: &sew_call_client::CallSnapshot) -> CallSnapshot {
     CallSnapshot {
         state: map_state(&s.state),
         participants: map_participants(&s.participants),
+        recording: map_recording(s.recording.as_ref(), &s.participants),
+    }
+}
+
+/// The engine's recording as the `recording` event, with `recorder_present` from its roster.
+pub(crate) fn map_recording(
+    r: Option<&CallRecording>,
+    participants: &[sew_call_client::Participant],
+) -> Option<RecordingInfo> {
+    r.map(|r| RecordingInfo::from_engine(r, participants.iter().any(|p| p.recorder)))
+}
+
+/// A failed `consent` or `withdraw_consent`.
+fn consent_error(e: CallError) -> EngineError {
+    match e {
+        CallError::NoRecording => EngineError::failed(crate::wire::code::NO_RECORDING),
+        CallError::Ended => EngineError::failed(crate::wire::code::NOT_IN_CALL),
+        e => join_error(e),
     }
 }
 

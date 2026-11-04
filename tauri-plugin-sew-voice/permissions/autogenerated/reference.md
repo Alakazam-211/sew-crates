@@ -1,10 +1,11 @@
 ## Default Permission
 
-Everything a call UI needs: join, leave, mute, list devices, switch devices and read the call
-state (`sew-voice:allow-join`, `allow-leave`, `allow-mute`, `allow-devices`, `allow-set-device`,
-`allow-state`). Every window gets every event (`sew-voice://state`, `participants`, `speaking`,
-`errors`, `devices`). A window that should only watch a call can list `sew-voice:allow-state`
-and `sew-voice:allow-devices` alone instead of this set.
+Everything a call UI needs: join, leave, mute, list devices, switch devices, read the call
+state and answer a recording's notice (`sew-voice:allow-join`, `allow-leave`, `allow-mute`,
+`allow-devices`, `allow-set-device`, `allow-state`, `allow-consent`,
+`allow-withdraw-consent`). Every window gets every event (`sew-voice://state`, `participants`,
+`speaking`, `errors`, `devices`, `recording`). A window that should only watch a call can list
+`sew-voice:allow-state` and `sew-voice:allow-devices` alone instead of this set.
 
 #### This default permission set includes the following:
 
@@ -14,6 +15,8 @@ and `sew-voice:allow-devices` alone instead of this set.
 - `allow-devices`
 - `allow-set-device`
 - `allow-state`
+- `allow-consent`
+- `allow-withdraw-consent`
 
 ## Permission Table
 
@@ -23,6 +26,32 @@ and `sew-voice:allow-devices` alone instead of this set.
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`sew-voice:allow-consent`
+
+</td>
+<td>
+
+Enables the consent command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-consent`
+
+</td>
+<td>
+
+Denies the consent command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -176,6 +205,32 @@ Enables the state command without any pre-configured scope.
 <td>
 
 Denies the state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:allow-withdraw-consent`
+
+</td>
+<td>
+
+Enables the withdraw_consent command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-withdraw-consent`
+
+</td>
+<td>
+
+Denies the withdraw_consent command without any pre-configured scope.
 
 </td>
 </tr>

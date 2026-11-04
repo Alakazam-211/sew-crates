@@ -31,7 +31,7 @@ The crate is not on crates.io yet. It is published in the read-only
 
 ```toml
 [dependencies]
-sew-mls-crypto = "0.7.2"
+sew-mls-crypto = "0.7.3"
 openmls = "=0.9.0"
 
 [patch.crates-io]

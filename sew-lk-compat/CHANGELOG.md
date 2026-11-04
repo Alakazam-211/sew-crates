@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 (2026-11-04)
+
+- The version follows Sew 0.7.3. No API or behaviour change.
+
 ## 0.7.2 (2026-11-03)
 
 - First published version.

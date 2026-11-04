@@ -1,11 +1,20 @@
 //! The host's join callback: the engine asks the host for Sew's join answer
-//! to join and to re-join when Sew dropped the join. The web UI never sees a token.
+//! to join and to re-join when Sew dropped the join, and (Sew 0.7.3) to send the person's
+//! answer to a recording notice. The web UI never sees a token.
+//!
+//! Recording consent goes through the host, never the call credential: the host sends it with
+//! the person's own Sew session (its server route for an App), so it is the person's act with
+//! Sew's `notice_version` check and audit. The engine only asks ([`JoinProvider::consent`],
+//! [`JoinRequest::recording_notice`]) and reads Sew's answer; joining never implies consent and
+//! no answer means not recorded.
 
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
+use sew_proto::id::Id;
+use sew_proto::recording::{ConsentPrompt, ConsentRequest, Recording, RecordingNotice};
 use sew_proto::voice::VoiceJoinResponse;
 
 /// A boxed future, as the trait methods return.
@@ -22,8 +31,9 @@ pub enum RejoinReason {
     CredentialExpired,
 }
 
-/// What the host joins. Its JSON (`{target, room, muted, deafened, rejoin}`) is what a host's
-/// provider may forward to its own server (tauri-plugin-sew-voice's App server route).
+/// What the host joins. Its JSON (`{target, room, muted, deafened, rejoin}`, plus
+/// `recording_notice` when there is one) is what a host's provider may forward to its own server
+/// (tauri-plugin-sew-voice's App server route).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinRequest {
     /// Opaque to the engine: the host's target (K2: the server label; an App: its Sew).
@@ -36,7 +46,103 @@ pub struct JoinRequest {
     pub deafened: bool,
     /// `None` for the first join; why Sew dropped the join otherwise.
     pub rejoin: Option<RejoinReason>,
+    /// The person's answer to the recording notice (Sew 0.7.3): Sew's
+    /// `VoiceJoinRequest.recording_notice`, to forward unchanged. The engine sets it when the
+    /// host answers a call held at `consent_required` ([`crate::Call::consent`]), and keeps the
+    /// last answer for its re-joins (Sew asks again when the notice changed). `None`: no
+    /// answer; a join into a recorded room is then refused `409 recording_consent_required`
+    /// ([`ProviderError::ConsentRequired`]). Written only when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_notice: Option<RecordingNotice>,
 }
+
+/// Sew's `409 recording_consent_required` on a join (Sew 0.7.3): the room is
+/// recorded (or the channel records itself on its first join) and the join carried no answer
+/// to the current notice. Its `error.details`, unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ConsentRequired {
+    /// The consent modal's data: `recording_id` (an id, or `"auto"`), `notice_version` (to
+    /// echo with the answer) and every slot a template shows.
+    pub consent_prompt: ConsentPrompt,
+    /// The recording as the joiner sees it (`None` for an auto-record channel that has none
+    /// yet).
+    #[serde(default)]
+    pub recording: Option<Recording>,
+    /// An auto-record channel's first join.
+    #[serde(default)]
+    pub auto: bool,
+}
+
+impl ConsentRequired {
+    /// From the refusal's `error.details` (`{recording, auto, consent_prompt}`); `None` when it
+    /// carries no prompt.
+    pub fn from_details(details: &serde_json::Value) -> Option<ConsentRequired> {
+        serde_json::from_value(details.clone()).ok()
+    }
+
+    /// The prompt's version (what the answer echoes).
+    pub fn notice_version(&self) -> u32 {
+        self.consent_prompt.notice_version
+    }
+
+    /// The join's `recording_notice` answering this prompt with `consent`.
+    pub fn notice(&self, consent: bool) -> RecordingNotice {
+        RecordingNotice {
+            recording_id: self.consent_prompt.recording_id,
+            consent: Some(consent),
+            notice_version: Some(self.consent_prompt.notice_version),
+        }
+    }
+}
+
+/// The person's answer to a live recording's notice, for the host to send with the person's
+/// own Sew session: `POST {path}` with `{body}` (Sew's `POST /api/v1/recordings/{id}/consent`),
+/// whose `200` is the recording as the person sees it ([`ConsentAnswer::recording_from_json`]).
+/// `consent: false` while granted is a withdrawal ("Stop recording me"); before that, a
+/// decline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ConsentAnswer {
+    /// The call's `target` (the join's).
+    pub target: String,
+    /// The call's `room` (the join's, or a move's destination).
+    pub room: String,
+    /// The recording.
+    pub recording_id: Id,
+    /// Grant (`true`), or decline / withdraw (`false`).
+    pub consent: bool,
+    /// The notice version the person saw (`None` for a withdrawal: Sew then checks none).
+    pub notice_version: Option<u32>,
+    /// This device in Sew's call keys (its device id), for the host's own records; not part of
+    /// Sew's body.
+    pub device_id: Option<String>,
+}
+
+impl ConsentAnswer {
+    /// Sew's route, under the client API (`/api/v1/recordings/{id}/consent`).
+    pub fn path(&self) -> String {
+        sew_proto::routes::with_id(sew_proto::routes::RECORDING_CONSENT, self.recording_id)
+    }
+
+    /// Sew's body (`{consent, notice_version}`).
+    pub fn body(&self) -> ConsentRequest {
+        ConsentRequest {
+            consent: self.consent,
+            notice_version: self.notice_version,
+        }
+    }
+
+    /// Reads Sew's `200` answer (the recording as the person sees it). The error never quotes
+    /// the body.
+    pub fn recording_from_json(body: &[u8]) -> Result<Recording, ProviderError> {
+        serde_json::from_slice(body)
+            .map_err(|_| ProviderError::Other("the consent answer did not parse".to_owned()))
+    }
+}
+
+/// The `Refused` code of [`JoinProvider::consent`]'s default: the host sends no consent.
+pub const CONSENT_UNSUPPORTED: &str = "consent_unsupported";
 
 /// The call-scoped credential minted with the join answer
 /// (`VoiceJoinResponse.call_credential`, flag `call_credential`, Sew 0.7.1).
@@ -156,9 +262,47 @@ pub enum ProviderError {
         /// Sew's `Retry-After`, when it gave one.
         retry_after_ms: Option<u64>,
     },
+    /// Sew's `409 recording_consent_required` (Sew 0.7.3): the room is recorded and the
+    /// person has not answered its current notice. A join holds the call at
+    /// `consent_required` until the host answers ([`crate::Call::consent`]) or leaves.
+    #[error("recording_consent_required")]
+    ConsentRequired(Box<ConsentRequired>),
     /// Anything else.
     #[error("{0}")]
     Other(String),
+}
+
+impl ProviderError {
+    /// Sew's error answer as the engine reads it: `401` is [`ProviderError::SigninRequired`];
+    /// `409 recording_consent_required` with a prompt is [`ProviderError::ConsentRequired`];
+    /// `429` and `5xx` are [`ProviderError::Unavailable`] (with `retry_after_ms`, from
+    /// `Retry-After`); anything else is [`ProviderError::Refused`] with `error.details.reason`
+    /// (else `error.code`, else `http_<status>`) and `error.details`. A host's server route that
+    /// returns Sew's error body unchanged is read the same way.
+    pub fn from_sew_error(status: u16, retry_after_ms: Option<u64>, body: &[u8]) -> ProviderError {
+        let v: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+        let e = &v["error"];
+        let details = &e["details"];
+        let reason = details["reason"].as_str();
+        if status == 401 {
+            return ProviderError::SigninRequired;
+        }
+        if reason == Some(sew_proto::recording::reasons::RECORDING_CONSENT_REQUIRED)
+            && let Some(c) = ConsentRequired::from_details(details)
+        {
+            return ProviderError::ConsentRequired(Box::new(c));
+        }
+        if status == 429 || status >= 500 {
+            return ProviderError::Unavailable { retry_after_ms };
+        }
+        let code = reason
+            .or_else(|| e["code"].as_str())
+            .map_or_else(|| format!("http_{status}"), str::to_owned);
+        ProviderError::Refused {
+            code,
+            detail: details.clone(),
+        }
+    }
 }
 
 /// The host's join callback: call Sew's voice or DM call join with `call_credential: true`
@@ -242,6 +386,7 @@ pub enum ProviderError {
 ///             muted: false,
 ///             deafened: false,
 ///             rejoin: None,
+///             recording_notice: None,
 ///         },
 ///     )
 ///     .await?;
@@ -253,8 +398,30 @@ pub enum ProviderError {
 /// # }
 /// ```
 pub trait JoinProvider: Send + Sync + 'static {
-    /// Join (or re-join) `req.room` on `req.target`.
+    /// Join (or re-join) `req.room` on `req.target`, with `req.recording_notice` as the voice
+    /// join's `recording_notice` when it has one. A refusal that is Sew's
+    /// `409 recording_consent_required` should come back as
+    /// [`ProviderError::ConsentRequired`] ([`ProviderError::from_sew_error`] reads it), so the
+    /// call can hold for the person's answer.
     fn join(&self, req: JoinRequest) -> BoxFuture<'_, Result<JoinAnswer, ProviderError>>;
+
+    /// Send the person's answer to a live recording's notice with the person's own Sew
+    /// session (Sew 0.7.3): `POST answer.path()` with `answer.body()`, and return Sew's
+    /// answer ([`ConsentAnswer::recording_from_json`]); a refusal as in
+    /// [`ProviderError::from_sew_error`] (a stale `notice_version` is
+    /// [`ProviderError::ConsentRequired`] with the current prompt). The engine never treats a
+    /// call as consented by itself: only Sew's answer, or a later `recording_updated`, moves
+    /// this device to `granted` and releases its key to the recorder.
+    ///
+    /// The default sends nothing and answers `Refused { code: "consent_unsupported" }`: the
+    /// person then stays unrecorded (`pending`) in a call recorded after they joined.
+    fn consent(&self, answer: ConsentAnswer) -> BoxFuture<'_, Result<Recording, ProviderError>> {
+        let _ = answer;
+        Box::pin(std::future::ready(Err(ProviderError::Refused {
+            code: CONSENT_UNSUPPORTED.to_owned(),
+            detail: serde_json::Value::Null,
+        })))
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +457,104 @@ mod tests {
             });
         }
         serde_json::to_vec(&v).unwrap()
+    }
+
+    fn prompt() -> serde_json::Value {
+        serde_json::json!({
+            "recording_id": "77", "notice_version": 3141, "recorder_name": "Sew Notes",
+            "feature_label": "Sew Notes",
+            "started_by": {"member_id": "1001", "display_name": "Alice"},
+            "room": {"channel_id": "2002", "kind": "voice", "name": "lounge"},
+            "audio_keep_days": 30,
+            "transcript": {"posted_to_channel": true, "readable_by": ["channel_members"],
+                           "e2ee": false},
+            "admin_download": false, "decline_mode": "join_unrecorded",
+            "recorded_now": ["1001"]
+        })
+    }
+
+    #[test]
+    fn sews_consent_refusal_becomes_consent_required() {
+        let body = serde_json::json!({"ok": false, "error": {
+            "code": "conflict", "hint": "answer the recording notice",
+            "details": {"reason": "recording_consent_required", "recording": null, "auto": false,
+                        "consent_prompt": prompt()}}});
+        let e = ProviderError::from_sew_error(409, None, &serde_json::to_vec(&body).unwrap());
+        let ProviderError::ConsentRequired(c) = e else {
+            panic!("not consent_required: {e:?}");
+        };
+        assert_eq!(c.notice_version(), 3141);
+        let n = serde_json::to_value(c.notice(true)).unwrap();
+        assert_eq!(
+            n,
+            serde_json::json!({"recording_id": "77", "consent": true, "notice_version": 3141})
+        );
+        // The other answers.
+        assert_eq!(
+            ProviderError::from_sew_error(401, None, b"{}"),
+            ProviderError::SigninRequired
+        );
+        assert_eq!(
+            ProviderError::from_sew_error(503, Some(2000), b"not json"),
+            ProviderError::Unavailable {
+                retry_after_ms: Some(2000)
+            }
+        );
+        let denied = serde_json::json!({"ok": false, "error": {"code": "policy_denied",
+            "hint": "x", "details": {"reason": "recording_consent_required_to_join"}}});
+        match ProviderError::from_sew_error(403, None, &serde_json::to_vec(&denied).unwrap()) {
+            ProviderError::Refused { code, detail } => {
+                assert_eq!(code, "recording_consent_required_to_join");
+                assert_eq!(detail["reason"], "recording_consent_required_to_join");
+            }
+            e => panic!("{e:?}"),
+        }
+        // A 409 without a prompt is a plain refusal.
+        let bare = serde_json::json!({"ok": false, "error": {"code": "conflict", "hint": "x",
+            "details": {"reason": "recording_consent_required"}}});
+        assert!(matches!(
+            ProviderError::from_sew_error(409, None, &serde_json::to_vec(&bare).unwrap()),
+            ProviderError::Refused { .. }
+        ));
+    }
+
+    #[test]
+    fn join_request_writes_the_notice_only_when_there_is_one() {
+        let mut req = JoinRequest {
+            target: "acme".into(),
+            room: "2002".into(),
+            muted: false,
+            deafened: false,
+            rejoin: None,
+            recording_notice: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            serde_json::json!({"target": "acme", "room": "2002", "muted": false,
+                               "deafened": false, "rejoin": null})
+        );
+        req.recording_notice = Some(RecordingNotice {
+            recording_id: sew_proto::recording::RecordingRef::Auto,
+            consent: Some(false),
+            notice_version: Some(7),
+        });
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["recording_notice"],
+            serde_json::json!({"recording_id": "auto", "consent": false, "notice_version": 7})
+        );
+        let a = ConsentAnswer {
+            target: "acme".into(),
+            room: "2002".into(),
+            recording_id: Id::new(77).unwrap(),
+            consent: false,
+            notice_version: None,
+            device_id: None,
+        };
+        assert_eq!(a.path(), "/api/v1/recordings/77/consent");
+        assert_eq!(
+            serde_json::to_value(a.body()).unwrap(),
+            serde_json::json!({"consent": false})
+        );
     }
 
     #[test]

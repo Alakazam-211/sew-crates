@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3 (2026-11-04)
+
+- `CallReady.recording`: the call channel's active recording as the member sees it, or `null`
+  (always written by Sew 0.7.3; absent from an older Sew). The call socket's event set now
+  includes the member's own `recording_updated`.
+
 ## 0.7.2 (2026-11-03)
 
 - First published version.

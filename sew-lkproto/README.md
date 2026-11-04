@@ -28,7 +28,7 @@ The crate is not on crates.io yet. It is published in the read-only
 
 ```toml
 [dependencies]
-sew-lkproto = "0.7.2"
+sew-lkproto = "0.7.3"
 prost = "0.14"
 
 [patch.crates-io]

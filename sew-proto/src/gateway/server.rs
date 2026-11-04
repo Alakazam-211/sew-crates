@@ -272,8 +272,9 @@ pub struct ThreadsInbox {
 
 /// The `ready` dispatch of a call socket (a socket IDENTIFYed with a `sewcc_` call
 /// credential): no Spaces, channels, presence or read states; the socket indexes nothing and
-/// gets only `call_keys_delivered`, its member's `voice_server_updated` and its call channel's
-/// `voice_state_updated`.
+/// gets only `call_keys_delivered`, its member's `voice_server_updated`, its call channel's
+/// `voice_state_updated` and (Sew 0.7.3) its member's own copy of the call channel's
+/// `recording_updated`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CallReady {
     /// The protocol version (1).
@@ -292,6 +293,13 @@ pub struct CallReady {
     /// Absent when voice is disabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_keys: Option<crate::e2ee::ReadyCallKeys>,
+    /// The call channel's active recording as this member sees it (`my_consent`, and
+    /// `consent_prompt` while the member has not answered), or `null` when none is active
+    /// (Sew 0.7.3). A native client rebuilds its recording state (`Input::Recording`) from it
+    /// after a new gateway session. Always written, so `null` means none is active; an absent
+    /// field means a Sew older than 0.7.3.
+    #[serde(default)]
+    pub recording: Option<crate::recording::Recording>,
 }
 
 /// [`CallReady`]'s member.

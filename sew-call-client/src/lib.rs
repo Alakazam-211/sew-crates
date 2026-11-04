@@ -8,11 +8,19 @@
 //! - the frame path: kessel-audio's encoded Opus frames are encrypted through the call's keys
 //!   ([`e2ee::KeySession`]) and sent; remote frames are decrypted and verified before kessel-audio
 //!   ever sees them (no plaintext mode exists);
-//! - mute and deafen, participants, speaking levels, and the call credential's renewal.
+//! - mute and deafen, participants, speaking levels, and the call credential's renewal;
+//! - the call-stats beacon (Sew's `POST /api/v1/me/voice/stats`, when the join answer carries
+//!   its terms) and the same per-window numbers for the host ([`stats`], [`Call::stats`]);
+//! - recording consent (Sew 0.7.3): a join into a recorded room is held at
+//!   [`CallState::ConsentRequired`] until the host answers the notice ([`Call::consent`]); the
+//!   call's recording ([`Call::recording`], [`CallEvent::Recording`]) feeds the keys, which
+//!   release this device's key to the recorder only once Sew says `granted`;
+//!   [`Call::withdraw_consent`] is "Stop recording me". Consent travels through the host's
+//!   [`JoinProvider`] with the person's own session.
 //!
 //! ```text
 //! let client = CallClient::new(ClientConfig::new("com.example.app", data_dir), keys);
-//! let call = client.join(provider, JoinRequest { target, room, muted: false, deafened: false, rejoin: None }).await?;
+//! let call = client.join(provider, JoinRequest { target, room, muted: false, deafened: false, rejoin: None, recording_notice: None }).await?;
 //! let audio = AudioBridge::start(&call, kessel_audio::EngineConfig::default())?; // feature `audio`
 //! let mut events = call.events();
 //! ```
@@ -35,14 +43,15 @@ pub mod gateway;
 mod pc;
 mod provider;
 mod signal;
+pub mod stats;
 mod transport;
 
 #[cfg(feature = "audio-core")]
 pub use audio::{AudioBridge, AudioBridgeError, BridgeLevels};
 pub use call::{
-    Call, CallClient, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallSnapshot,
-    CallState, EndReason, FrameSender, FrameStream, OpusFrame, Participant, RecvItem, RecvOpus,
-    Speaking,
+    Call, CallClient, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallRecording,
+    CallSnapshot, CallState, EndReason, FrameSender, FrameStream, OpusFrame, Participant,
+    RecordingConsent, RecordingMember, RecvItem, RecvOpus, Speaking,
 };
 pub use config::ClientConfig;
 #[cfg(feature = "testing")]
@@ -51,8 +60,13 @@ pub use config::TestingOverrides;
 #[cfg(feature = "audio-core")]
 pub use kessel_audio;
 pub use provider::{
-    AnswerError, BoxFuture, CallCredential, JoinAnswer, JoinProvider, JoinRequest, ProviderError,
-    RejoinReason,
+    AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
+    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RejoinReason,
+};
+/// Sew's recording types the engine's recording API carries (from `sew-proto`).
+pub use sew_proto::recording::{ConsentPrompt, Recording, RecordingNotice, RecordingRef};
+pub use stats::{
+    BeaconOutcome, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals, StatsWindow,
 };
 
 /// The engine's name and version as Sew sees it (`ClientInfo`, the caps' `sdk_version`).

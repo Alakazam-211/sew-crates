@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-consent",
+          "markdownDescription": "Enables the consent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-consent",
+          "markdownDescription": "Denies the consent command without any pre-configured scope."
+        },
+        {
           "description": "Enables the devices command without any pre-configured scope.",
           "type": "string",
           "const": "allow-devices",
@@ -367,10 +379,22 @@
           "markdownDescription": "Denies the state command without any pre-configured scope."
         },
         {
-          "description": "Everything a call UI needs: join, leave, mute, list devices, switch devices and read the call\nstate (`sew-voice:allow-join`, `allow-leave`, `allow-mute`, `allow-devices`, `allow-set-device`,\n`allow-state`). Every window gets every event (`sew-voice://state`, `participants`, `speaking`,\n`errors`, `devices`). A window that should only watch a call can list `sew-voice:allow-state`\nand `sew-voice:allow-devices` alone instead of this set.\n\n#### This default permission set includes:\n\n- `allow-join`\n- `allow-leave`\n- `allow-mute`\n- `allow-devices`\n- `allow-set-device`\n- `allow-state`",
+          "description": "Enables the withdraw_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-withdraw-consent",
+          "markdownDescription": "Enables the withdraw_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the withdraw_consent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-withdraw-consent",
+          "markdownDescription": "Denies the withdraw_consent command without any pre-configured scope."
+        },
+        {
+          "description": "Everything a call UI needs: join, leave, mute, list devices, switch devices, read the call\nstate and answer a recording's notice (`sew-voice:allow-join`, `allow-leave`, `allow-mute`,\n`allow-devices`, `allow-set-device`, `allow-state`, `allow-consent`,\n`allow-withdraw-consent`). Every window gets every event (`sew-voice://state`, `participants`,\n`speaking`, `errors`, `devices`, `recording`). A window that should only watch a call can list\n`sew-voice:allow-state` and `sew-voice:allow-devices` alone instead of this set.\n\n#### This default permission set includes:\n\n- `allow-join`\n- `allow-leave`\n- `allow-mute`\n- `allow-devices`\n- `allow-set-device`\n- `allow-state`\n- `allow-consent`\n- `allow-withdraw-consent`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Everything a call UI needs: join, leave, mute, list devices, switch devices and read the call\nstate (`sew-voice:allow-join`, `allow-leave`, `allow-mute`, `allow-devices`, `allow-set-device`,\n`allow-state`). Every window gets every event (`sew-voice://state`, `participants`, `speaking`,\n`errors`, `devices`). A window that should only watch a call can list `sew-voice:allow-state`\nand `sew-voice:allow-devices` alone instead of this set.\n\n#### This default permission set includes:\n\n- `allow-join`\n- `allow-leave`\n- `allow-mute`\n- `allow-devices`\n- `allow-set-device`\n- `allow-state`"
+          "markdownDescription": "Everything a call UI needs: join, leave, mute, list devices, switch devices, read the call\nstate and answer a recording's notice (`sew-voice:allow-join`, `allow-leave`, `allow-mute`,\n`allow-devices`, `allow-set-device`, `allow-state`, `allow-consent`,\n`allow-withdraw-consent`). Every window gets every event (`sew-voice://state`, `participants`,\n`speaking`, `errors`, `devices`, `recording`). A window that should only watch a call can list\n`sew-voice:allow-state` and `sew-voice:allow-devices` alone instead of this set.\n\n#### This default permission set includes:\n\n- `allow-join`\n- `allow-leave`\n- `allow-mute`\n- `allow-devices`\n- `allow-set-device`\n- `allow-state`\n- `allow-consent`\n- `allow-withdraw-consent`"
         }
       ]
     }

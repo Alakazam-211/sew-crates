@@ -54,18 +54,22 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.7.2 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.7.2 | Apache-2.0 |
-| `sew-mls-crypto` | 0.7.2 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.7.2 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.7.2 | Apache-2.0 |
-| `sew-call-client` | 0.1.0 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.1.0 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.7.3 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.7.3 | Apache-2.0 |
+| `sew-mls-crypto` | 0.7.3 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.7.3 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.7.3 | Apache-2.0 |
+| `sew-call-client` | 0.2.0 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.2.0 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
 Apache-2.0; their NOTICE files must travel with any binary that includes them. Not affiliated
 with or endorsed by LiveKit, Inc.
+
+`LICENSE-APACHE` and `LICENSE-MIT` at the root are the texts of those licences. Each crate's
+own licence (its `Cargo.toml` `license` field and the licence files in its directory) governs
+that crate.
 
 ## Using the crates
 

@@ -27,7 +27,7 @@ packaged crates; point Cargo at it from your workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-proto = "0.7.2"
+sew-proto = "0.7.3"
 
 [patch.crates-io]
 sew-proto = { path = "third_party/sew-crates/sew-proto" }

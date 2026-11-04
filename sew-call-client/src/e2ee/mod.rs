@@ -13,6 +13,10 @@
 //!   it (`UpdateSubscription`) and drops its frames.
 //! - **`connected` needs keys.** The call state is `connected` only after
 //!   [`E2eeEvent::Active`] (media up **and** a key epoch active).
+//! - **Recording consent is Sew's.** The engine feeds [`KeySession::recording`] only from what
+//!   Sew said (the join answer, the call socket's [`E2eeEvent::Recording`], a consent answer):
+//!   never from local state, never "accepted by staying". The keys release this device's key
+//!   to the recorder only while that says `granted`.
 //!
 //! The real provider is [`MlsKeys`] (the default: `CallClient::with_mls`): the key session
 //! (`session`: the call socket, READY's trust anchors, the device store, the KeyPackage upload
@@ -26,6 +30,9 @@
 use std::fmt;
 use std::sync::Arc;
 
+use sew_proto::e2ee::ConsentState;
+use sew_proto::id::Id;
+use sew_proto::recording::Recording;
 use sew_proto::voice::{VoiceJoinResponse, VoiceServerUpdated, VoiceState};
 use tokio::sync::{mpsc, watch};
 
@@ -131,6 +138,11 @@ pub enum E2eeEvent {
     /// Sew no longer accepts the credential for this join (`call_credential_stale`, a swap):
     /// the call ends with `credential_lost`.
     CredentialLost,
+    /// A recording as this member sees it (Sew 0.7.3: the call socket's own
+    /// `recording_updated`, or its READY's `recording`); `None`: the call has no active
+    /// recording. The engine keeps its call channel's and feeds it back through
+    /// [`KeySession::recording`].
+    Recording(Option<Box<Recording>>),
     /// Sew ended this join and said why (Sew 0.7.2): the self copy of `voice_state_updated`
     /// leaving the call (its `reason`), or the call socket's `4011` close that named one.
     /// `reason` is Sew's voice leave reason as it arrived (`perms_lost`, `removed_from_space`,
@@ -259,6 +271,20 @@ pub trait KeySession: Send + Sync + 'static {
     /// slot; the publish check).
     fn media_reconnected(&self, full: bool) {
         let _ = full;
+    }
+
+    /// The call's recording as Sew said it (Sew 0.7.3): the live recording of the call's room
+    /// (`None`: none) and this member's consent for it (`Pending` until the person answered).
+    /// The keys release this device's key to the recorder only for `Granted`, and stop (with an
+    /// immediate rekey) when `Granted` ends. Called on every change and after the keys start.
+    fn recording(&self, recording_id: Option<Id>, my_consent: ConsentState) {
+        let _ = (recording_id, my_consent);
+    }
+
+    /// This device's id in Sew's call keys, when the keys have one (a consent answer's
+    /// `device_id`).
+    fn device_id(&self) -> Option<String> {
+        None
     }
 
     /// The call ends: release the key session (best effort).

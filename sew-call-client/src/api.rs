@@ -37,10 +37,16 @@ pub(crate) enum ApiError {
     Io(String),
 }
 
-#[derive(Deserialize)]
-struct ErrBody {
-    #[serde(default)]
-    details: Option<serde_json::Value>,
+/// `error.code` and `error.details.reason` of an error answer (Sew's `{"ok": false, "error":
+/// {"code", "hint", "details"}}`; a K2 door answers in the same shape).
+pub(crate) fn error_of(body: &[u8]) -> (Option<String>, Option<String>) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return (None, None);
+    };
+    let e = &v["error"];
+    let code = e["code"].as_str().map(str::to_owned);
+    let reason = e["details"]["reason"].as_str().map(str::to_owned);
+    (code, reason)
 }
 
 /// `POST /api/v1/me/voice/credential`'s answer.
@@ -88,12 +94,8 @@ async fn post(
         return Ok(r);
     }
     let status = r.status().as_u16();
-    let reason = r
-        .json::<ErrBody>()
-        .await
-        .ok()
-        .and_then(|b| b.details)
-        .and_then(|d| d.get("reason").and_then(|r| r.as_str()).map(str::to_owned));
+    let body = r.bytes().await.unwrap_or_default();
+    let (_, reason) = error_of(&body);
     Err(ApiError::Status { status, reason })
 }
 
@@ -120,6 +122,44 @@ pub(crate) async fn leave(
         .map(|_| ())
 }
 
+/// Sends one call-stats sample (`POST /api/v1/me/voice/stats`, in the credential's scope).
+pub(crate) async fn stats(
+    http: &reqwest::Client,
+    base: &url::Url,
+    bearer: &str,
+    sample: &sew_proto::voice::CallStatsSample,
+) -> crate::stats::BeaconOutcome {
+    use crate::stats::BeaconOutcome;
+    let url = match route(base, sew_proto::routes::ME_VOICE_STATS) {
+        Ok(u) => u,
+        Err(e) => {
+            return BeaconOutcome::Failed {
+                error: format!("{e:?}"),
+            };
+        }
+    };
+    // `json` sets Content-Length (never chunked: a K2 door refuses a chunked body).
+    let r = match http.post(url).bearer_auth(bearer).json(sample).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return BeaconOutcome::Failed {
+                error: e.without_url().to_string(),
+            };
+        }
+    };
+    let http_status = r.status().as_u16();
+    if r.status().is_success() {
+        return BeaconOutcome::Accepted { http_status };
+    }
+    let body = r.bytes().await.unwrap_or_default();
+    let (code, reason) = error_of(&body);
+    BeaconOutcome::Refused {
+        http_status,
+        code,
+        reason,
+    }
+}
+
 /// Sets self mute and deafen.
 pub(crate) async fn self_state(
     http: &reqwest::Client,
@@ -143,6 +183,23 @@ pub(crate) async fn self_state(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn the_reason_is_read_from_the_error_details() {
+        let body = br#"{"ok":false,"error":{"code":"unauthorized","hint":"x","details":{"reason":"signed_out"}}}"#;
+        assert_eq!(
+            error_of(body),
+            (
+                Some("unauthorized".to_owned()),
+                Some("signed_out".to_owned())
+            )
+        );
+        assert_eq!(error_of(b"not json"), (None, None));
+        assert_eq!(
+            error_of(br#"{"ok":false,"error":{"code":"rate_limited","hint":"x"}}"#),
+            (Some("rate_limited".to_owned()), None)
+        );
+    }
 
     #[test]
     fn routes_join_under_the_door() {

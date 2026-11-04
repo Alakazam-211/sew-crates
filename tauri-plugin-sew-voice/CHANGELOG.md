@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.0 (2026-11-04, Sew 0.7.3)
+
+- Needs sew-call-client 0.2.0. Breaking: `JoinRequest` has `recording_notice` (below).
+
+- Recording consent: nobody is recorded without saying yes, and no answer is never a yes.
+  - Commands `consent {granted, notice_version}` and `withdraw_consent` ("Stop recording me"),
+    with their permissions (`allow-consent`, `allow-withdraw-consent`, both in
+    `sew-voice:default`).
+  - The `sew-voice://recording` event (`RecordingInfo`: the recording, `my_consent`, the notice
+    as Sew's `consent_prompt` while pending, the participants' answers, `recorder_present`),
+    `null` once none is active; the `state` command's `recording`.
+  - A join into a recorded room is held: `join` answers with an empty `call_id` and the state
+    is `consent_required {recording_id, notice_version}` (no microphone is opened) until
+    `consent` or `leave`; `call_id` follows once Sew lets the join in.
+  - The recording leave reasons `recording_declined`, `recording_withdrawn` and
+    `recording_consent_timeout` (`wire::reason::RECORDING`), and the command errors
+    `no_recording`, `recording_consent_required` (the notice changed; `detail` has the new
+    one) and `consent_unsupported`.
+  - In Rust: `CallState::ConsentRequired`, `PluginEvent::Recording`, `StateSnapshot::recording`,
+    the engine's `CallEvent::Recording` and `CallSnapshot::recording`, and
+    `CallHandle::consent` / `withdraw_consent` (defaults answer `consent_unsupported`, so other
+    engines keep compiling). `fake::FakeProvider::refuse_next`, `fake::FakeCall::set_recording`,
+    `consents`, `fail_next_consent` and `fake::consent_required` drive it without Sew.
+  - `JoinRequest` has `recording_notice` (sew-call-client's; the provider forwards it).
+  - The contract fixture (`tests/native-voice-contract.json`) has the `recording` payloads, the
+    held `state_snapshot` and `ended.recording_reasons`.
+
 ## 0.1.0 (2026-11-03)
 
 - First published version.

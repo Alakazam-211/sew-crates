@@ -804,6 +804,7 @@ async fn a_lagging_pump_resyncs_from_the_snapshot() {
             server_deafened: false,
             speak_denied: false,
         }],
+        recording: None,
     };
     call.set_snapshot_silently(truth.clone());
     until("resynced", || {
@@ -971,4 +972,201 @@ async fn a_moderator_mute_is_not_speak_denied() {
         w.sink.of("participants").last() == Some(&f["participants"]["self_server_muted"])
     })
     .await;
+}
+
+// ------------------------------------------------------------------ Sew 0.7.3: recording
+
+const REC: u64 = 48831765147549720;
+
+/// A world whose provider refuses the first join(s) as given, then answers.
+fn refusing(first: Vec<ProviderError>) -> (World, Arc<FakeProvider>) {
+    let p = Arc::new(FakeProvider::answering(ME));
+    for e in first {
+        p.refuse_next(e);
+    }
+    (world_with(FakeEngine::new(), p.clone()), p)
+}
+
+fn held_refusal() -> ProviderError {
+    ProviderError::ConsentRequired(Box::new(tauri_plugin_sew_voice::fake::consent_required(
+        REC, 3141,
+    )))
+}
+
+/// A join into a recorded room: held at `consent_required` with the notice (the fixture's
+/// payloads), no call id; `consent` joins again with the answer and the call connects.
+#[tokio::test]
+async fn a_held_join_waits_for_consent_then_connects() {
+    let f = fixture();
+    let (w, p) = refusing(vec![held_refusal()]);
+    let r = w.svc.join(args()).await.expect("join answers while held");
+    assert_eq!(r.call_id, "", "no room while held");
+    assert_eq!(
+        states(&w.sink).last(),
+        Some(&f["recording"]["held"]["state"])
+    );
+    assert_eq!(
+        w.sink.of("recording").last(),
+        Some(&f["recording"]["held"]["recording"])
+    );
+    let snap = w.svc.state().await.expect("state");
+    assert_eq!(
+        serde_json::to_value(&snap).expect("json"),
+        f["state_snapshot"]["consent_required"]
+    );
+    // Held is a call: a second join is refused.
+    let e = w.svc.join(args()).await.expect_err("one call");
+    assert_eq!(e.code, "already_in_call");
+    settle().await;
+    assert_eq!(
+        p.calls().len(),
+        1,
+        "nothing more is asked of Sew while held"
+    );
+
+    let a: tauri_plugin_sew_voice::ConsentArgs =
+        serde_json::from_value(f["recording"]["held"]["consent"]["args"].clone()).expect("args");
+    w.svc.consent(a).await.expect("consent");
+    let calls = p.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        serde_json::to_value(calls[1].recording_notice).expect("json"),
+        json!({"recording_id": REC.to_string(), "consent": true, "notice_version": 3141})
+    );
+    until("connected", || {
+        w.svc.snapshot().state == CallState::Connected
+    })
+    .await;
+    assert_eq!(w.svc.snapshot().call_id.as_deref(), Some(ROOM));
+    assert_eq!(w.sink.of("recording").last(), Some(&Value::Null));
+    assert_eq!(w.svc.snapshot().participants.len(), 1);
+}
+
+/// `leave` while held ends the call `left`; a decline Sew refuses ends it with the refusal.
+#[tokio::test]
+async fn a_held_join_ends_on_leave_or_a_refused_decline() {
+    let (w, p) = refusing(vec![held_refusal()]);
+    w.svc.join(args()).await.expect("held");
+    w.svc.leave().await.expect("leave");
+    assert_eq!(
+        states(&w.sink).last(),
+        Some(&st(json!({"state": "ended", "reason": "left"})))
+    );
+    assert_eq!(w.sink.of("recording").last(), Some(&Value::Null));
+    assert_eq!(p.calls().len(), 1);
+    assert!(w.engine.last_call().expect("call").left());
+
+    let (w, _) = refusing(vec![
+        held_refusal(),
+        ProviderError::Refused {
+            code: "recording_consent_required_to_join".into(),
+            detail: Value::Null,
+        },
+    ]);
+    w.svc.join(args()).await.expect("held");
+    let e = w
+        .svc
+        .consent(tauri_plugin_sew_voice::ConsentArgs {
+            granted: false,
+            notice_version: 3141,
+        })
+        .await
+        .expect_err("refused");
+    assert_eq!(e.code, "recording_consent_required_to_join");
+    until("ended", || !w.svc.snapshot().state.is_live()).await;
+    assert_eq!(
+        w.svc.snapshot().state,
+        CallState::Ended {
+            reason: "recording_consent_required_to_join".into()
+        }
+    );
+}
+
+/// In a call: the `recording` event follows the engine's recording (the fixture's payloads),
+/// `consent` and `withdraw_consent` reach the engine, and a changed notice is the command's
+/// error with Sew's details.
+#[tokio::test]
+async fn the_recording_event_and_consent_in_a_call() {
+    let f = fixture();
+    let w = joined().await;
+    let call = w.engine.last_call().expect("call");
+    for k in ["granted", "withdrawn"] {
+        let info: tauri_plugin_sew_voice::RecordingInfo =
+            serde_json::from_value(f["recording"][k].clone()).expect(k);
+        call.set_recording(Some(info.clone()));
+        until(k, || w.svc.snapshot().recording.as_ref() == Some(&info)).await;
+        assert_eq!(w.sink.of("recording").last(), Some(&f["recording"][k]));
+        let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+        assert_eq!(snap["recording"], f["recording"][k]);
+    }
+    w.svc
+        .consent(tauri_plugin_sew_voice::ConsentArgs {
+            granted: true,
+            notice_version: 9,
+        })
+        .await
+        .expect("consent");
+    w.svc.withdraw_consent().await.expect("withdraw");
+    assert_eq!(call.consents(), vec![(true, Some(9)), (false, None)]);
+    call.fail_next_consent(EngineError::Provider(held_refusal()));
+    let e = w
+        .svc
+        .consent(tauri_plugin_sew_voice::ConsentArgs {
+            granted: true,
+            notice_version: 9,
+        })
+        .await
+        .expect_err("changed notice");
+    assert_eq!(e.code, "recording_consent_required");
+    assert_eq!(e.detail["consent_prompt"]["notice_version"], json!(3141));
+    assert_eq!(
+        w.svc.snapshot().state,
+        CallState::Connected,
+        "the call goes on"
+    );
+    call.set_recording(None);
+    until("stopped", || w.svc.snapshot().recording.is_none()).await;
+    assert_eq!(
+        w.sink.of("recording").last(),
+        Some(&f["recording"]["stopped"])
+    );
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert!(snap.get("recording").is_none(), "absent with none: {snap}");
+}
+
+#[tokio::test]
+async fn consent_without_a_call_is_not_in_call() {
+    let w = world();
+    let e = w
+        .svc
+        .consent(tauri_plugin_sew_voice::ConsentArgs {
+            granted: true,
+            notice_version: 1,
+        })
+        .await
+        .expect_err("no call");
+    assert_eq!(e.code, "not_in_call");
+    let e = w.svc.withdraw_consent().await.expect_err("no call");
+    assert_eq!(e.code, "not_in_call");
+    assert!(w.sink.events().is_empty());
+}
+
+/// The recording leave reasons end a call as the fixture shows.
+#[tokio::test]
+async fn recording_end_reasons_reach_the_webview_unchanged() {
+    let f = fixture();
+    let cases = f["ended"]["recording_reasons"]
+        .as_array()
+        .expect("recording")
+        .clone();
+    assert_eq!(cases.len(), 3);
+    for c in cases {
+        let w = joined().await;
+        let call = w.engine.last_call().expect("call");
+        w.sink.clear();
+        let reason = c["reason"].as_str().expect("reason");
+        call.end(reason);
+        until(reason, || !w.svc.snapshot().state.is_live()).await;
+        assert_eq!(states(&w.sink).last(), Some(&c["payload"]), "{reason}");
+    }
 }

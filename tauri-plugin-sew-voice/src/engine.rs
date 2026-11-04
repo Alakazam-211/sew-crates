@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 
-use crate::wire::{CallState, DeviceChoice, DeviceList, ErrorInfo, Participant, Speaking};
+use crate::wire::{
+    CallState, DeviceChoice, DeviceList, ErrorInfo, Participant, RecordingInfo, Speaking,
+};
 
 /// The host's sign-in callback and its types, from `sew-call-client`.
 ///
@@ -23,9 +25,15 @@ use crate::wire::{CallState, DeviceChoice, DeviceList, ErrorInfo, Participant, S
 /// Sew's voice or DM-call join with `call_credential: true` (and no `e2ee`) through its own
 /// session (K2: the daemon BFF `/cli/voice/join`; an App: its server) and returns the answer
 /// unchanged ([`JoinAnswer::from_json`]). The web UI never sees what it returns.
+///
+/// Recording (Sew 0.7.3): the provider forwards `req.recording_notice` as the voice join's
+/// `recording_notice`, returns Sew's `409 recording_consent_required` as
+/// [`ProviderError::ConsentRequired`] ([`ProviderError::from_sew_error`] reads Sew's error body,
+/// or an App server route's that passes it on unchanged), and sends the person's consent
+/// answers ([`JoinProvider::consent`], [`ConsentAnswer`]) with the person's own session.
 pub use sew_call_client::{
-    AnswerError, BoxFuture, CallCredential, JoinAnswer, JoinProvider, JoinRequest, ProviderError,
-    RejoinReason,
+    AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
+    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RejoinReason,
 };
 
 /// Reads the App server route's `200` body, `{"join": <Sew's VoiceJoinResponse, unchanged>,
@@ -86,6 +94,11 @@ impl EngineError {
             EngineError::Provider(ProviderError::Other(s)) => {
                 ErrorInfo::with_detail(code::PROVIDER_ERROR, s.clone())
             }
+            // The notice changed: Sew's refusal details, for the app to show the new one.
+            EngineError::Provider(ProviderError::ConsentRequired(c)) => ErrorInfo::with_detail(
+                code::RECORDING_CONSENT_REQUIRED,
+                serde_json::to_value(c).unwrap_or_default(),
+            ),
             // A provider error sew-call-client adds later.
             EngineError::Provider(p) => ErrorInfo::with_detail(code::PROVIDER_ERROR, p.to_string()),
             EngineError::Failed(info) => info.clone(),
@@ -100,6 +113,9 @@ impl EngineError {
             EngineError::Provider(ProviderError::Refused { code, .. }) => code.clone(),
             EngineError::Provider(ProviderError::Unavailable { .. }) => reason::UNAVAILABLE.into(),
             EngineError::Provider(ProviderError::Other(_)) => reason::PROVIDER_ERROR.into(),
+            EngineError::Provider(ProviderError::ConsentRequired(_)) => {
+                crate::wire::code::RECORDING_CONSENT_REQUIRED.into()
+            }
             // A provider error sew-call-client adds later.
             EngineError::Provider(_) => reason::PROVIDER_ERROR.into(),
             EngineError::Failed(info) => info.code.clone(),
@@ -111,6 +127,7 @@ impl EngineError {
 /// engine-wide here, see [`VoiceEngine::device_events`]).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)]
 pub enum CallEvent {
     /// A state change (`Idle` is never sent by an engine).
     State(CallState),
@@ -127,6 +144,8 @@ pub enum CallEvent {
         /// The destination room.
         room: String,
     },
+    /// The call's recording changed (Sew 0.7.3), or `None` once none is active.
+    Recording(Option<RecordingInfo>),
 }
 
 /// A call's current state, for a late subscriber (the engine's `CallSnapshot`).
@@ -136,6 +155,8 @@ pub struct CallSnapshot {
     pub state: CallState,
     /// The roster now.
     pub participants: Vec<Participant>,
+    /// The active recording now (Sew 0.7.3).
+    pub recording: Option<RecordingInfo>,
 }
 
 /// One live call (the engine's `Call`).
@@ -159,6 +180,26 @@ pub trait CallHandle: Send + Sync + 'static {
     /// there was no move (or the engine does not say).
     fn moved_room(&self) -> Option<String> {
         None
+    }
+    /// The person's answer to the recording notice (Sew 0.7.3): held at `consent_required`,
+    /// the engine joins with it; in a call, the host's provider sends it. The default answers
+    /// `consent_unsupported`.
+    fn consent(
+        &self,
+        granted: bool,
+        notice_version: u32,
+    ) -> BoxFuture<'_, Result<(), EngineError>> {
+        let _ = (granted, notice_version);
+        Box::pin(std::future::ready(Err(EngineError::failed(
+            crate::wire::code::CONSENT_UNSUPPORTED,
+        ))))
+    }
+    /// "Stop recording me": withdraws a granted consent through the host's provider. The
+    /// default answers `consent_unsupported`.
+    fn withdraw_consent(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(std::future::ready(Err(EngineError::failed(
+            crate::wire::code::CONSENT_UNSUPPORTED,
+        ))))
     }
 }
 

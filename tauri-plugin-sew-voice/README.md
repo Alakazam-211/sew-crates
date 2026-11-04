@@ -1,4 +1,4 @@
-tauri-plugin-sew-voice is a Tauri 2 plugin that adds Sew voice calls to a desktop app: join, leave, mute, device choice and live call state for the web view, with the sign-in kept in the app's Rust code.
+tauri-plugin-sew-voice is a Tauri 2 plugin that adds Sew voice calls to a desktop app: join, leave, mute, device choice, recording consent and live call state for the web view, with the sign-in kept in the app's Rust code.
 
 # tauri-plugin-sew-voice
 
@@ -6,10 +6,12 @@ Sew is Alakazam Labs' self-hosted team chat server. This plugin runs its native 
 `sew-call-client`, inside your Tauri app's process: end-to-end encrypted audio, TURN relay,
 reconnects, and the `kessel-audio` pipeline on the system's microphone and speakers.
 
-The web view only draws the UI. It sends six commands (`plugin:sew-voice|join`, `leave`,
-`mute`, `devices`, `set_device`, `state`) and listens to five events (`sew-voice://state`,
-`participants`, `speaking`, `devices`, `errors`). Your app's Rust code signs in: it implements
-`JoinProvider`, which obtains Sew's join answer, so no token ever reaches the web view.
+The web view only draws the UI. It sends eight commands (`plugin:sew-voice|join`, `leave`,
+`mute`, `devices`, `set_device`, `state`, `consent`, `withdraw_consent`) and listens to six
+events (`sew-voice://state`, `participants`, `speaking`, `devices`, `errors`, `recording`). Your
+app's Rust code signs in: it implements `JoinProvider`, which obtains Sew's join answer (and
+sends the person's recording consent with the person's own session), so no token ever reaches
+the web view.
 
 Not affiliated with or endorsed by LiveKit.
 
@@ -39,7 +41,7 @@ workspace root. It needs a Sew server to join calls on (see the same README).
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.1.0"
+tauri-plugin-sew-voice = "0.2.0"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -66,7 +68,7 @@ fn main() {
 }
 ```
 
-Allow the plugin in your window's capability (`sew-voice:default` allows all six commands; one
+Allow the plugin in your window's capability (`sew-voice:default` allows all eight commands; one
 permission per command exists too), then from the web view (`window.__TAURI__` needs
 `app.withGlobalTauri: true` in `tauri.conf.json`; with a bundler, import `invoke` and `listen`
 from `@tauri-apps/api` instead). `target` is opaque to the plugin: it is handed to your
@@ -79,6 +81,32 @@ await listen("sew-voice://state", (e) => render(e.payload));
 const { call_id } = await invoke("plugin:sew-voice|join", { target: "chat.example.com", room: channelId });
 await invoke("plugin:sew-voice|mute", { muted: true });
 ```
+
+### Recording consent (Sew 0.7.3)
+
+Nobody is recorded without saying yes, and not answering is never a yes: this device's key
+reaches the recorder only after Sew says the person `granted`. A join into a recorded room
+answers with an empty `call_id` and the state `consent_required` (no microphone, no media) until
+the person answers:
+
+```js
+await listen("sew-voice://recording", (e) => {
+  const r = e.payload;                       // null: no recording
+  showBadge(r !== null);
+  if (r && r.my_consent === "pending") showNotice(r.consent_prompt);
+});
+// The modal's answer (the notice the person saw):
+await invoke("plugin:sew-voice|consent", { granted: true, notice_version: prompt.notice_version });
+// "Stop recording me":
+await invoke("plugin:sew-voice|withdraw_consent");
+```
+
+Your `JoinProvider` forwards `JoinRequest::recording_notice` as the voice join's
+`recording_notice`, returns Sew's `409 recording_consent_required` as
+`ProviderError::ConsentRequired` (`ProviderError::from_sew_error` reads Sew's error body), and
+implements `consent` (Sew's `POST /api/v1/recordings/{id}/consent` with the person's session;
+without it the answer is refused `consent_unsupported`). The exact payloads are in
+`tests/native-voice-contract.json` (`recording`).
 
 On macOS the app needs `NSMicrophoneUsageDescription` in its `Info.plist`, and the
 `com.apple.security.device.audio-input` entitlement for a hardened-runtime build.
