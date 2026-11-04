@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/channels/{channel_id}/closing`.",
+  "properties": {
+    "closing": {
+      "description": "`true` closes the room; `false` reopens a room that is closing (not yet archived).",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "closing"
+  ],
+  "title": "MgmtChannelClosingRequest",
+  "type": "object"
+}

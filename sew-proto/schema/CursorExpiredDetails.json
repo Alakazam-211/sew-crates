@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Details of `410 cursor_expired`: the entries after the cursor were pruned.",
+  "properties": {
+    "head": {
+      "description": "The log head at the read.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "oldest_seq": {
+      "description": "The oldest cursor the feed still answers: resume with `after = oldest_seq` (anything\nat or below it is gone).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "oldest_seq",
+    "head"
+  ],
+  "title": "CursorExpiredDetails",
+  "type": "object"
+}

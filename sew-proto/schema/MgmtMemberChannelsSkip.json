@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Why a sync item changed nothing for its person.",
+  "oneOf": [
+    {
+      "const": "owner",
+      "description": "The person is the Space's owner (the App's service owner): the sync never removes,\ndemotes or replaces the owner, who is in every channel.",
+      "type": "string"
+    },
+    {
+      "const": "deprovisioned",
+      "description": "The person was deprovisioned; only `principals/provision` brings them back.",
+      "type": "string"
+    },
+    {
+      "const": "banned",
+      "description": "The Space bans the person; bans win over the sync.",
+      "type": "string"
+    },
+    {
+      "const": "quota_exceeded",
+      "description": "The Space is at its App's `members_per_space_max`, so the person could not join.",
+      "type": "string"
+    }
+  ],
+  "title": "MgmtMemberChannelsSkip"
+}

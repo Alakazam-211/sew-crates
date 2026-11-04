@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "GuestInvite": {
+      "description": "`guests.invite`: who can invite guests.",
+      "oneOf": [
+        {
+          "const": "admins",
+          "description": "Install owners and admins only.",
+          "type": "string"
+        },
+        {
+          "const": "perm",
+          "description": "Anyone holding INVITE_GUESTS (bit 44).",
+          "type": "string"
+        }
+      ]
+    },
+    "PolicyDigest": {
+      "description": "The policy values clients need at boot, carried in READY. Field names are the\npolicy keys with `.` replaced by `_`.",
+      "properties": {
+        "agents_allowed_in_dms": {
+          "description": "`agents.allowed_in_dms`.",
+          "type": "boolean"
+        },
+        "calls_dm_enabled": {
+          "default": true,
+          "description": "`calls.dm_enabled`: clients hide the DM call button when off. Old payloads\nread as `true`.",
+          "type": "boolean"
+        },
+        "calls_verification_code": {
+          "$ref": "#/$defs/VerificationCode",
+          "default": "shown",
+          "description": "`calls.verification_code`: a change reaches clients in `install_updated`.\nOld payloads read as `shown`."
+        },
+        "emoji_max_per_space": {
+          "description": "`emoji.max_per_space`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_max_bytes": {
+          "description": "`files.max_bytes`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "gifs_enabled": {
+          "description": "`gifs.enabled`.",
+          "type": "boolean"
+        },
+        "guests_dm_non_channel_mates": {
+          "default": false,
+          "description": "`guests.dm_non_channel_mates`: guests' clients explain read-only DMs.",
+          "type": "boolean"
+        },
+        "guests_enabled": {
+          "default": true,
+          "description": "`guests.enabled`. Old payloads without it read as `true`.",
+          "type": "boolean"
+        },
+        "guests_invite": {
+          "$ref": "#/$defs/GuestInvite",
+          "default": "admins",
+          "description": "`guests.invite`: members' clients show \"Add guest\" only when they may."
+        },
+        "link_previews_enabled": {
+          "description": "`link_previews.enabled`.",
+          "type": "boolean"
+        },
+        "messages_delete_own": {
+          "description": "`messages.delete_own`.",
+          "type": "boolean"
+        },
+        "messages_edit_window_s": {
+          "description": "`messages.edit_window_s`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recording_audio_default_days": {
+          "default": 30,
+          "description": "`recording.audio_default_days`.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recording_audio_max_days": {
+          "default": 365,
+          "description": "`recording.audio_max_days`.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recording_dm_enabled": {
+          "default": false,
+          "description": "`recording.dm_enabled`. Old payloads read `false`.",
+          "type": "boolean"
+        },
+        "recording_enabled": {
+          "default": false,
+          "description": "`recording.enabled`: clients hide Record when off. Old payloads read `false`.",
+          "type": "boolean"
+        },
+        "recording_require_consent_to_join": {
+          "default": false,
+          "description": "`recording.require_consent_to_join`.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "gifs_enabled",
+        "link_previews_enabled",
+        "messages_edit_window_s",
+        "messages_delete_own",
+        "files_max_bytes",
+        "emoji_max_per_space",
+        "agents_allowed_in_dms"
+      ],
+      "type": "object"
+    },
+    "VerificationCode": {
+      "description": "Policy `calls.verification_code`: whether \"Call info → Security code\" is\nshown. `required` is reserved for a later mode and refused by the policy validator.",
+      "oneOf": [
+        {
+          "const": "shown",
+          "description": "Shown on request, never modal (the default).",
+          "type": "string"
+        },
+        {
+          "const": "hidden",
+          "description": "Not shown.",
+          "type": "string"
+        },
+        {
+          "const": "required",
+          "description": "Reserved: \"confirm before you speak\" (refused in v1).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Body of `install_updated`.",
+  "properties": {
+    "policy_digest": {
+      "$ref": "#/$defs/PolicyDigest",
+      "description": "The new policy digest."
+    }
+  },
+  "required": [
+    "policy_digest"
+  ],
+  "title": "InstallUpdated",
+  "type": "object"
+}

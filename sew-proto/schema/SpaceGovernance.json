@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Who governs a Space's structure.",
+  "oneOf": [
+    {
+      "const": "sew",
+      "description": "Sew's own model: roles, overwrites and membership are edited in Sew (the default).",
+      "type": "string"
+    },
+    {
+      "const": "app",
+      "description": "The governing App decides membership, private channels and levels (K2's sync).",
+      "type": "string"
+    },
+    {
+      "const": "server",
+      "description": "The server-governed Space (named `K5 Space`), one per K2 install, owned by `k2:server`:\nK2's daemon decides its structure over mgmt; no App session ever reaches it.",
+      "type": "string"
+    }
+  ],
+  "title": "SpaceGovernance"
+}

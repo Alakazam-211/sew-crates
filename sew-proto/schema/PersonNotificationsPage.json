@@ -1,0 +1,133 @@
+{
+  "$defs": {
+    "PersonNotification": {
+      "description": "One item of the person feed.",
+      "properties": {
+        "app_id": {
+          "description": "The App the Space is bound to; `null` for an unbound Space and for DMs.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "at": {
+          "description": "When it was written.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "call_id": {
+          "description": "The call, for `call_ring` and `call_missed`.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channel_id": {
+          "description": "The channel (the DM for calls).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "from_member_id": {
+          "description": "Who caused it: the message's author, or the call's starter.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PersonNotificationKind",
+          "description": "What it is about."
+        },
+        "message_id": {
+          "description": "The message (the call record for calls).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "description": "The message text cut to 120 chars, only while `notifications.mgmt_preview` is on and\nonly on message items (never on calls).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "The member-log seq (the cursor).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "space_id": {
+          "description": "The Space of a Space channel; absent for DMs.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "seq",
+        "kind",
+        "at",
+        "channel_id",
+        "from_member_id"
+      ],
+      "type": "object"
+    },
+    "PersonNotificationKind": {
+      "description": "What a person notification is about.",
+      "oneOf": [
+        {
+          "const": "call_ring",
+          "description": "A DM or group-DM call is ringing the person (a loud ring only: a busy, DND or muted\nring is silent and not here). Dropped once the ring is answered, declined or missed.",
+          "type": "string"
+        },
+        {
+          "const": "call_missed",
+          "description": "A DM call rang the person and nobody answered.",
+          "type": "string"
+        },
+        {
+          "const": "mention",
+          "description": "A mention: the person, a role or group they are in, `@channel` or `@here`.",
+          "type": "string"
+        },
+        {
+          "const": "dm",
+          "description": "A message in a DM or group DM.",
+          "type": "string"
+        },
+        {
+          "const": "reply_to_me",
+          "description": "A reply in a thread the person follows (started, replied in or followed).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `GET /mgmt/v1/people/{external_id}/notifications`.",
+  "properties": {
+    "items": {
+      "description": "The items, oldest first.",
+      "items": {
+        "$ref": "#/$defs/PersonNotification"
+      },
+      "type": "array"
+    },
+    "next": {
+      "description": "The next `after`: the seq of the last log row looked at (returned or skipped). Equal\nto `after` while DND holds the feed.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "items",
+    "next"
+  ],
+  "title": "PersonNotificationsPage",
+  "type": "object"
+}

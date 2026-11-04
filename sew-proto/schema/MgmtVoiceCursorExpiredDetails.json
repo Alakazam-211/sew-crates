@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Details of the feed's `410 cursor_expired`: the changes after the cursor are gone (a Sew\nrestart, or the ring dropped them). Read `voice/states` again.",
+  "properties": {
+    "head": {
+      "description": "The feed's cursor now.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "head"
+  ],
+  "title": "MgmtVoiceCursorExpiredDetails",
+  "type": "object"
+}

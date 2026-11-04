@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What a voice change is.",
+  "oneOf": [
+    {
+      "const": "joined",
+      "description": "A member joined a voice channel (or came in by a move; `state` is set).",
+      "type": "string"
+    },
+    {
+      "const": "updated",
+      "description": "A member's state changed in the same channel (connected, mute, deafen; `state`).",
+      "type": "string"
+    },
+    {
+      "const": "left",
+      "description": "A member left a voice channel (`reason`: `left`, `moved`, `channel_archived`,\n`media_path_down`, …).",
+      "type": "string"
+    },
+    {
+      "const": "channel_closing",
+      "description": "The room is closing: no new joins; archived when its last person leaves.",
+      "type": "string"
+    },
+    {
+      "const": "channel_archived",
+      "description": "The voice channel was archived.",
+      "type": "string"
+    }
+  ],
+  "title": "MgmtVoiceChangeKind"
+}

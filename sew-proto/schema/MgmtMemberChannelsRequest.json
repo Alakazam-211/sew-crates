@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "SpaceLevel": {
+      "description": "A person's level in an App-governed Space (K2's sync sets it), and an App's\n`max_level`. `moderator` and `admin` are the Space's managed roles; `member` is\n`@everyone`.",
+      "oneOf": [
+        {
+          "const": "member",
+          "description": "`@everyone` only.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "The managed Moderator role.",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "The managed Admin role (the Moderator bits plus MENTION_EVERYONE).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/spaces/{space_id}/members/{external_id}/channels`.",
+  "properties": {
+    "app_id": {
+      "description": "The Space's governing App; absent for the server-governed Space (governance\n`server`), where levels stop at `moderator`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "channel_ids": {
+      "description": "The person's full list of private channels in the Space, 0–5,000 distinct ids. Public\nchannels are open to every member and are not listed (a listed one comes back in\n`unknown_channel_ids`).",
+      "items": {
+        "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+        "pattern": "^[1-9][0-9]{0,18}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "level": {
+      "$ref": "#/$defs/SpaceLevel",
+      "description": "The person's level: `member` (`@everyone`), `moderator` or `admin` (the managed roles),\nat most the App's `max_level`."
+    }
+  },
+  "required": [
+    "channel_ids",
+    "level"
+  ],
+  "title": "MgmtMemberChannelsRequest",
+  "type": "object"
+}

@@ -1,0 +1,12 @@
+# Changelog
+
+## 0.7.2 (2026-11-03)
+
+- First published version.
+- The LiveKit client protocol 17 types (`livekit`, `logger`), generated with prost and pbjson from
+  livekit/protocol @ a4f4b5c0c23f167d0c07de1e1d7652125882e73c; the `.proto` sources are in
+  `proto/`.
+- `version`: the protocol-version gates (`ProtocolVersion`, `CURRENT_PROTOCOL` 17,
+  `MIN_CLIENT_PROTOCOL` 13, `negotiate`, the `GATES` table), rewritten from a written behaviour
+  specification.
+- Licence: Apache-2.0, with LiveKit's NOTICE for the generated code.

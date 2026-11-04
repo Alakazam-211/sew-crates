@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What changed in a member's own change log (`member_changes.kind`).",
+  "oneOf": [
+    {
+      "const": "channel_joined",
+      "description": "The member joined a channel.",
+      "type": "string"
+    },
+    {
+      "const": "channel_left",
+      "description": "The member left a channel.",
+      "type": "string"
+    },
+    {
+      "const": "space_joined",
+      "description": "The member joined a space.",
+      "type": "string"
+    },
+    {
+      "const": "space_left",
+      "description": "The member left a space.",
+      "type": "string"
+    },
+    {
+      "const": "read_state_moved",
+      "description": "A read cursor moved.",
+      "type": "string"
+    },
+    {
+      "const": "prefs_changed",
+      "description": "Preferences changed.",
+      "type": "string"
+    },
+    {
+      "const": "perms_changed",
+      "description": "Effective permissions changed.",
+      "type": "string"
+    },
+    {
+      "const": "notification",
+      "description": "A notification was written; the entry carries a reason, not an entity.",
+      "type": "string"
+    },
+    {
+      "const": "draft_changed",
+      "description": "A draft changed.",
+      "type": "string"
+    },
+    {
+      "const": "saved_changed",
+      "description": "A saved item changed.",
+      "type": "string"
+    },
+    {
+      "const": "reminder_fired",
+      "description": "A reminder fired.",
+      "type": "string"
+    },
+    {
+      "const": "profile_changed",
+      "description": "The member's profile changed.",
+      "type": "string"
+    },
+    {
+      "const": "thread_follow_changed",
+      "description": "A thread was followed or unfollowed.",
+      "type": "string"
+    },
+    {
+      "const": "voice_flags_changed",
+      "description": "Voice mute/deafen flags changed.",
+      "type": "string"
+    },
+    {
+      "const": "reminder_changed",
+      "description": "A reminder was created, edited or removed.",
+      "type": "string"
+    },
+    {
+      "const": "scheduled_changed",
+      "description": "A scheduled message changed.",
+      "type": "string"
+    },
+    {
+      "const": "thread_read_moved",
+      "description": "A thread read cursor moved.",
+      "type": "string"
+    },
+    {
+      "const": "call_ringing",
+      "description": "A DM call rang the member loudly (`entity_id` = the call id, `ref_id` = the\ncall-record message). Read only by the mgmt person notification feed; the client\nchange feed never returns it.",
+      "type": "string"
+    },
+    {
+      "const": "space_updated",
+      "description": "A Space the member is in went private or public (`entity_id` = the Space);\nthe client reads the Space again.",
+      "type": "string"
+    }
+  ],
+  "title": "MemberChangeKind"
+}

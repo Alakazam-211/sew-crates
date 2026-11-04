@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "MgmtSpaceApp": {
+      "description": "One link of `GET /mgmt/v1/spaces/{space_id}/apps`.",
+      "properties": {
+        "app_id": {
+          "description": "The App.",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/MgmtSpaceAppRole",
+          "description": "What the link is."
+        }
+      },
+      "required": [
+        "app_id",
+        "role"
+      ],
+      "type": "object"
+    },
+    "MgmtSpaceAppRole": {
+      "description": "What a Space–App link is. 0.6.0 writes only `governing` (one per Space, the\nSpace's `app_id`).",
+      "oneOf": [
+        {
+          "const": "governing",
+          "description": "The App the Space is bound to; it may govern the Space (`governance: app`).",
+          "type": "string"
+        },
+        {
+          "const": "participant",
+          "description": "An App that takes part in the Space without governing it (0.7.0).",
+          "type": "string"
+        }
+      ]
+    },
+    "SpaceGovernance": {
+      "description": "Who governs a Space's structure.",
+      "oneOf": [
+        {
+          "const": "sew",
+          "description": "Sew's own model: roles, overwrites and membership are edited in Sew (the default).",
+          "type": "string"
+        },
+        {
+          "const": "app",
+          "description": "The governing App decides membership, private channels and levels (K2's sync).",
+          "type": "string"
+        },
+        {
+          "const": "server",
+          "description": "The server-governed Space (named `K5 Space`), one per K2 install, owned by `k2:server`:\nK2's daemon decides its structure over mgmt; no App session ever reaches it.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Answer of `GET /mgmt/v1/spaces/{space_id}/apps`: the Space's App links, the\ngoverning one first.",
+  "properties": {
+    "governance": {
+      "$ref": "#/$defs/SpaceGovernance",
+      "description": "Who governs its structure."
+    },
+    "items": {
+      "description": "Its links (empty for an unbound Space).",
+      "items": {
+        "$ref": "#/$defs/MgmtSpaceApp"
+      },
+      "type": "array"
+    },
+    "space_id": {
+      "description": "The Space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "space_id",
+    "governance",
+    "items"
+  ],
+  "title": "MgmtSpaceApps",
+  "type": "object"
+}

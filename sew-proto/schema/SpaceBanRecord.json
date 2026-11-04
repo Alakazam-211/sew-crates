@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`space_bans.ndjson` (full exports only): one space ban. The archive is\ndecrypted content, so `reason` is plain text inside the age-encrypted archive.",
+  "properties": {
+    "banned_at": {
+      "description": "When.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "banned_by": {
+      "description": "Who banned them.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "delete_window_s": {
+      "description": "The recent-message delete window chosen at ban time, seconds.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "member_id": {
+      "description": "The banned member.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "reason": {
+      "description": "The reason, when one was given.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "space_id": {
+      "description": "The space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "space_id",
+    "member_id",
+    "banned_at",
+    "delete_window_s"
+  ],
+  "title": "SpaceBanRecord",
+  "type": "object"
+}

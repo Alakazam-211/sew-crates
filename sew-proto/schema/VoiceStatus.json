@@ -1,0 +1,544 @@
+{
+  "$defs": {
+    "BudgetSource": {
+      "description": "Where the media budget's egress comes from.",
+      "oneOf": [
+        {
+          "const": "engine",
+          "description": "The engine's `stats` events.",
+          "type": "string"
+        },
+        {
+          "const": "estimate",
+          "description": "Sew's forwarding estimate (stats missing or stale).",
+          "type": "string"
+        }
+      ]
+    },
+    "MediaPathState": {
+      "description": "The media path's state.",
+      "oneOf": [
+        {
+          "const": "up",
+          "description": "Calls work (Sew's state after every start).",
+          "type": "string"
+        },
+        {
+          "const": "down",
+          "description": "Voice is unavailable: joins and moves refused, live calls ended.",
+          "type": "string"
+        }
+      ]
+    },
+    "MediaTier": {
+      "description": "The media budget tier.",
+      "oneOf": [
+        {
+          "const": "normal",
+          "description": "Everything allowed; full hints.",
+          "type": "string"
+        },
+        {
+          "const": "constrained",
+          "description": "New camera leases refused; lower hints.",
+          "type": "string"
+        },
+        {
+          "const": "critical",
+          "description": "New camera and screen leases refused; lowest hints.",
+          "type": "string"
+        }
+      ]
+    },
+    "StatusVoiceE2ee": {
+      "description": "`status.voice.e2ee`.",
+      "properties": {
+        "ca_kid": {
+          "description": "The CA key id; absent when the key failed to load.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "calls": {
+          "description": "Live key groups.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "crl_size": {
+          "description": "Serials in the in-memory CRL.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "devices": {
+          "description": "Unrevoked enrolled devices.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ds_kid": {
+          "description": "The DS key id; absent when the key failed to load.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lagging": {
+          "description": "Lagging leaves.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "leaves": {
+          "description": "Leaves across them.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "per_call": {
+          "default": [],
+          "description": "One entry per live key group, sorted by `call_id` (Sew 0.7.1). No member, device, join\nid or key material: what K2 needs to diagnose a stuck call without the mgmt socket.",
+          "items": {
+            "$ref": "#/$defs/StatusVoiceE2eeCall"
+          },
+          "type": "array"
+        },
+        "rebuilding": {
+          "description": "Calls rebuilding after a restart.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "removal_overdue_1h": {
+          "description": "Removals past their hard bound in the last hour.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "resets_1h": {
+          "description": "Group resets in the last hour.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "roster_reports_1h": {
+          "description": "Roster-kind reports in the last hour.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "calls",
+        "leaves",
+        "lagging",
+        "rebuilding",
+        "resets_1h",
+        "removal_overdue_1h",
+        "roster_reports_1h",
+        "devices",
+        "crl_size"
+      ],
+      "type": "object"
+    },
+    "StatusVoiceE2eeCall": {
+      "description": "One call in `status.voice.e2ee.per_call` (Sew 0.7.1).",
+      "properties": {
+        "active_epoch": {
+          "description": "The last activated epoch; absent before the first activation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "awaiting_creator": {
+          "description": "The call waits for its first joiner to create the group.",
+          "type": "boolean"
+        },
+        "backoff": {
+          "description": "The call is in reset back-off.",
+          "type": "boolean"
+        },
+        "call_id": {
+          "description": "The call (its room name, as the key routes carry it).",
+          "pattern": "^r_[a-z2-7]{26}$",
+          "type": "string"
+        },
+        "epoch": {
+          "description": "The DS group's epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Group resets so far (0 for the first group).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "leaves_by_state": {
+          "$ref": "#/$defs/StatusVoiceE2eeLeaves",
+          "description": "Leaves by state."
+        },
+        "pending": {
+          "description": "Admitted joins without a leaf yet.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "queue_len": {
+          "description": "Queued changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rebuilding": {
+          "description": "The call is rebuilding after a `sew` restart.",
+          "type": "boolean"
+        },
+        "resetting": {
+          "description": "A group reset is in flight.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "call_id",
+        "generation",
+        "epoch",
+        "leaves_by_state",
+        "pending",
+        "queue_len",
+        "awaiting_creator",
+        "resetting",
+        "rebuilding",
+        "backoff"
+      ],
+      "type": "object"
+    },
+    "StatusVoiceE2eeLeaves": {
+      "description": "Leaf counts by state in a [`StatusVoiceE2eeCall`].",
+      "properties": {
+        "active": {
+          "description": "Acked.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "joining": {
+          "description": "Welcomed, not yet acked.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lagging": {
+          "description": "Left behind (behind the active epoch).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "leaving": {
+          "description": "Being removed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "joining",
+        "active",
+        "lagging",
+        "leaving"
+      ],
+      "type": "object"
+    },
+    "VoiceEngineState": {
+      "description": "The engine as `status.voice.engine` sees it (`details.engine` of a voice `503`).",
+      "oneOf": [
+        {
+          "const": "up",
+          "description": "Healthy.",
+          "type": "string"
+        },
+        {
+          "const": "down",
+          "description": "Unreachable for `health_failures_down` checks in a row.",
+          "type": "string"
+        },
+        {
+          "const": "draining",
+          "description": "Draining.",
+          "type": "string"
+        },
+        {
+          "const": "syncing",
+          "description": "Sew is resyncing from a snapshot.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "The engine answered with an error, or the call keys failed to load.",
+          "type": "string"
+        }
+      ]
+    },
+    "VoiceEngineStatus": {
+      "description": "`status.voice.engine` (the media engine's health).",
+      "properties": {
+        "down_since": {
+          "description": "When the engine went down (state `down`).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "drift_fixes_1h": {
+          "description": "Drift the snapshot audits fixed in the last hour.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_event_at": {
+          "description": "The last event Sew applied.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_snapshot_at": {
+          "description": "The last snapshot audit.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "panics_1h": {
+          "description": "Engine panics in the last hour.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "participants": {
+          "description": "Participants the engine reports.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rooms": {
+          "description": "Rooms the engine reports.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/VoiceEngineState",
+          "description": "The engine's state."
+        },
+        "version": {
+          "description": "The engine's version, from its last health answer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "rooms",
+        "participants",
+        "panics_1h",
+        "drift_fixes_1h"
+      ],
+      "type": "object"
+    },
+    "VoiceMediaPathStatus": {
+      "description": "`status.voice.media_path`.",
+      "properties": {
+        "media_path_reason": {
+          "description": "K2's reason, while `down`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "since": {
+          "description": "Since when (the start of this Sew process while it has always been `up`).",
+          "format": "date-time",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/MediaPathState",
+          "description": "`up` or `down`."
+        }
+      },
+      "required": [
+        "state",
+        "since"
+      ],
+      "type": "object"
+    },
+    "VoiceMediaStatus": {
+      "description": "The video, DM call and media budget part of `status.voice`.",
+      "properties": {
+        "budget_source": {
+          "$ref": "#/$defs/BudgetSource",
+          "description": "Where the budget's egress comes from."
+        },
+        "calls_active": {
+          "description": "Active DM calls.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "egress_budget_mbps": {
+          "description": "`[voice.video] egress_budget_mbps`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "egress_mbps": {
+          "description": "The egress the tiers use (the engine's measured egress, or the estimate), Mbit/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "engine_cpu_pct": {
+          "description": "The engine cgroup's CPU against its allowance; `null` when unknown.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "forward_estimate_mbps": {
+          "description": "The forwarding estimate, Mbit/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "media_tier": {
+          "$ref": "#/$defs/MediaTier",
+          "description": "The media budget tier."
+        },
+        "screen_publishers": {
+          "description": "Screen-share leases install-wide.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "video_enabled": {
+          "description": "`[voice.video] enabled` (and voice enabled).",
+          "type": "boolean"
+        },
+        "video_publishers": {
+          "description": "Camera leases install-wide.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "calls_active",
+        "video_publishers",
+        "screen_publishers",
+        "media_tier",
+        "budget_source",
+        "egress_mbps",
+        "egress_budget_mbps",
+        "forward_estimate_mbps",
+        "video_enabled"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`status.voice`. Absent when voice is off\nand was never configured.",
+  "properties": {
+    "calls": {
+      "description": "Live calls (voice channels with occupants).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "e2ee": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StatusVoiceE2ee"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The call key service."
+    },
+    "enabled": {
+      "description": "`[voice] enabled`.",
+      "type": "boolean"
+    },
+    "engine": {
+      "$ref": "#/$defs/VoiceEngineStatus",
+      "description": "The engine."
+    },
+    "media": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VoiceMediaStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Video, DM calls and the media budget, as `status.voice.media` (the wire\ntypes never use `flatten`, so these fields nest like `e2ee`). Absent\nwhile voice is off."
+    },
+    "media_path": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VoiceMediaPathStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The media path K2 reports (`POST /mgmt/v1/voice/media-path`)."
+    },
+    "participants": {
+      "description": "Voice entries.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "public_url": {
+      "description": "`[voice] public_url`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reconnecting": {
+      "description": "Entries inside a reconnect window.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "secure_participants": {
+      "description": "Entries whose device is in the activated key epoch.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "enabled",
+    "calls",
+    "participants",
+    "secure_participants",
+    "reconnecting",
+    "engine"
+  ],
+  "title": "VoiceStatus",
+  "type": "object"
+}

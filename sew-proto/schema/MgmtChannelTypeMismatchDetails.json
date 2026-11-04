@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "ChannelType": {
+      "description": "Channel type.",
+      "oneOf": [
+        {
+          "const": "text",
+          "description": "A text channel.",
+          "type": "string"
+        },
+        {
+          "const": "voice",
+          "description": "A voice channel.",
+          "type": "string"
+        },
+        {
+          "const": "announcement",
+          "description": "An announcement channel: `@everyone` posts only in threads by default.",
+          "type": "string"
+        },
+        {
+          "const": "dm",
+          "description": "A 1:1 DM (no space, slug or name; always private).",
+          "type": "string"
+        },
+        {
+          "const": "group_dm",
+          "description": "A group DM of up to 9 people.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Details of `409 conflict` `channel_type_mismatch` on `POST /mgmt/v1/channels/create`:\nthe slug is held by a channel of another type.",
+  "properties": {
+    "existing_type": {
+      "$ref": "#/$defs/ChannelType",
+      "description": "The existing channel's type."
+    },
+    "field": {
+      "description": "`type`.",
+      "type": "string"
+    },
+    "reason": {
+      "description": "`channel_type_mismatch`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reason",
+    "field",
+    "existing_type"
+  ],
+  "title": "MgmtChannelTypeMismatchDetails",
+  "type": "object"
+}

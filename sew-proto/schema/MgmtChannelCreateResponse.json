@@ -1,0 +1,194 @@
+{
+  "$defs": {
+    "ChannelType": {
+      "description": "Channel type.",
+      "oneOf": [
+        {
+          "const": "text",
+          "description": "A text channel.",
+          "type": "string"
+        },
+        {
+          "const": "voice",
+          "description": "A voice channel.",
+          "type": "string"
+        },
+        {
+          "const": "announcement",
+          "description": "An announcement channel: `@everyone` posts only in threads by default.",
+          "type": "string"
+        },
+        {
+          "const": "dm",
+          "description": "A 1:1 DM (no space, slug or name; always private).",
+          "type": "string"
+        },
+        {
+          "const": "group_dm",
+          "description": "A group DM of up to 9 people.",
+          "type": "string"
+        }
+      ]
+    },
+    "MgmtChannelNotAdded": {
+      "description": "A listed member the create did not add, and why.",
+      "properties": {
+        "member": {
+          "description": "The member as the request named it.",
+          "maxLength": 128,
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/MgmtChannelNotAddedReason",
+          "description": "Why."
+        }
+      },
+      "required": [
+        "member",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "MgmtChannelNotAddedReason": {
+      "description": "Why a listed member was not added to the channel (a ban is not a reason here: a\nbanned member is in `skipped`).",
+      "oneOf": [
+        {
+          "const": "not_provisioned",
+          "description": "No member has this id or external id (provision first).",
+          "type": "string"
+        },
+        {
+          "const": "deactivated",
+          "description": "The member is deactivated.",
+          "type": "string"
+        },
+        {
+          "const": "assistant",
+          "description": "An assistant never joins a channel (it reads through its person).",
+          "type": "string"
+        },
+        {
+          "const": "guest",
+          "description": "A guest outside the Space (an App's Space takes no guests through channel adds).",
+          "type": "string"
+        },
+        {
+          "const": "not_space_member",
+          "description": "Not a member of the Space: add it with `spaces/members/add` first.",
+          "type": "string"
+        }
+      ]
+    },
+    "MgmtSpaceMemberRef": {
+      "description": "A principal and its member id.",
+      "properties": {
+        "external_id": {
+          "description": "The principal.",
+          "maxLength": 128,
+          "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+          "type": "string"
+        },
+        "member_id": {
+          "description": "Its member id.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "external_id",
+        "member_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `POST /mgmt/v1/channels/create`, each member list in request order.",
+  "properties": {
+    "added": {
+      "description": "Listed members this call added. The owner, who is always a member, is never here; when\nlisted it is in `already`.",
+      "items": {
+        "$ref": "#/$defs/MgmtSpaceMemberRef"
+      },
+      "type": "array"
+    },
+    "already": {
+      "description": "Listed members that were in the channel already.",
+      "items": {
+        "$ref": "#/$defs/MgmtSpaceMemberRef"
+      },
+      "type": "array"
+    },
+    "channel_id": {
+      "description": "The channel.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "created": {
+      "description": "Whether this call created it.",
+      "type": "boolean"
+    },
+    "name": {
+      "description": "Its current name (a repeat never changes it).",
+      "type": "string"
+    },
+    "not_added": {
+      "description": "Listed members that cannot join, with the reason.",
+      "items": {
+        "$ref": "#/$defs/MgmtChannelNotAdded"
+      },
+      "type": "array"
+    },
+    "private": {
+      "description": "Whether it is private (current; a repeat never changes it).",
+      "type": "boolean"
+    },
+    "skipped": {
+      "default": [],
+      "description": "Listed members a Space ban keeps out (member ids, the shape of `members/add`). Always\npresent.",
+      "items": {
+        "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+        "pattern": "^[1-9][0-9]{0,18}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "slug": {
+      "description": "Its slug.",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",
+      "type": "string"
+    },
+    "space_id": {
+      "description": "Its Space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "type": {
+      "$ref": "#/$defs/ChannelType",
+      "default": "text",
+      "description": "Its type, `text` or `voice` (additive; absent from an older Sew = text)."
+    },
+    "user_limit": {
+      "description": "Voice only (additive): its current per-channel limit, 0 = none. Absent for text.",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "channel_id",
+    "space_id",
+    "slug",
+    "name",
+    "private",
+    "created",
+    "added",
+    "already",
+    "not_added"
+  ],
+  "title": "MgmtChannelCreateResponse",
+  "type": "object"
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Query of `GET /mgmt/v1/spaces/{space_id}/voice/changes`: long-poll after a cursor.",
+  "properties": {
+    "after": {
+      "description": "The cursor of `voice/states` or of the previous page's `next`.",
+      "type": "string"
+    },
+    "limit": {
+      "description": "At most this many changes (1–500, default 100).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "wait": {
+      "description": "Long-poll up to this many seconds while there is nothing to return (0–30, default 0).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "after"
+  ],
+  "title": "MgmtVoiceChangesQuery",
+  "type": "object"
+}

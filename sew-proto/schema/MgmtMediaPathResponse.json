@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "MediaPathState": {
+      "description": "The media path's state.",
+      "oneOf": [
+        {
+          "const": "up",
+          "description": "Calls work (Sew's state after every start).",
+          "type": "string"
+        },
+        {
+          "const": "down",
+          "description": "Voice is unavailable: joins and moves refused, live calls ended.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `POST /mgmt/v1/voice/media-path`.",
+  "properties": {
+    "ended_calls": {
+      "description": "The live calls this call ended (voice channels and DM calls; 0 for `up` and for a\nrepeated `down`).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "since": {
+      "description": "Since when (a repeated call keeps it).",
+      "format": "date-time",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/MediaPathState",
+      "description": "The state now."
+    }
+  },
+  "required": [
+    "state",
+    "since",
+    "ended_calls"
+  ],
+  "title": "MgmtMediaPathResponse",
+  "type": "object"
+}

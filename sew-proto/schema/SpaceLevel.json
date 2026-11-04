@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A person's level in an App-governed Space (K2's sync sets it), and an App's\n`max_level`. `moderator` and `admin` are the Space's managed roles; `member` is\n`@everyone`.",
+  "oneOf": [
+    {
+      "const": "member",
+      "description": "`@everyone` only.",
+      "type": "string"
+    },
+    {
+      "const": "moderator",
+      "description": "The managed Moderator role.",
+      "type": "string"
+    },
+    {
+      "const": "admin",
+      "description": "The managed Admin role (the Moderator bits plus MENTION_EVERYONE).",
+      "type": "string"
+    }
+  ],
+  "title": "SpaceLevel"
+}

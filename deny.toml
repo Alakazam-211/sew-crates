@@ -1,0 +1,58 @@
+# cargo-deny configuration for the sew-crates workspace (`cargo deny check` from this
+# directory). The advisory exceptions and their reasons are Alakazam Labs' own assessment.
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+ignore = [
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 through p256 0.13. Sew's assessment, from source review: sew-e2ee's device-key signing (ECDSA P-256, on every join whatever the MLS suite) and sew-mls-crypto's P-256 suite reach only crypto-bigint 0.5.5 operations outside the affected code. Not verified with cargo checkct. The fix needs p256 0.14 (crypto-bigint 0.7.9+), a planned RustCrypto upgrade; see sew-e2ee's README." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 is unmaintained. Sew's assessment: it comes only through Tauri's GTK3 stack (glib-macros, gtk3-macros) and is a proc-macro, run at compile time only, with no code in the built binary." },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant 4.2.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names 3.0.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 4.2.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },
+]
+
+[licenses]
+version = 2
+# The permissive licences these crates and their dependencies may use; nothing else.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+]
+confidence-threshold = 0.9
+# Exactly seven crates outside the allowlist are allowed by name, each with its own licence
+# (ruled 2026-11-03); any other crate with a licence outside the allowlist fails.
+exceptions = [
+  # Tauri 2's own MPL-2.0 crates (HTML tooling through tauri-utils; option-ext through dirs),
+  # in tauri-plugin-sew-voice's default graph.
+  { crate = "cssparser", allow = ["MPL-2.0"] },
+  { crate = "cssparser-macros", allow = ["MPL-2.0"] },
+  { crate = "dtoa-short", allow = ["MPL-2.0"] },
+  { crate = "selectors", allow = ["MPL-2.0"] },
+  { crate = "option-ext", allow = ["MPL-2.0"] },
+  # Mozilla's root certificates as data, through rustls-platform-verifier.
+  { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+  # A build-time dependency through Tauri.
+  { crate = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+  "https://github.com/Alakazam-211/k2",
+  "https://github.com/Alakazam-211/str0m",
+  "https://github.com/Alakazam-211/dimpl",
+]

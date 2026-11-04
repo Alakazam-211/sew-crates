@@ -1,0 +1,80 @@
+{
+  "$defs": {
+    "SpaceLevel": {
+      "description": "A person's level in an App-governed Space (K2's sync sets it), and an App's\n`max_level`. `moderator` and `admin` are the Space's managed roles; `member` is\n`@everyone`.",
+      "oneOf": [
+        {
+          "const": "member",
+          "description": "`@everyone` only.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "The managed Moderator role.",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "The managed Admin role (the Moderator bits plus MENTION_EVERYONE).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/apps/{app_id}/settings`: any subset of the fields.",
+  "properties": {
+    "display_name": {
+      "description": "The App's name as clients label its Spaces (`Space.app_display_name`), 1–100\ncharacters; `null` clears it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hidden_from_home": {
+      "description": "Leave the App's Spaces out of the home client.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "max_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpaceLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The highest level K2's sync may give in the App's governed Spaces (default\n`moderator`). Refused for the home client (`409 home_client_cannot_govern`)."
+    },
+    "origin": {
+      "description": "The App's public origin, `wss://<host>[:port]`: the signalling URL of the voice and\ncall join answers of the App's sessions; `null` clears it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "origins": {
+      "description": "Flag `app_origins`: the App's further web origins, each `wss://<host>[:port]`\nas `origin`, at most 32: a voice or call join of the App's sessions may name `origin` or\none of these as its own `origin` (the host the browser reached the App on). Duplicates\nare dropped and the list is kept sorted; `null` or `[]` clears it.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "uploads": {
+      "description": "Whether the App's people may upload files in its governed Spaces (default\n`true`).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "title": "MgmtAppSettingsRequest",
+  "type": "object"
+}

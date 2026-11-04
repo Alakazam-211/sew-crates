@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "ChannelType": {
+      "description": "Channel type.",
+      "oneOf": [
+        {
+          "const": "text",
+          "description": "A text channel.",
+          "type": "string"
+        },
+        {
+          "const": "voice",
+          "description": "A voice channel.",
+          "type": "string"
+        },
+        {
+          "const": "announcement",
+          "description": "An announcement channel: `@everyone` posts only in threads by default.",
+          "type": "string"
+        },
+        {
+          "const": "dm",
+          "description": "A 1:1 DM (no space, slug or name; always private).",
+          "type": "string"
+        },
+        {
+          "const": "group_dm",
+          "description": "A group DM of up to 9 people.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/channels/create`.",
+  "properties": {
+    "app_id": {
+      "description": "The Space's App; absent for the server-governed Space (governance `server`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "members": {
+      "description": "0–100 distinct members (member ids or external ids) to add.",
+      "items": {
+        "description": "A member id (decimal string) or an external id (k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner or local:<handle>).",
+        "maxLength": 128,
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "name": {
+      "description": "The name, 1–100 characters. Used at create only.",
+      "type": "string"
+    },
+    "private": {
+      "description": "A private channel (its members are exactly the owner and `members`). Used at create\nonly.",
+      "type": "boolean"
+    },
+    "slug": {
+      "description": "The slug, unique in the Space (the client rules). With `space_id`, the idempotency key.",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",
+      "type": "string"
+    },
+    "space_id": {
+      "description": "The Space; it must be bound to an App, or be the server-governed Space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "type": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ChannelType"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`text` (absent = text) or `voice`; `announcement` and the DM types are refused\n(`400 validation_failed`, field `type`). Part of the idempotency check: an existing slug\nof the other type is `409 conflict` `channel_type_mismatch`."
+    },
+    "user_limit": {
+      "description": "Voice only: at most this many people in the call, 0–99, 0 = no per-channel limit;\nabsent = 0. On a text channel it is `400 validation_failed` (field `user_limit`). Used at\ncreate only.",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "space_id",
+    "slug",
+    "name",
+    "private"
+  ],
+  "title": "MgmtChannelCreateRequest",
+  "type": "object"
+}

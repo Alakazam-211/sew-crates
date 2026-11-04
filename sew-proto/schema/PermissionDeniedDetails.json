@@ -1,0 +1,110 @@
+{
+  "$defs": {
+    "PermissionReason": {
+      "description": "`details.reason` of a `403 missing_permission` from the permission engine.",
+      "oneOf": [
+        {
+          "const": "missing_permission",
+          "description": "A permission bit is missing; `details.missing` lists it.",
+          "type": "string"
+        },
+        {
+          "const": "unheld_bits",
+          "description": "The change touches bits the actor does not hold; `details.missing` lists them.",
+          "type": "string"
+        },
+        {
+          "const": "hierarchy",
+          "description": "The target is at or above the actor on the role ladder.",
+          "type": "string"
+        },
+        {
+          "const": "owner_immune",
+          "description": "The space owner cannot be the target.",
+          "type": "string"
+        },
+        {
+          "const": "owner_only",
+          "description": "Only the space owner may do this.",
+          "type": "string"
+        },
+        {
+          "const": "guest_limit",
+          "description": "Guests cannot do or receive this.",
+          "type": "string"
+        },
+        {
+          "const": "link_guest_limit",
+          "description": "A meeting link guest cannot do this (every route off the link-guest\nallowlist, before the handler).",
+          "type": "string"
+        },
+        {
+          "const": "agent_limit",
+          "description": "Agents cannot do or receive this.",
+          "type": "string"
+        },
+        {
+          "const": "install_role",
+          "description": "Needs an install role (owner, admin) or the compliance flag.",
+          "type": "string"
+        },
+        {
+          "const": "not_author",
+          "description": "Only the author may do this (edits, edit history).",
+          "type": "string"
+        },
+        {
+          "const": "not_on_behalf_person",
+          "description": "Only the person an assistant posted for may do this (on-behalf approval).",
+          "type": "string"
+        },
+        {
+          "const": "own_session_required",
+          "description": "The person's own session is needed: act-as cannot do this.",
+          "type": "string"
+        },
+        {
+          "const": "relay_not_allowed",
+          "description": "A relayed `Sew-On-Behalf-Of` claim is never accepted here.",
+          "type": "string"
+        },
+        {
+          "const": "app_session_not_allowed",
+          "description": "A session with an `app` claim (the home client included) never\nreaches the server-governed Space (governance `server`), whoever the member is.",
+          "type": "string"
+        },
+        {
+          "const": "app_user_not_allowed",
+          "description": "An App user (`k2:principal:`) never reaches the server-governed Space,\neven from a session without an `app` claim.",
+          "type": "string"
+        },
+        {
+          "const": "call_credential_scope",
+          "description": "A call-scoped credential called a route outside its call's scope.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Details of a `403 missing_permission` from the permission engine.",
+  "properties": {
+    "missing": {
+      "description": "The missing bits, for `missing_permission` and `unheld_bits`.",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "$ref": "#/$defs/PermissionReason",
+      "description": "Why."
+    }
+  },
+  "required": [
+    "reason"
+  ],
+  "title": "PermissionDeniedDetails",
+  "type": "object"
+}

@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "SpaceGovernance": {
+      "description": "Who governs a Space's structure.",
+      "oneOf": [
+        {
+          "const": "sew",
+          "description": "Sew's own model: roles, overwrites and membership are edited in Sew (the default).",
+          "type": "string"
+        },
+        {
+          "const": "app",
+          "description": "The governing App decides membership, private channels and levels (K2's sync).",
+          "type": "string"
+        },
+        {
+          "const": "server",
+          "description": "The server-governed Space (named `K5 Space`), one per K2 install, owned by `k2:server`:\nK2's daemon decides its structure over mgmt; no App session ever reaches it.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/spaces/{space_id}/settings`. An absent field keeps its\nvalue.",
+  "properties": {
+    "app_id": {
+      "description": "The Space's App; absent for an unbound Space.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "governance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpaceGovernance"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`app` hands the Space's structure to its governing App (`409 conflict`\n`no_governing_app` without one) and creates the managed Moderator and Admin roles;\n`sew` hands it back (the managed roles become ordinary roles). Never\nto or from `server` (`409 conflict` `server_governance_fixed`)."
+    },
+    "private": {
+      "description": "Private (`true`) or public (`false`).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "title": "MgmtSpaceSettingsRequest",
+  "type": "object"
+}

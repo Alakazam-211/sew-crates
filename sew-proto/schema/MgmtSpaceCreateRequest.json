@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "SpaceGovernance": {
+      "description": "Who governs a Space's structure.",
+      "oneOf": [
+        {
+          "const": "sew",
+          "description": "Sew's own model: roles, overwrites and membership are edited in Sew (the default).",
+          "type": "string"
+        },
+        {
+          "const": "app",
+          "description": "The governing App decides membership, private channels and levels (K2's sync).",
+          "type": "string"
+        },
+        {
+          "const": "server",
+          "description": "The server-governed Space (named `K5 Space`), one per K2 install, owned by `k2:server`:\nK2's daemon decides its structure over mgmt; no App session ever reaches it.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/spaces/create`.",
+  "properties": {
+    "app_id": {
+      "description": "The App the Space belongs to; absent for a Space of K2's own.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "governance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpaceGovernance"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`server` creates the server-governed Space (owner `k2:server`, slug\n[`ADMIN_SPACE_SLUG`], no `app_id`, no managers, not hidden; a K2 install only). Only\n`server` is accepted here (`app` is the settings switch). Absent: today's create."
+    },
+    "hidden": {
+      "description": "A hidden Space, left out of `GET /spaces`, browse, the directory and\n(without the `hidden_spaces` capability) READY. Set at create only. Default `false`.",
+      "type": "boolean"
+    },
+    "managers": {
+      "description": "0–10 distinct members who join and hold the manager role (persons or coworker agents,\nnot the owner).",
+      "items": {
+        "description": "An external identity: k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server (K2's server service owner), local:<handle>, link:<channel_id>:<base32> (a meeting link guest) or app:<app_id> (an App's service owner).",
+        "maxLength": 128,
+        "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "name": {
+      "description": "The name, 1–100 characters.",
+      "type": "string"
+    },
+    "owner": {
+      "description": "The owner: `k2:owner` or a person (never an agent). With `app_id`, `app:<app_id>`\n(or no owner at all) makes the App's service owner the owner, created on first need;\nanother App's service owner is `409 conflict` `app_mismatch`. Required without `app_id`.",
+      "maxLength": 128,
+      "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "slug": {
+      "description": "The slug; `dm` is reserved. The idempotency key of the create.",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "slug",
+    "name"
+  ],
+  "title": "MgmtSpaceCreateRequest",
+  "type": "object"
+}

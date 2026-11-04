@@ -1,0 +1,72 @@
+{
+  "$defs": {
+    "OwnerApproval": {
+      "description": "The current owner's inline approval of an owner transfer. `Debug` redacts the\nsecret.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "K2 mode: a chat pass whose `sub` is the current owner.",
+          "properties": {
+            "kind": {
+              "const": "owner_pass",
+              "type": "string"
+            },
+            "pass": {
+              "description": "The pass.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pass"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Standalone: the current owner's password.",
+          "properties": {
+            "kind": {
+              "const": "owner_password",
+              "type": "string"
+            },
+            "password": {
+              "description": "The password.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "password"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/home-client`.",
+  "properties": {
+    "app_id": {
+      "description": "The App that is the install's home client; `null` for none.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "approval": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OwnerApproval"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The current install owner's approval, as `owner/set` takes it (flag\n`home_client_owner_approval`): required on every write, a repeat that\nchanges nothing included. Absent or bad: `403 owner_approval_required`, nothing\nchanges, and the refusal is audited."
+    }
+  },
+  "title": "MgmtHomeClientRequest",
+  "type": "object"
+}

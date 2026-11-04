@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Answer of `POST /mgmt/v1/principals/relink`.",
+  "properties": {
+    "changed": {
+      "description": "`false` when the same pair was relinked before (nothing changed).",
+      "type": "boolean"
+    },
+    "from": {
+      "description": "The old id.",
+      "maxLength": 128,
+      "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+      "type": "string"
+    },
+    "member_id": {
+      "description": "The member (unchanged by the relink).",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "sessions_revoked": {
+      "description": "Sessions this call revoked.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "to": {
+      "description": "The new id.",
+      "maxLength": 128,
+      "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "member_id",
+    "from",
+    "to",
+    "changed",
+    "sessions_revoked"
+  ],
+  "title": "PrincipalRelinkResponse",
+  "type": "object"
+}

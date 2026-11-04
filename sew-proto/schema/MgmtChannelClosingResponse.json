@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `POST /mgmt/v1/channels/{channel_id}/closing`.",
+  "properties": {
+    "archived": {
+      "description": "The room is archived (it was empty, or already archived).",
+      "type": "boolean"
+    },
+    "closing": {
+      "description": "The room is closing (or was closed and is archived).",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "closing",
+    "archived"
+  ],
+  "title": "MgmtChannelClosingResponse",
+  "type": "object"
+}

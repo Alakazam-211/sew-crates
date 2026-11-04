@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Details of `409 conflict` `box_users_present` on the switch to `governance: app`:\nbox users (`k2:owner`, `k2:connect:`) are never members of an App-governed Space. K2\nremoves them first; a box-user owner is the one Sew removes itself (the App's service owner\ntakes over).",
+  "properties": {
+    "external_ids": {
+      "description": "The box users in the Space other than the owner, ascending.",
+      "items": {
+        "description": "An external identity: k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server (K2's server service owner), local:<handle>, link:<channel_id>:<base32> (a meeting link guest) or app:<app_id> (an App's service owner).",
+        "maxLength": 128,
+        "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "field": {
+      "description": "`governance`.",
+      "type": "string"
+    },
+    "reason": {
+      "description": "`box_users_present`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reason",
+    "field",
+    "external_ids"
+  ],
+  "title": "MgmtBoxUsersDetails",
+  "type": "object"
+}

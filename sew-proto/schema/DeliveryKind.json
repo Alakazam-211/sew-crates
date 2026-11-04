@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What kind of message a delivery carries. v1 sends `text` only;\n`Unknown` renders as text.",
+  "oneOf": [
+    {
+      "const": "text",
+      "description": "A chat message.",
+      "type": "string"
+    },
+    {
+      "const": "call_record",
+      "description": "A DM call record.",
+      "type": "string"
+    },
+    {
+      "const": "poll",
+      "description": "A poll.",
+      "type": "string"
+    },
+    {
+      "const": "transcript",
+      "description": "A call transcript.",
+      "type": "string"
+    }
+  ],
+  "title": "DeliveryKind"
+}

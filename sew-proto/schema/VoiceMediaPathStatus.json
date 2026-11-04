@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "MediaPathState": {
+      "description": "The media path's state.",
+      "oneOf": [
+        {
+          "const": "up",
+          "description": "Calls work (Sew's state after every start).",
+          "type": "string"
+        },
+        {
+          "const": "down",
+          "description": "Voice is unavailable: joins and moves refused, live calls ended.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`status.voice.media_path`.",
+  "properties": {
+    "media_path_reason": {
+      "description": "K2's reason, while `down`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "since": {
+      "description": "Since when (the start of this Sew process while it has always been `up`).",
+      "format": "date-time",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/MediaPathState",
+      "description": "`up` or `down`."
+    }
+  },
+  "required": [
+    "state",
+    "since"
+  ],
+  "title": "VoiceMediaPathStatus",
+  "type": "object"
+}

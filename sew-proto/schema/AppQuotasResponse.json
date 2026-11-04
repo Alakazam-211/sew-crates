@@ -1,0 +1,145 @@
+{
+  "$defs": {
+    "AppQuotaUsage": {
+      "description": "The App's usage against each quota (named as the quotas; present whether or not the quota\nis set).",
+      "properties": {
+        "call_participants_max": {
+          "description": "Members in a call in one of the App's Spaces now.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "channels_per_space_max": {
+          "description": "Channels in the App's fullest Space (archived ones count).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "file_bytes_max": {
+          "description": "File bytes in the App's Spaces.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "members_per_space_max": {
+          "description": "Members of the App's fullest Space.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "messages_per_min": {
+          "description": "Posts the App's bucket holds back now: `messages_per_min` minus the tokens left (0\nwithout the quota).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "spaces_max": {
+          "description": "Spaces bound to the App.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "spaces_max",
+        "channels_per_space_max",
+        "members_per_space_max",
+        "file_bytes_max",
+        "call_participants_max",
+        "messages_per_min"
+      ],
+      "type": "object"
+    },
+    "AppQuotas": {
+      "additionalProperties": false,
+      "description": "An App's quotas: the body of `POST /mgmt/v1/apps/{app_id}/quotas` and `quotas` in its\nanswer. Each is optional; absent means no App limit.",
+      "properties": {
+        "call_participants_max": {
+          "description": "Concurrent call participants across the App's Spaces, 0–1e9.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "channels_per_space_max": {
+          "description": "Channels in each App Space, 0–1e9.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "file_bytes_max": {
+          "description": "File bytes in the App's Spaces (what the Space file quota counts: uploads, attachments,\nemoji and Space icons), 0–2^62; checked on each new upload.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "members_per_space_max": {
+          "description": "Members in each App Space (the owner included), 0–1e9.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "messages_per_min": {
+          "description": "Posts per minute across the App's Spaces (posts, replies, forwards and scheduled sends\nwhen they fire), 1–1e6: a token bucket of this size that refills over a minute.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "spaces_max": {
+          "description": "Spaces bound to the App, 0–1e9.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Answer of `GET` and `POST /mgmt/v1/apps/{app_id}/quotas`.",
+  "properties": {
+    "app_id": {
+      "description": "The App.",
+      "type": "string"
+    },
+    "changed": {
+      "description": "`POST` only: whether this call changed the quotas (`false` on a repeat).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "quotas": {
+      "$ref": "#/$defs/AppQuotas",
+      "description": "The quotas set (absent: no App limit)."
+    },
+    "used": {
+      "$ref": "#/$defs/AppQuotaUsage",
+      "description": "The current usage against each quota."
+    }
+  },
+  "required": [
+    "app_id",
+    "quotas",
+    "used"
+  ],
+  "title": "AppQuotasResponse",
+  "type": "object"
+}

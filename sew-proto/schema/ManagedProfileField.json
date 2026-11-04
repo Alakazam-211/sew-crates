@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A profile field `identity.managed_fields` may give to K2. A listed field changes only\nthrough mgmt (`/mgmt/v1/principals/*`); a client write naming it answers `403\npolicy_denied` with `details.reason = \"managed_by_provider\"`. `username` and `email`\nare always K2's in K2 mode and are not listed.",
+  "oneOf": [
+    {
+      "const": "display_name",
+      "description": "The display name.",
+      "type": "string"
+    },
+    {
+      "const": "title",
+      "description": "The title.",
+      "type": "string"
+    },
+    {
+      "const": "pronouns",
+      "description": "The pronouns.",
+      "type": "string"
+    },
+    {
+      "const": "avatar",
+      "description": "The avatar: `POST /api/v1/me/avatar` and `/me/avatar/clear` are refused, and\n`POST /mgmt/v1/principals/avatar` is the only writer (`force` replaces an avatar the\nmember set before).",
+      "type": "string"
+    }
+  ],
+  "title": "ManagedProfileField"
+}

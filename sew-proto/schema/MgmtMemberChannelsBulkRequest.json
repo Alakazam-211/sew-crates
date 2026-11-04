@@ -1,0 +1,79 @@
+{
+  "$defs": {
+    "MgmtMemberChannelsItem": {
+      "additionalProperties": false,
+      "description": "One item of a bulk sync.",
+      "properties": {
+        "channel_ids": {
+          "description": "As [`MgmtMemberChannelsRequest::channel_ids`].",
+          "items": {
+            "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "external_id": {
+          "description": "The person.",
+          "maxLength": 128,
+          "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/SpaceLevel",
+          "description": "As [`MgmtMemberChannelsRequest::level`]."
+        }
+      },
+      "required": [
+        "external_id",
+        "channel_ids",
+        "level"
+      ],
+      "type": "object"
+    },
+    "SpaceLevel": {
+      "description": "A person's level in an App-governed Space (K2's sync sets it), and an App's\n`max_level`. `moderator` and `admin` are the Space's managed roles; `member` is\n`@everyone`.",
+      "oneOf": [
+        {
+          "const": "member",
+          "description": "`@everyone` only.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "The managed Moderator role.",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "The managed Admin role (the Moderator bits plus MENTION_EVERYONE).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/spaces/{space_id}/members/channels`.",
+  "properties": {
+    "app_id": {
+      "description": "The Space's governing App; absent for the server-governed Space.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "items": {
+      "description": "1–500 items, distinct people.",
+      "items": {
+        "$ref": "#/$defs/MgmtMemberChannelsItem"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "MgmtMemberChannelsBulkRequest",
+  "type": "object"
+}

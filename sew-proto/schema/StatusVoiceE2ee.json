@@ -1,0 +1,209 @@
+{
+  "$defs": {
+    "StatusVoiceE2eeCall": {
+      "description": "One call in `status.voice.e2ee.per_call` (Sew 0.7.1).",
+      "properties": {
+        "active_epoch": {
+          "description": "The last activated epoch; absent before the first activation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "awaiting_creator": {
+          "description": "The call waits for its first joiner to create the group.",
+          "type": "boolean"
+        },
+        "backoff": {
+          "description": "The call is in reset back-off.",
+          "type": "boolean"
+        },
+        "call_id": {
+          "description": "The call (its room name, as the key routes carry it).",
+          "pattern": "^r_[a-z2-7]{26}$",
+          "type": "string"
+        },
+        "epoch": {
+          "description": "The DS group's epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Group resets so far (0 for the first group).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "leaves_by_state": {
+          "$ref": "#/$defs/StatusVoiceE2eeLeaves",
+          "description": "Leaves by state."
+        },
+        "pending": {
+          "description": "Admitted joins without a leaf yet.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "queue_len": {
+          "description": "Queued changes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rebuilding": {
+          "description": "The call is rebuilding after a `sew` restart.",
+          "type": "boolean"
+        },
+        "resetting": {
+          "description": "A group reset is in flight.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "call_id",
+        "generation",
+        "epoch",
+        "leaves_by_state",
+        "pending",
+        "queue_len",
+        "awaiting_creator",
+        "resetting",
+        "rebuilding",
+        "backoff"
+      ],
+      "type": "object"
+    },
+    "StatusVoiceE2eeLeaves": {
+      "description": "Leaf counts by state in a [`StatusVoiceE2eeCall`].",
+      "properties": {
+        "active": {
+          "description": "Acked.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "joining": {
+          "description": "Welcomed, not yet acked.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lagging": {
+          "description": "Left behind (behind the active epoch).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "leaving": {
+          "description": "Being removed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "joining",
+        "active",
+        "lagging",
+        "leaving"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`status.voice.e2ee`.",
+  "properties": {
+    "ca_kid": {
+      "description": "The CA key id; absent when the key failed to load.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "calls": {
+      "description": "Live key groups.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "crl_size": {
+      "description": "Serials in the in-memory CRL.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "devices": {
+      "description": "Unrevoked enrolled devices.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ds_kid": {
+      "description": "The DS key id; absent when the key failed to load.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lagging": {
+      "description": "Lagging leaves.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "leaves": {
+      "description": "Leaves across them.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "per_call": {
+      "default": [],
+      "description": "One entry per live key group, sorted by `call_id` (Sew 0.7.1). No member, device, join\nid or key material: what K2 needs to diagnose a stuck call without the mgmt socket.",
+      "items": {
+        "$ref": "#/$defs/StatusVoiceE2eeCall"
+      },
+      "type": "array"
+    },
+    "rebuilding": {
+      "description": "Calls rebuilding after a restart.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "removal_overdue_1h": {
+      "description": "Removals past their hard bound in the last hour.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "resets_1h": {
+      "description": "Group resets in the last hour.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "roster_reports_1h": {
+      "description": "Roster-kind reports in the last hour.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "calls",
+    "leaves",
+    "lagging",
+    "rebuilding",
+    "resets_1h",
+    "removal_overdue_1h",
+    "roster_reports_1h",
+    "devices",
+    "crl_size"
+  ],
+  "title": "StatusVoiceE2ee",
+  "type": "object"
+}

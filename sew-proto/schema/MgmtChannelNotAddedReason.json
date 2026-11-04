@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Why a listed member was not added to the channel (a ban is not a reason here: a\nbanned member is in `skipped`).",
+  "oneOf": [
+    {
+      "const": "not_provisioned",
+      "description": "No member has this id or external id (provision first).",
+      "type": "string"
+    },
+    {
+      "const": "deactivated",
+      "description": "The member is deactivated.",
+      "type": "string"
+    },
+    {
+      "const": "assistant",
+      "description": "An assistant never joins a channel (it reads through its person).",
+      "type": "string"
+    },
+    {
+      "const": "guest",
+      "description": "A guest outside the Space (an App's Space takes no guests through channel adds).",
+      "type": "string"
+    },
+    {
+      "const": "not_space_member",
+      "description": "Not a member of the Space: add it with `spaces/members/add` first.",
+      "type": "string"
+    }
+  ],
+  "title": "MgmtChannelNotAddedReason"
+}

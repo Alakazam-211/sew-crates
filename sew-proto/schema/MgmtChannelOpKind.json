@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The kind of a bulk channel op.",
+  "oneOf": [
+    {
+      "const": "ensure",
+      "description": "Create (ensure, never update).",
+      "type": "string"
+    },
+    {
+      "const": "rename",
+      "description": "A new name.",
+      "type": "string"
+    },
+    {
+      "const": "archive",
+      "description": "Archive.",
+      "type": "string"
+    },
+    {
+      "const": "unarchive",
+      "description": "Unarchive.",
+      "type": "string"
+    }
+  ],
+  "title": "MgmtChannelOpKind"
+}

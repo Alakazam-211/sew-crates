@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Query of `GET /mgmt/v1/people/{external_id}/notifications`: long-poll after a member seq.",
+  "properties": {
+    "after": {
+      "description": "Return items with `seq > after`. K2 sends the previous page's `next`.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "limit": {
+      "description": "At most this many items (1–500, default 100).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "wait": {
+      "description": "Long-poll up to this many seconds while there is nothing to return (0–30, default 0).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "after"
+  ],
+  "title": "PersonNotificationsQuery",
+  "type": "object"
+}

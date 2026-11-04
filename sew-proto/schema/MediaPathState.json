@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The media path's state.",
+  "oneOf": [
+    {
+      "const": "up",
+      "description": "Calls work (Sew's state after every start).",
+      "type": "string"
+    },
+    {
+      "const": "down",
+      "description": "Voice is unavailable: joins and moves refused, live calls ended.",
+      "type": "string"
+    }
+  ],
+  "title": "MediaPathState"
+}

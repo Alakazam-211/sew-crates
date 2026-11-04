@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "SpaceLevel": {
+      "description": "A person's level in an App-governed Space (K2's sync sets it), and an App's\n`max_level`. `moderator` and `admin` are the Space's managed roles; `member` is\n`@everyone`.",
+      "oneOf": [
+        {
+          "const": "member",
+          "description": "`@everyone` only.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "The managed Moderator role.",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "The managed Admin role (the Moderator bits plus MENTION_EVERYONE).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`GET`/`POST /mgmt/v1/apps/{app_id}/settings`.",
+  "properties": {
+    "app_id": {
+      "description": "The App.",
+      "type": "string"
+    },
+    "display_name": {
+      "description": "The App's display name; absent when unset.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hidden_from_home": {
+      "description": "The App's Spaces are left out of the home client.",
+      "type": "boolean"
+    },
+    "max_level": {
+      "$ref": "#/$defs/SpaceLevel",
+      "default": "moderator",
+      "description": "The highest level K2's sync may give in the App's governed Spaces. Old\npayloads read as `moderator`."
+    },
+    "origin": {
+      "description": "The App's signalling origin; absent when unset.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "origins": {
+      "description": "Flag `app_origins`: the App's further web origins, sorted; absent when none\n(old payloads read as none).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "uploads": {
+      "default": true,
+      "description": "Whether the App's people may upload files in its governed Spaces. Old payloads\nread as `true`.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "app_id",
+    "hidden_from_home"
+  ],
+  "title": "MgmtAppSettings",
+  "type": "object"
+}

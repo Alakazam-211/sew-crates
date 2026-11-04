@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What a person notification is about.",
+  "oneOf": [
+    {
+      "const": "call_ring",
+      "description": "A DM or group-DM call is ringing the person (a loud ring only: a busy, DND or muted\nring is silent and not here). Dropped once the ring is answered, declined or missed.",
+      "type": "string"
+    },
+    {
+      "const": "call_missed",
+      "description": "A DM call rang the person and nobody answered.",
+      "type": "string"
+    },
+    {
+      "const": "mention",
+      "description": "A mention: the person, a role or group they are in, `@channel` or `@here`.",
+      "type": "string"
+    },
+    {
+      "const": "dm",
+      "description": "A message in a DM or group DM.",
+      "type": "string"
+    },
+    {
+      "const": "reply_to_me",
+      "description": "A reply in a thread the person follows (started, replied in or followed).",
+      "type": "string"
+    }
+  ],
+  "title": "PersonNotificationKind"
+}

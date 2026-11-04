@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/spaces/release`.",
+  "properties": {
+    "confirm": {
+      "description": "Must be `true`: after a release any App may bind the Space and inherit its history.",
+      "type": "boolean"
+    },
+    "space_id": {
+      "description": "The orphaned Space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "space_id",
+    "confirm"
+  ],
+  "title": "MgmtSpaceReleaseRequest",
+  "type": "object"
+}

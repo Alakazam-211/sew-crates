@@ -1,0 +1,38 @@
+{
+  "$defs": {
+    "OnBehalfApprovalState": {
+      "description": "Where an assistant's on-behalf post stands with its person.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Not answered yet (every new on-behalf post).",
+          "type": "string"
+        },
+        {
+          "const": "approved",
+          "description": "The person approved it.",
+          "type": "string"
+        },
+        {
+          "const": "declined",
+          "description": "The person declined it.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /api/v1/messages/{id}/on-behalf-approval`: the person named in\n`on_behalf_of`, from their own session, approves or declines the post. `pending` cannot be\nset again.",
+  "properties": {
+    "state": {
+      "$ref": "#/$defs/OnBehalfApprovalState",
+      "description": "`approved` or `declined`."
+    }
+  },
+  "required": [
+    "state"
+  ],
+  "title": "SetOnBehalfApprovalRequest",
+  "type": "object"
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`GET`/`POST /mgmt/v1/home-client`.",
+  "properties": {
+    "app_id": {
+      "description": "The home client's App id; `null` for none.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "MgmtHomeClient",
+  "type": "object"
+}

@@ -1,0 +1,40 @@
+{
+  "$defs": {
+    "MediaPathState": {
+      "description": "The media path's state.",
+      "oneOf": [
+        {
+          "const": "up",
+          "description": "Calls work (Sew's state after every start).",
+          "type": "string"
+        },
+        {
+          "const": "down",
+          "description": "Voice is unavailable: joins and moves refused, live calls ended.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/voice/media-path` (idempotent).",
+  "properties": {
+    "reason": {
+      "description": "K2's words for why (at most 64 chars, e.g. `voice_lane_down`); kept with `down` and\nshown as `details.media_path_reason` and `status.voice.media_path.media_path_reason`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "$ref": "#/$defs/MediaPathState",
+      "description": "`down` or `up`."
+    }
+  },
+  "required": [
+    "state"
+  ],
+  "title": "MgmtMediaPathRequest",
+  "type": "object"
+}

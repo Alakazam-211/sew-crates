@@ -1,0 +1,300 @@
+{
+  "$defs": {
+    "Category": {
+      "description": "A category grouping channels in a space.",
+      "properties": {
+        "id": {
+          "description": "The category id.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "The name.",
+          "type": "string"
+        },
+        "overwrites": {
+          "description": "Overwrites that synced channels inherit.",
+          "items": {
+            "$ref": "#/$defs/Overwrite"
+          },
+          "type": "array"
+        },
+        "position": {
+          "description": "Sort position.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "space_id": {
+          "description": "Its space.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "space_id",
+        "name",
+        "position",
+        "overwrites"
+      ],
+      "type": "object"
+    },
+    "Overwrite": {
+      "description": "A channel or category permission overwrite.",
+      "properties": {
+        "allow": {
+          "description": "Bits allowed.",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "type": "string"
+        },
+        "deny": {
+          "description": "Bits denied.",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "type": "string"
+        },
+        "target_id": {
+          "description": "The role or member id.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "target_kind": {
+          "$ref": "#/$defs/OverwriteTarget",
+          "description": "Role or member."
+        }
+      },
+      "required": [
+        "target_kind",
+        "target_id",
+        "allow",
+        "deny"
+      ],
+      "type": "object"
+    },
+    "OverwriteTarget": {
+      "description": "What an overwrite targets.",
+      "oneOf": [
+        {
+          "const": "role",
+          "description": "A role (`@everyone`'s role id is the space id).",
+          "type": "string"
+        },
+        {
+          "const": "member",
+          "description": "A single member.",
+          "type": "string"
+        }
+      ]
+    },
+    "Space": {
+      "description": "A space: a group of channels with its own roles.",
+      "properties": {
+        "app_display_name": {
+          "description": "The display name K2 gave the Space's App (`/mgmt/v1/apps/{app_id}/settings`), for\nlabels; absent when the Space is not bound or the App has no name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "app_id": {
+          "description": "The App the space belongs to (`[a-z0-9][a-z0-9._-]{0,63}`); absent when the space\nis not bound. A bound space gets its members only through mgmt calls for that App.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "description": "When the space was created.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "default_channel_ids": {
+          "description": "The channels a joining member lands in (the open join and an add), in the\norder MANAGE_SPACE set them; at most 10, absent when none. Guests never see it.",
+          "items": {
+            "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "description": "What the space is for, 1–300 characters; absent when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "governance": {
+          "$ref": "#/$defs/SpaceGovernance",
+          "description": "Who governs the Space's structure; absent for `sew` (today's model). `app`:\nthe governing App (`app_id`) decides membership, private channels and levels.\n`server`: the server-governed Space, governed by K2's daemon over mgmt."
+        },
+        "hidden": {
+          "description": "A hidden Space (the Meetings Space) is left out of `GET /spaces`,\nbrowse and the directory, and out of READY unless IDENTIFY declares `hidden_spaces`;\nclients read it by id. Absent when `false`.",
+          "type": "boolean"
+        },
+        "icon_thumb_url": {
+          "description": "Signed 64 px icon URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon_url": {
+          "description": "Signed icon URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The space id.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "join_policy": {
+          "$ref": "#/$defs/SpaceJoinPolicy",
+          "default": "invite",
+          "description": "Who may join by themself. Old payloads without it read as `invite`."
+        },
+        "member_count": {
+          "description": "Number of members.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "my_perms": {
+          "description": "The viewer's base permissions in the space; absent for non-members.",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The name.",
+          "type": "string"
+        },
+        "orphaned_from": {
+          "description": "The App the Space was unbound from while it is a read-only orphan (posts, joins,\ncalls and member adds are `422 invalid_state` `space_orphaned`); absent otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner_id": {
+          "description": "The space owner's member id.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "private": {
+          "description": "A private Space is hidden from everyone outside it (lists, the joinable\ndirectory, search, mentionables, previews and GET answer the masked 404 of an unknown\nSpace) and is invite-only (`join_policy` is `invite`). Absent when `false`.",
+          "type": "boolean"
+        },
+        "rules_channel_id": {
+          "description": "The channel holding the space's rules (a public text or announcement\nchannel of the space); absent when unset. Guests never see it.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slug": {
+          "description": "The slug, unique in the install.",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",
+          "type": "string"
+        },
+        "welcome_channel_id": {
+          "description": "Where a newcomer starts (a public text or announcement channel of the\nspace); absent when unset. Guests never see it.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "name",
+        "owner_id",
+        "member_count",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "SpaceGovernance": {
+      "description": "Who governs a Space's structure.",
+      "oneOf": [
+        {
+          "const": "sew",
+          "description": "Sew's own model: roles, overwrites and membership are edited in Sew (the default).",
+          "type": "string"
+        },
+        {
+          "const": "app",
+          "description": "The governing App decides membership, private channels and levels (K2's sync).",
+          "type": "string"
+        },
+        {
+          "const": "server",
+          "description": "The server-governed Space (named `K5 Space`), one per K2 install, owned by `k2:server`:\nK2's daemon decides its structure over mgmt; no App session ever reaches it.",
+          "type": "string"
+        }
+      ]
+    },
+    "SpaceJoinPolicy": {
+      "description": "Who may join a space by themself.",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "Any active non-guest member may join.",
+          "type": "string"
+        },
+        {
+          "const": "invite",
+          "description": "Members join only when someone adds them (the default).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Body of `space_member_added`. `space` and `categories` are filled only in the\ncopy sent to the added member.",
+  "properties": {
+    "categories": {
+      "default": [],
+      "description": "The space's categories (the added member's copy only).",
+      "items": {
+        "$ref": "#/$defs/Category"
+      },
+      "type": "array"
+    },
+    "member_id": {
+      "description": "The member who joined.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "space": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Space"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The space (the added member's copy only)."
+    },
+    "space_id": {
+      "description": "The space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "space_id",
+    "member_id"
+  ],
+  "title": "SpaceMemberAdded",
+  "type": "object"
+}

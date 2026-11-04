@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`details` of an App quota's `422` / `429 quota_exceeded`.",
+  "properties": {
+    "app_id": {
+      "description": "The App.",
+      "type": "string"
+    },
+    "limit": {
+      "description": "Its limit.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "quota": {
+      "description": "The quota ([`APP_QUOTAS`]).",
+      "type": "string"
+    },
+    "retry_after_ms": {
+      "description": "`messages_per_min` only (429): milliseconds until a post can go through.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "used": {
+      "description": "The usage the request found (for a per-Space quota, that Space's).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "quota",
+    "limit",
+    "used",
+    "app_id"
+  ],
+  "title": "AppQuotaDetails",
+  "type": "object"
+}

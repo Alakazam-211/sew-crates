@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "ProviderKind": {
+      "description": "The install's identity provider.",
+      "oneOf": [
+        {
+          "const": "k2",
+          "description": "K2 grants create accounts; K2 signs the pass.",
+          "type": "string"
+        },
+        {
+          "const": "standalone",
+          "description": "Local users and passwords.",
+          "type": "string"
+        },
+        {
+          "const": "link",
+          "description": "A meeting-link session (session provider 3, made by redeeming a\nmeeting link). Never an install's provider.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Answer of `POST /mgmt/v1/identity/switch`.",
+  "properties": {
+    "mode": {
+      "$ref": "#/$defs/ProviderKind",
+      "description": "The install's identity mode now (`k2`)."
+    },
+    "restart_required": {
+      "description": "`true`: the running process still serves standalone until Sew restarts.",
+      "type": "boolean"
+    },
+    "switched_at": {
+      "description": "When the switch happened.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "unlinked_local_members": {
+      "description": "Active members still on a `local:` id (to relink, or deactivate).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "mode",
+    "switched_at",
+    "restart_required",
+    "unlinked_local_members"
+  ],
+  "title": "IdentitySwitchResponse",
+  "type": "object"
+}

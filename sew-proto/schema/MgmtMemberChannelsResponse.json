@@ -1,0 +1,145 @@
+{
+  "$defs": {
+    "MgmtMemberChannelsSkip": {
+      "description": "Why a sync item changed nothing for its person.",
+      "oneOf": [
+        {
+          "const": "owner",
+          "description": "The person is the Space's owner (the App's service owner): the sync never removes,\ndemotes or replaces the owner, who is in every channel.",
+          "type": "string"
+        },
+        {
+          "const": "deprovisioned",
+          "description": "The person was deprovisioned; only `principals/provision` brings them back.",
+          "type": "string"
+        },
+        {
+          "const": "banned",
+          "description": "The Space bans the person; bans win over the sync.",
+          "type": "string"
+        },
+        {
+          "const": "quota_exceeded",
+          "description": "The Space is at its App's `members_per_space_max`, so the person could not join.",
+          "type": "string"
+        }
+      ]
+    },
+    "SpaceLevel": {
+      "description": "A person's level in an App-governed Space (K2's sync sets it), and an App's\n`max_level`. `moderator` and `admin` are the Space's managed roles; `member` is\n`@everyone`.",
+      "oneOf": [
+        {
+          "const": "member",
+          "description": "`@everyone` only.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "The managed Moderator role.",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "The managed Admin role (the Moderator bits plus MENTION_EVERYONE).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Answer of one sync item. Channel lists are ascending.",
+  "properties": {
+    "added": {
+      "description": "Channels the person joined.",
+      "items": {
+        "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+        "pattern": "^[1-9][0-9]{0,18}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "external_id": {
+      "description": "The person.",
+      "maxLength": 128,
+      "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+      "type": "string"
+    },
+    "job_id": {
+      "description": "The job of a `queued` item.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpaceLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The person's level after the sync (absent when `skipped`)."
+    },
+    "member_id": {
+      "description": "Their member id.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "queued": {
+      "default": false,
+      "description": "The item has more than 1,000 channel changes and runs as a job: `added`, `removed`\nand `unchanged` are empty, `job_id` names the job (`GET /mgmt/v1/jobs/{id}`). A later\nsync of the same person replaces a job that has not run.",
+      "type": "boolean"
+    },
+    "removed": {
+      "description": "Channels the person left.",
+      "items": {
+        "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+        "pattern": "^[1-9][0-9]{0,18}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "skipped": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MgmtMemberChannelsSkip"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Set when the item changed nothing for its person, with why."
+    },
+    "unchanged": {
+      "description": "Listed channels the person was in already.",
+      "items": {
+        "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+        "pattern": "^[1-9][0-9]{0,18}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "unknown_channel_ids": {
+      "description": "Listed ids that are not live private channels of this Space (unknown, in another\nSpace, archived, public or a meeting's channel); the rest of the list applied.",
+      "items": {
+        "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+        "pattern": "^[1-9][0-9]{0,18}$",
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "external_id",
+    "member_id",
+    "added",
+    "removed",
+    "unchanged",
+    "unknown_channel_ids"
+  ],
+  "title": "MgmtMemberChannelsResponse",
+  "type": "object"
+}

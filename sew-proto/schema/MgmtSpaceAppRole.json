@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What a Space–App link is. 0.6.0 writes only `governing` (one per Space, the\nSpace's `app_id`).",
+  "oneOf": [
+    {
+      "const": "governing",
+      "description": "The App the Space is bound to; it may govern the Space (`governance: app`).",
+      "type": "string"
+    },
+    {
+      "const": "participant",
+      "description": "An App that takes part in the Space without governing it (0.7.0).",
+      "type": "string"
+    }
+  ],
+  "title": "MgmtSpaceAppRole"
+}

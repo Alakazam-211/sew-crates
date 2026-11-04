@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "ChannelType": {
+      "description": "Channel type.",
+      "oneOf": [
+        {
+          "const": "text",
+          "description": "A text channel.",
+          "type": "string"
+        },
+        {
+          "const": "voice",
+          "description": "A voice channel.",
+          "type": "string"
+        },
+        {
+          "const": "announcement",
+          "description": "An announcement channel: `@everyone` posts only in threads by default.",
+          "type": "string"
+        },
+        {
+          "const": "dm",
+          "description": "A 1:1 DM (no space, slug or name; always private).",
+          "type": "string"
+        },
+        {
+          "const": "group_dm",
+          "description": "A group DM of up to 9 people.",
+          "type": "string"
+        }
+      ]
+    },
+    "MgmtChannelOp": {
+      "description": "One op of `POST /mgmt/v1/channels/bulk`, tagged by `op`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Create: ensure, never update. A repeat of an existing slug answers the channel\n(`created: false`) and changes neither its name nor its visibility; a slug held by the\nother type fails the op with `409 conflict` `channel_type_mismatch`.",
+          "properties": {
+            "name": {
+              "description": "The name, 1–100 characters. Used at create only.",
+              "type": "string"
+            },
+            "op": {
+              "const": "ensure",
+              "type": "string"
+            },
+            "private": {
+              "description": "A private channel (its members are the owner until the sync adds people). Used at\ncreate only.",
+              "type": "boolean"
+            },
+            "slug": {
+              "description": "The slug, unique in the Space.",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",
+              "type": "string"
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChannelType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`text` (absent = text) or `voice`."
+            },
+            "user_limit": {
+              "description": "Voice only: at most this many people in the call, 0–99 (0 = no limit). Used at\ncreate only.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "slug",
+            "name",
+            "private"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A new name (1–100 characters) for a channel of the Space.",
+          "properties": {
+            "channel_id": {
+              "description": "The channel.",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "type": "string"
+            },
+            "name": {
+              "description": "The new name.",
+              "type": "string"
+            },
+            "op": {
+              "const": "rename",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "channel_id",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Archives a channel of the Space (a no-op when it is archived).",
+          "properties": {
+            "channel_id": {
+              "description": "The channel.",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "type": "string"
+            },
+            "op": {
+              "const": "archive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "channel_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Unarchives a channel of the Space (a no-op when it is not archived).",
+          "properties": {
+            "channel_id": {
+              "description": "The channel.",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "type": "string"
+            },
+            "op": {
+              "const": "unarchive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "channel_id"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/channels/bulk`.",
+  "properties": {
+    "app_id": {
+      "description": "The Space's governing App; absent for the server-governed Space (governance\n`server`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ops": {
+      "description": "1–200 ops, run in order, each on its own; one failing op fails only itself.",
+      "items": {
+        "$ref": "#/$defs/MgmtChannelOp"
+      },
+      "type": "array"
+    },
+    "space_id": {
+      "description": "The Space; `app_id` must be its governing App (absent: the server-governed Space).",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "space_id",
+    "ops"
+  ],
+  "title": "MgmtChannelBulkRequest",
+  "type": "object"
+}

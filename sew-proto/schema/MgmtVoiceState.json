@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "VoiceConnection": {
+      "description": "Whether the engine has confirmed the member's media.",
+      "oneOf": [
+        {
+          "const": "connecting",
+          "description": "The admit is registered; media not confirmed yet.",
+          "type": "string"
+        },
+        {
+          "const": "connected",
+          "description": "The engine confirmed the participant (also during a reconnect window).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One member's voice state in a Space's voice channel.",
+  "properties": {
+    "channel_id": {
+      "description": "The voice channel.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "connection": {
+      "$ref": "#/$defs/VoiceConnection",
+      "description": "`connecting` or `connected`."
+    },
+    "external_id": {
+      "description": "The member's external id (`k2:owner`, `k2:connect:<uuid>`, …).",
+      "maxLength": 128,
+      "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+      "type": "string"
+    },
+    "joined_at": {
+      "description": "When the join succeeded (a move resets it).",
+      "format": "date-time",
+      "type": "string"
+    },
+    "member_id": {
+      "description": "The member.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "self_deaf": {
+      "description": "Deafened by the member.",
+      "type": "boolean"
+    },
+    "self_mute": {
+      "description": "Muted by the member.",
+      "type": "boolean"
+    },
+    "server_deaf": {
+      "description": "Deafened by a moderator.",
+      "type": "boolean"
+    },
+    "server_mute": {
+      "description": "Muted by a moderator.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "channel_id",
+    "member_id",
+    "external_id",
+    "connection",
+    "self_mute",
+    "self_deaf",
+    "server_mute",
+    "server_deaf",
+    "joined_at"
+  ],
+  "title": "MgmtVoiceState",
+  "type": "object"
+}

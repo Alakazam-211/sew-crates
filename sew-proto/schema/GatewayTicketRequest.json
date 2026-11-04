@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /api/v1/gateway/ticket` (an empty body or `{}` as before).",
+  "properties": {
+    "origin": {
+      "description": "Flag `app_origins`: the web origin the browser reached the App on,\n`wss://<host>[:port]`, set by the App's server from the browser's Host. It must be the\nsession App's `origin` or one of its `origins` (`422 invalid_state` `origin_not_listed`\notherwise), and the ticket's `url` is then `<origin>/api/v1/gateway?v=1&encoding=json`.\nAbsent: the install's gateway URL (unchanged behaviour).",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "GatewayTicketRequest",
+  "type": "object"
+}

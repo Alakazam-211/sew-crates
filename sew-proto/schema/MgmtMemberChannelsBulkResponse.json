@@ -1,0 +1,380 @@
+{
+  "$defs": {
+    "ApiError": {
+      "description": "A structured error: a stable code, a human hint, and typed details.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/Code",
+          "description": "The stable machine code."
+        },
+        "details": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Code-specific details, such as `field`, `retry_after_ms`, `floor` or `reason`.",
+          "type": "object"
+        },
+        "hint": {
+          "description": "For humans; may change between releases.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "hint"
+      ],
+      "type": "object"
+    },
+    "Code": {
+      "description": "A stable machine error code. `lower_snake`; the HTTP status comes from [`Code::status`].",
+      "oneOf": [
+        {
+          "const": "bad_request",
+          "description": "400: the request is malformed.",
+          "type": "string"
+        },
+        {
+          "const": "validation_failed",
+          "description": "400: a field failed validation; `details.field` names it.",
+          "type": "string"
+        },
+        {
+          "const": "unauthenticated",
+          "description": "401: no or unknown credentials.",
+          "type": "string"
+        },
+        {
+          "const": "session_expired",
+          "description": "401: the session expired.",
+          "type": "string"
+        },
+        {
+          "const": "missing_permission",
+          "description": "403: a permission bit is missing.",
+          "type": "string"
+        },
+        {
+          "const": "policy_denied",
+          "description": "403: an org policy forbids this.",
+          "type": "string"
+        },
+        {
+          "const": "not_provisioned",
+          "description": "403: a valid pass for a principal with no Sew account.",
+          "type": "string"
+        },
+        {
+          "const": "act_as_person_forbidden",
+          "description": "403: act-as targeted a person; only agents can be acted as.",
+          "type": "string"
+        },
+        {
+          "const": "provider_is_k2",
+          "description": "403: the command is off on a K2-provided install.",
+          "type": "string"
+        },
+        {
+          "const": "quota_exceeded",
+          "description": "403: a quota or count limit is reached.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "404: missing, or hidden from the caller (masked).",
+          "type": "string"
+        },
+        {
+          "const": "method_not_allowed",
+          "description": "405: only GET reads and POST mutations exist.",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "409: conflicts with current state.",
+          "type": "string"
+        },
+        {
+          "const": "idempotency_conflict",
+          "description": "409: an `Idempotency-Key` was reused with a different body.",
+          "type": "string"
+        },
+        {
+          "const": "resync_required",
+          "description": "410: the cursor is behind the change-log floor; `details.floor` says where.",
+          "type": "string"
+        },
+        {
+          "const": "too_large",
+          "description": "413: the body or a field is too large.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_state",
+          "description": "422: valid request, but the target's state forbids it.",
+          "type": "string"
+        },
+        {
+          "const": "rate_limited",
+          "description": "429: rate limited; `details.retry_after_ms` says when to retry.",
+          "type": "string"
+        },
+        {
+          "const": "internal",
+          "description": "500: a server bug.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "503: temporarily unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "range_not_satisfiable",
+          "description": "416: the byte range is outside the file; `Content-Range: bytes */<size>`.",
+          "type": "string"
+        },
+        {
+          "const": "storage_full",
+          "description": "507: the server's file storage is below its free-space floor.",
+          "type": "string"
+        },
+        {
+          "const": "meeting_ended",
+          "description": "410: the meeting has ended or was cancelled (also a voice join in its\nchannel).",
+          "type": "string"
+        },
+        {
+          "const": "too_early",
+          "description": "425: too early: the meeting opens at `details.opens_at` (also a voice join\nbefore `starts_at` − 15 min).",
+          "type": "string"
+        },
+        {
+          "const": "link_invalid",
+          "description": "404: a meeting link that is unknown, has a wrong secret, was revoked or rotated, or\nwhose meeting ended or was cancelled (one body for all four).",
+          "type": "string"
+        },
+        {
+          "const": "meeting_locked",
+          "description": "423: the meeting is locked.",
+          "type": "string"
+        },
+        {
+          "const": "lobby_full",
+          "description": "429: the meeting's lobby or room is full (`max_waiting`, `max_guests_inside`;\nnothing was written).",
+          "type": "string"
+        },
+        {
+          "const": "knock_blocked",
+          "description": "403: this join nonce (or member) was turned away twice within 10 minutes and may\nnot knock on this meeting for an hour.",
+          "type": "string"
+        },
+        {
+          "const": "cursor_expired",
+          "description": "410: the feed's cursor is behind the pruned part of the log (the person\nnotification feed); `details.oldest_seq` says where to resume.",
+          "type": "string"
+        }
+      ]
+    },
+    "MgmtMemberChannelsItemResult": {
+      "description": "One item's answer in a bulk sync: `answer` on success, `error` (the error body a single\nsync would answer) otherwise.",
+      "properties": {
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MgmtMemberChannelsResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The answer (status `200`)."
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The error (any other status)."
+        },
+        "external_id": {
+          "description": "The item's person.",
+          "maxLength": 128,
+          "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+          "type": "string"
+        },
+        "status": {
+          "description": "The HTTP status the single sync would answer (`200`, `409`, `422`, …).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "external_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "MgmtMemberChannelsResponse": {
+      "description": "Answer of one sync item. Channel lists are ascending.",
+      "properties": {
+        "added": {
+          "description": "Channels the person joined.",
+          "items": {
+            "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "external_id": {
+          "description": "The person.",
+          "maxLength": 128,
+          "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "The job of a `queued` item.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpaceLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The person's level after the sync (absent when `skipped`)."
+        },
+        "member_id": {
+          "description": "Their member id.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "queued": {
+          "default": false,
+          "description": "The item has more than 1,000 channel changes and runs as a job: `added`, `removed`\nand `unchanged` are empty, `job_id` names the job (`GET /mgmt/v1/jobs/{id}`). A later\nsync of the same person replaces a job that has not run.",
+          "type": "boolean"
+        },
+        "removed": {
+          "description": "Channels the person left.",
+          "items": {
+            "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "skipped": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MgmtMemberChannelsSkip"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set when the item changed nothing for its person, with why."
+        },
+        "unchanged": {
+          "description": "Listed channels the person was in already.",
+          "items": {
+            "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unknown_channel_ids": {
+          "description": "Listed ids that are not live private channels of this Space (unknown, in another\nSpace, archived, public or a meeting's channel); the rest of the list applied.",
+          "items": {
+            "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "external_id",
+        "member_id",
+        "added",
+        "removed",
+        "unchanged",
+        "unknown_channel_ids"
+      ],
+      "type": "object"
+    },
+    "MgmtMemberChannelsSkip": {
+      "description": "Why a sync item changed nothing for its person.",
+      "oneOf": [
+        {
+          "const": "owner",
+          "description": "The person is the Space's owner (the App's service owner): the sync never removes,\ndemotes or replaces the owner, who is in every channel.",
+          "type": "string"
+        },
+        {
+          "const": "deprovisioned",
+          "description": "The person was deprovisioned; only `principals/provision` brings them back.",
+          "type": "string"
+        },
+        {
+          "const": "banned",
+          "description": "The Space bans the person; bans win over the sync.",
+          "type": "string"
+        },
+        {
+          "const": "quota_exceeded",
+          "description": "The Space is at its App's `members_per_space_max`, so the person could not join.",
+          "type": "string"
+        }
+      ]
+    },
+    "SpaceLevel": {
+      "description": "A person's level in an App-governed Space (K2's sync sets it), and an App's\n`max_level`. `moderator` and `admin` are the Space's managed roles; `member` is\n`@everyone`.",
+      "oneOf": [
+        {
+          "const": "member",
+          "description": "`@everyone` only.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "The managed Moderator role.",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "The managed Admin role (the Moderator bits plus MENTION_EVERYONE).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Answer of `POST /mgmt/v1/spaces/{space_id}/members/channels`, in request order.",
+  "properties": {
+    "items": {
+      "description": "One result per item.",
+      "items": {
+        "$ref": "#/$defs/MgmtMemberChannelsItemResult"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "MgmtMemberChannelsBulkResponse",
+  "type": "object"
+}

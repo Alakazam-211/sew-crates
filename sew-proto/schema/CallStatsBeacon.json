@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The call-stats beacon's terms for this join.",
+  "properties": {
+    "audio_fields": {
+      "description": "Flag `call_stats_native`: the server takes client `native` and the\noptional audio fields of [`CallStatsSample`]; send them only when this is `true` (an\nolder server refuses them). Sent only when `true`.",
+      "type": "boolean"
+    },
+    "interval_ms": {
+      "description": "Send one [`CallStatsSample`] per this many milliseconds while connected, and one when\nleaving (the server refuses more than [`CALL_STATS_PER_MINUTE`] a minute per session).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "interval_ms"
+  ],
+  "title": "CallStatsBeacon",
+  "type": "object"
+}

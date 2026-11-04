@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Whether the audio listing hands out keys.",
+  "oneOf": [
+    {
+      "const": "off",
+      "description": "No in-app playback (the default).",
+      "type": "string"
+    },
+    {
+      "const": "client_unseal",
+      "description": "Keys and ciphertext URLs for local unsealing.",
+      "type": "string"
+    }
+  ],
+  "title": "Playback"
+}

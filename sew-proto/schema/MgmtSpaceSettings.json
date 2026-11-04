@@ -1,0 +1,75 @@
+{
+  "$defs": {
+    "SpaceGovernance": {
+      "description": "Who governs a Space's structure.",
+      "oneOf": [
+        {
+          "const": "sew",
+          "description": "Sew's own model: roles, overwrites and membership are edited in Sew (the default).",
+          "type": "string"
+        },
+        {
+          "const": "app",
+          "description": "The governing App decides membership, private channels and levels (K2's sync).",
+          "type": "string"
+        },
+        {
+          "const": "server",
+          "description": "The server-governed Space (named `K5 Space`), one per K2 install, owned by `k2:server`:\nK2's daemon decides its structure over mgmt; no App session ever reaches it.",
+          "type": "string"
+        }
+      ]
+    },
+    "SpaceJoinPolicy": {
+      "description": "Who may join a space by themself.",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "Any active non-guest member may join.",
+          "type": "string"
+        },
+        {
+          "const": "invite",
+          "description": "Members join only when someone adds them (the default).",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Answer of `GET`/`POST /mgmt/v1/spaces/{space_id}/settings`: the values after the\ncall.",
+  "properties": {
+    "app_id": {
+      "description": "Its App; absent when unbound.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "governance": {
+      "$ref": "#/$defs/SpaceGovernance",
+      "default": "sew",
+      "description": "Who governs the Space's structure. Old payloads read as `sew`."
+    },
+    "join_policy": {
+      "$ref": "#/$defs/SpaceJoinPolicy",
+      "description": "Its join policy (`invite` whenever `private`)."
+    },
+    "private": {
+      "description": "Whether the Space is private.",
+      "type": "boolean"
+    },
+    "space_id": {
+      "description": "The Space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "space_id",
+    "private",
+    "join_policy"
+  ],
+  "title": "MgmtSpaceSettings",
+  "type": "object"
+}
