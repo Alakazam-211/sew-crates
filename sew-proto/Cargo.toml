@@ -24,7 +24,6 @@ include = [
     "README.md",
     "CHANGELOG.md",
 ]
-publish = false
 autolib = false
 autobins = false
 autoexamples = false
