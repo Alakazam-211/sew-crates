@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 (2026-11-05, Sew 0.8.0)
+
+- Needs sew-proto 0.8 (and sew-e2ee, sew-lkproto and sew-lk-compat 0.8). The crate re-exports
+  sew-proto's recording types (`ConsentPrompt`, `Recording`, `RecordingNotice`,
+  `RecordingRef`), so the new sew-proto is a breaking change here. sew-proto 0.8 adds the
+  voice leave reason `app_unlinked` (an App's link to the Space was removed); a call that
+  ends with it reports the server's reason as the other leave reasons do.
+- Each new media session (the first connection and every full reconnect) logs its first RTP
+  send sequence at info (`first_seq`, target `sew_call_client`), so a log shows that a new
+  connection starts a fresh sequence.
+- No other API change.
+
 ## 0.3.0 (2026-11-05, Sew 0.7.4)
 
 - The hardware device key (phones). `device::HardwareDeviceKey` (async `public_key`,

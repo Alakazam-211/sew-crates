@@ -120,6 +120,11 @@ pub struct PersonNotification {
     pub from_member_id: Id,
     /// The App the Space is bound to; `null` for an unbound Space and for DMs.
     pub app_id: Option<String>,
+    /// Since 0.8.0 (flag `app_participant_links`): the Space's participant Apps (sorted), so
+    /// K2 can route the push to an App the person uses; absent when none, and for DMs.
+    /// `app_id` stays the governing App.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_app_ids: Vec<String>,
     /// The message text cut to 120 chars, only while `notifications.mgmt_preview` is on and
     /// only on message items (never on calls).
     #[serde(default, skip_serializing_if = "Option::is_none")]

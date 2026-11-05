@@ -4735,7 +4735,7 @@ dependencies = [
 
 [[package]]
 name = "sew-call-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4775,7 +4775,7 @@ dependencies = [
 
 [[package]]
 name = "sew-e2ee"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",
@@ -4801,7 +4801,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lk-compat"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",
@@ -4821,7 +4821,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lkproto"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -4831,7 +4831,7 @@ dependencies = [
 
 [[package]]
 name = "sew-mls-crypto"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -4852,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "sew-proto"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5429,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-voice"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cpal",
  "serde",

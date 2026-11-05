@@ -167,6 +167,10 @@ pub struct ReadySpace {
     /// The App's display name (as `Space.app_display_name`); absent when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_display_name: Option<String>,
+    /// The participant Apps (as `Space.participant_app_ids`, with the same per-session view;
+    /// since 0.8.0); absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_app_ids: Vec<String>,
     /// A private Space (as `Space.private`); absent when `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub private: bool,

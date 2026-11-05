@@ -56,7 +56,7 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.3.0"
+sew-call-client = "0.4.0"
 ```
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own

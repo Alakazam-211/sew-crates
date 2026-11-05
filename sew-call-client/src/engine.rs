@@ -2489,6 +2489,7 @@ impl Engine {
                 self.pc = Some(pc);
                 // A new SRTP session: never continue the old one's sequence (its rollover).
                 self.send_seq = fresh_send_seq(&self.cfg);
+                tracing::info!(target: "sew_call_client", first_seq = self.send_seq, "new media session");
                 self.publishing = false;
                 self.cid_on_pc = false;
                 // Without SPEAK nothing is published until the engine allows the microphone.

@@ -1016,6 +1016,16 @@
       "const": "space.visibility",
       "description": "A Space was made private or public again (`details {private}`).",
       "type": "string"
+    },
+    {
+      "const": "space.app_link",
+      "description": "Sew 0.8.0: K2 linked a participant App to a Space (`details {app_id,\ngoverning_app_id, k2_actor}`).",
+      "type": "string"
+    },
+    {
+      "const": "space.app_unlink",
+      "description": "Sew 0.8.0: K2 removed a participant App's link (`details {app_id,\ngoverning_app_id, k2_actor}`).",
+      "type": "string"
     }
   ],
   "title": "Action"

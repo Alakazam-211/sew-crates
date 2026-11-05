@@ -45,6 +45,13 @@
             "null"
           ]
         },
+        "participant_app_ids": {
+          "description": "Since 0.8.0 (flag `app_participant_links`): the Space's participant Apps (sorted), so\nK2 can route the push to an App the person uses; absent when none, and for DMs.\n`app_id` stays the governing App.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "preview": {
           "description": "The message text cut to 120 chars, only while `notifications.mgmt_preview` is on and\nonly on message items (never on calls).",
           "type": [

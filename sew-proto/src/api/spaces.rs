@@ -76,6 +76,13 @@ pub struct Space {
     /// labels; absent when the Space is not bound or the App has no name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_display_name: Option<String>,
+    /// Since 0.8.0 (flag `app_participant_links`): the participant Apps, whose sessions see
+    /// the Space and act in it as the person, as the governing App's do (`app_id` stays the
+    /// governing App). Sorted; at most 8; absent when none. Unscoped and home-client sessions
+    /// get the whole list; an App session gets only its own id, when its App is a participant,
+    /// and nothing otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_app_ids: Vec<String>,
     /// The App the Space was unbound from while it is a read-only orphan (posts, joins,
     /// calls and member adds are `422 invalid_state` `space_orphaned`); absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]

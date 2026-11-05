@@ -476,6 +476,12 @@ unit_enum! {
         HomeClientSet = "home_client.set",
         /// A Space was made private or public again (`details {private}`).
         SpaceVisibility = "space.visibility",
+        /// Sew 0.8.0: K2 linked a participant App to a Space (`details {app_id,
+        /// governing_app_id, k2_actor}`).
+        SpaceAppLink = "space.app_link",
+        /// Sew 0.8.0: K2 removed a participant App's link (`details {app_id,
+        /// governing_app_id, k2_actor}`).
+        SpaceAppUnlink = "space.app_unlink",
     }
 }
 
@@ -627,6 +633,8 @@ impl Action {
             | A::SpaceUpdate
             | A::SpaceVisibility
             | A::SpaceUnbind
+            | A::SpaceAppLink
+            | A::SpaceAppUnlink
             | A::SpaceRelease
             | A::SpaceGovernance
             | A::CategoryCreate

@@ -245,6 +245,11 @@
           "const": "media_path_down",
           "description": "K2 said the media path (the TURN lane) is down: every live call\nended.",
           "type": "string"
+        },
+        {
+          "const": "app_unlinked",
+          "description": "Sew 0.8.0: the join came through an App whose participant link to the\nvoice channel's Space was removed.",
+          "type": "string"
         }
       ]
     }

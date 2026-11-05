@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 (2026-11-05, Sew 0.8.0)
+
+- Needs sew-call-client 0.4 and sew-proto 0.8. The plugin re-exports sew-proto's
+  `ConsentAsk` and `ConsentChoice`, so the new sew-proto is a breaking change here. The
+  plugin's own API is unchanged.
+
 ## 0.3.0 (2026-11-05, Sew 0.7.4)
 
 - Needs sew-call-client 0.3.0 (breaking there: `VaultConfig.platform`, and the vault's

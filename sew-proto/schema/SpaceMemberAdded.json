@@ -186,6 +186,13 @@
           "pattern": "^[1-9][0-9]{0,18}$",
           "type": "string"
         },
+        "participant_app_ids": {
+          "description": "Since 0.8.0 (flag `app_participant_links`): the participant Apps, whose sessions see\nthe Space and act in it as the person, as the governing App's do (`app_id` stays the\ngoverning App). Sorted; at most 8; absent when none. Unscoped and home-client sessions\nget the whole list; an App session gets only its own id, when its App is a participant,\nand nothing otherwise.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "private": {
           "description": "A private Space is hidden from everyone outside it (lists, the joinable\ndirectory, search, mentionables, previews and GET answer the masked 404 of an unknown\nSpace) and is invite-only (`join_policy` is `invite`). Absent when `false`.",
           "type": "boolean"

@@ -304,6 +304,10 @@ pub const MGMT_SPACES_BIND: &str = "/mgmt/v1/spaces/bind";
 pub const MGMT_SPACE_SETTINGS: &str = "/mgmt/v1/spaces/{space_id}/settings";
 /// `GET`: a Space's App links (`space_apps`).
 pub const MGMT_SPACE_APPS: &str = "/mgmt/v1/spaces/{space_id}/apps";
+/// `POST`: link a participant App to a Space (Sew 0.8.0).
+pub const MGMT_SPACE_APPS_LINK: &str = "/mgmt/v1/spaces/{space_id}/apps/link";
+/// `POST`: remove a participant App's link to a Space (Sew 0.8.0).
+pub const MGMT_SPACE_APPS_UNLINK: &str = "/mgmt/v1/spaces/{space_id}/apps/unlink";
 /// `POST`: one person's private channels and level in an App-governed Space.
 pub const MGMT_SPACE_MEMBER_CHANNELS: &str =
     "/mgmt/v1/spaces/{space_id}/members/{external_id}/channels";
@@ -317,6 +321,8 @@ pub const MGMT_SPACES_RELEASE: &str = "/mgmt/v1/spaces/release";
 pub const MGMT_HOME_CLIENT: &str = "/mgmt/v1/home-client";
 /// `GET`, `POST`: one App's settings (`hidden_from_home`, `display_name`, `origin`).
 pub const MGMT_APP_SETTINGS: &str = "/mgmt/v1/apps/{app_id}/settings";
+/// `GET`: every Space link of one App, both roles, paged (Sew 0.8.0).
+pub const MGMT_APP_SPACES: &str = "/mgmt/v1/apps/{app_id}/spaces";
 /// `POST`: add principals to a Space.
 pub const MGMT_SPACE_MEMBERS_ADD: &str = "/mgmt/v1/spaces/members/add";
 /// `POST`: remove a principal from a Space.

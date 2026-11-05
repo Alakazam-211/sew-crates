@@ -1966,6 +1966,13 @@
             "null"
           ]
         },
+        "participant_app_ids": {
+          "description": "The participant Apps (as `Space.participant_app_ids`, with the same per-session view;\nsince 0.8.0); absent when none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "private": {
           "description": "A private Space (as `Space.private`); absent when `false`.",
           "type": "boolean"

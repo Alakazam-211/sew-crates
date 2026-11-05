@@ -28,7 +28,7 @@
         },
         {
           "const": "participant",
-          "description": "An App that takes part in the Space without governing it (0.7.0).",
+          "description": "An App that takes part in the Space without governing it (Sew 0.8.0:\nits sessions see and use the Space as the person; it has no say over it).",
           "type": "string"
         }
       ]

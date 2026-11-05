@@ -41,6 +41,19 @@
 //!   any App may bind it). `confirm: true` is required; a Space that is not orphaned answers
 //!   `changed: false` (`409 conflict` `space_bound` while it is bound).
 //!
+//! - `POST /mgmt/v1/spaces/{space_id}/apps/link` and `…/apps/unlink`
+//!   ([`MgmtSpaceAppLinkRequest`] → [`MgmtSpaceAppsChange`], Sew 0.8.0): a
+//!   **participant link** lets a second App's sessions see and use the Space as the person,
+//!   with no say over it. `governing_app_id` must name the Space's governing App (`409
+//!   conflict` `app_mismatch`); a Space without one (unbound, an orphan, the K5 Space) is `409
+//!   conflict` `no_governing_app`; the governing App as `app_id` is `409 conflict`
+//!   `app_is_governing`; the home client is `409 conflict` `home_client_cannot_link`; a ninth
+//!   participant is `409 conflict` `participant_apps_max`. A repeat is `changed: false`.
+//!   Audited `space.app_link` / `space.app_unlink`. A participant App's id on a Space write
+//!   that takes `app_id` is `409 conflict` `app_not_governing`.
+//! - `GET /mgmt/v1/apps/{app_id}/spaces` ([`MgmtAppSpacesQuery`] → [`MgmtAppSpaces`]): every
+//!   link of one App, both roles, by Space id, up to 500 a page.
+//!
 //! On a bound Space the client API never adds members: `members/add`, the open join, a channel
 //! add that would bring in a new Space member, and switching it to `open` are `422
 //! invalid_state` `app_bound_space`. Leaving and moderator removal still work.
@@ -334,7 +347,8 @@ unit_enum! {
     pub enum MgmtSpaceAppRole {
         /// The App the Space is bound to; it may govern the Space (`governance: app`).
         Governing = "governing",
-        /// An App that takes part in the Space without governing it (0.7.0).
+        /// An App that takes part in the Space without governing it (Sew 0.8.0:
+        /// its sessions see and use the Space as the person; it has no say over it).
         Participant = "participant",
     }
 }
@@ -374,9 +388,110 @@ pub struct MgmtSpaceApps {
     pub items: Vec<MgmtSpaceApp>,
 }
 
+/// Most links one page of `GET /mgmt/v1/apps/{app_id}/spaces` answers.
+pub const MGMT_APP_SPACES_LIMIT_MAX: u32 = 500;
+/// The default page size of `GET /mgmt/v1/apps/{app_id}/spaces`.
+pub const MGMT_APP_SPACES_LIMIT_DEFAULT: u32 = 100;
+
+/// Body of `POST /mgmt/v1/spaces/{space_id}/apps/link` and `…/apps/unlink` (Sew 0.8.0):
+/// a participant link of `app_id` to the Space. `governing_app_id` must name the
+/// Space's governing App (`409 conflict` `app_mismatch`), which guards against a stale view
+/// after an unbind or rebind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MgmtSpaceAppLinkRequest {
+    /// The Space's governing App.
+    pub governing_app_id: String,
+    /// The participant App.
+    pub app_id: String,
+}
+
+impl Validate for MgmtSpaceAppLinkRequest {
+    fn validate(&self) -> Result<(), ValidationError> {
+        check_app_id("governing_app_id", &self.governing_app_id)?;
+        check_app_id("app_id", &self.app_id)
+    }
+}
+
+/// Answer of `POST /mgmt/v1/spaces/{space_id}/apps/link` and `…/apps/unlink`: the Space's
+/// links after the call, the governing one first (as `GET …/apps` lists them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MgmtSpaceAppsChange {
+    /// The Space.
+    pub space_id: Id,
+    /// Who governs its structure.
+    pub governance: crate::api::spaces::SpaceGovernance,
+    /// Its links after the call.
+    pub items: Vec<MgmtSpaceApp>,
+    /// `false` when the call changed nothing (linked already, or not linked).
+    pub changed: bool,
+}
+
+/// Query of `GET /mgmt/v1/apps/{app_id}/spaces`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MgmtAppSpacesQuery {
+    /// Links of Spaces with an id above this one (the previous page's `next`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Id>,
+    /// Page size, 1–500 (default 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl MgmtAppSpacesQuery {
+    /// The page size, default [`MGMT_APP_SPACES_LIMIT_DEFAULT`].
+    pub fn limit(&self) -> u32 {
+        self.limit.unwrap_or(MGMT_APP_SPACES_LIMIT_DEFAULT)
+    }
+}
+
+impl Validate for MgmtAppSpacesQuery {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(l) = self.limit
+            && !(1..=MGMT_APP_SPACES_LIMIT_MAX).contains(&l)
+        {
+            return Err(ValidationError::invalid(
+                "limit",
+                format!("limit must be 1–{MGMT_APP_SPACES_LIMIT_MAX}"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One link of `GET /mgmt/v1/apps/{app_id}/spaces`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MgmtAppSpace {
+    /// The Space.
+    pub space_id: Id,
+    /// What the App's link to it is.
+    pub role: MgmtSpaceAppRole,
+}
+
+/// Answer of `GET /mgmt/v1/apps/{app_id}/spaces`: every link of one App (both roles), by
+/// Space id ascending.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MgmtAppSpaces {
+    /// The App.
+    pub app_id: String,
+    /// One page of its links.
+    pub items: Vec<MgmtAppSpace>,
+    /// The `after` of the next page; absent on the last one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<Id>,
+}
+
 /// The feature flag of `spaces/unbind` and `spaces/release`. Listed in
 /// [`super::FEATURES`].
 pub const FEATURE_SPACE_UNBIND: &str = "space_unbind";
+
+/// The feature flag of participant links (Sew 0.8.0): `spaces/{space_id}/apps/link` and
+/// `…/unlink`, `GET /mgmt/v1/apps/{app_id}/spaces`, `participant` rows in
+/// `GET /mgmt/v1/spaces/{space_id}/apps`, `participant_app_ids` on the client `Space`,
+/// `ReadySpace` and the person feed, the voice leave reason `app_unlinked`, and export minor 10.
+/// K2 calls the link routes only when it sees it. Listed in [`super::FEATURES`].
+pub const FEATURE_APP_PARTICIPANT_LINKS: &str = "app_participant_links";
 
 /// Body of `POST /mgmt/v1/spaces/unbind`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

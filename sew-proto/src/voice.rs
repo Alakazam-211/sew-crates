@@ -95,6 +95,9 @@ coded_enum! {
         /// K2 said the media path (the TURN lane) is down: every live call
         /// ended.
         MediaPathDown = "media_path_down" => 28,
+        /// Sew 0.8.0: the join came through an App whose participant link to the
+        /// voice channel's Space was removed.
+        AppUnlinked = "app_unlinked" => 29,
     }
 }
 

@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-e2ee"
-version = "0.7.4"
+version = "0.8.0"
 build = false
 include = [
     "src/**",
@@ -93,10 +93,10 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-mls-crypto]
-version = "0.7.4"
+version = "0.8.0"
 
 [dependencies.sew-proto]
-version = "0.7.4"
+version = "0.8.0"
 
 [dependencies.sha2]
 version = "0.10"

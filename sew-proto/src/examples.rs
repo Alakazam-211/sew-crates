@@ -352,6 +352,7 @@ fn space_min() -> Space {
         welcome_channel_id: None,
         app_id: None,
         app_display_name: None,
+        participant_app_ids: vec![],
         orphaned_from: None,
         hidden: false,
         private: false,
@@ -373,6 +374,7 @@ impl Example for Space {
             welcome_channel_id: Some(ID_CHANNEL),
             app_id: Some("atrium".into()),
             app_display_name: Some("Atrium".into()),
+            participant_app_ids: vec!["jobs".into()],
             orphaned_from: Some("atrium".into()),
             hidden: true,
             private: true,
@@ -1847,6 +1849,7 @@ fn ready_full() -> Ready {
             hidden: true,
             app_id: Some("atrium".into()),
             app_display_name: Some("Atrium".into()),
+            participant_app_ids: vec!["jobs".into()],
             private: true,
             orphaned_from: Some("atrium".into()),
             governance: SpaceGovernance::App,
@@ -2728,6 +2731,7 @@ impl Example for PersonNotificationsPage {
                     call_id: None,
                     from_member_id: ID_BOB,
                     app_id: Some("atrium".into()),
+                    participant_app_ids: vec!["jobs".into()],
                     preview: Some("@bob can you check the deploy log?".into()),
                 },
                 PersonNotification {
@@ -2740,6 +2744,7 @@ impl Example for PersonNotificationsPage {
                     call_id: Some(ID_JOB),
                     from_member_id: ID_CAROL,
                     app_id: None,
+                    participant_app_ids: vec![],
                     preview: None,
                 },
             ],
@@ -3621,6 +3626,96 @@ impl Example for MgmtSpaceApps {
                     space_id: ID_SPACE,
                     governance: SpaceGovernance::Sew,
                     items: vec![],
+                },
+            ),
+        ]
+    }
+}
+
+impl Example for MgmtSpaceAppLinkRequest {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![(
+            "full",
+            MgmtSpaceAppLinkRequest {
+                governing_app_id: "jobs".into(),
+                app_id: "home".into(),
+            },
+        )]
+    }
+}
+
+impl Example for MgmtSpaceAppsChange {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MgmtSpaceAppsChange {
+                    space_id: ID_SPACE,
+                    governance: SpaceGovernance::App,
+                    items: vec![
+                        MgmtSpaceApp {
+                            app_id: "jobs".into(),
+                            role: MgmtSpaceAppRole::Governing,
+                        },
+                        MgmtSpaceApp {
+                            app_id: "home".into(),
+                            role: MgmtSpaceAppRole::Participant,
+                        },
+                    ],
+                    changed: true,
+                },
+            ),
+            (
+                "unlinked",
+                MgmtSpaceAppsChange {
+                    space_id: ID_SPACE,
+                    governance: SpaceGovernance::Sew,
+                    items: vec![MgmtSpaceApp {
+                        app_id: "jobs".into(),
+                        role: MgmtSpaceAppRole::Governing,
+                    }],
+                    changed: false,
+                },
+            ),
+        ]
+    }
+}
+
+impl Example for MgmtAppSpacesQuery {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MgmtAppSpacesQuery {
+                    after: Some(ID_SPACE),
+                    limit: Some(500),
+                },
+            ),
+            ("min", MgmtAppSpacesQuery::default()),
+        ]
+    }
+}
+
+impl Example for MgmtAppSpaces {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MgmtAppSpaces {
+                    app_id: "home".into(),
+                    items: vec![MgmtAppSpace {
+                        space_id: ID_SPACE,
+                        role: MgmtSpaceAppRole::Participant,
+                    }],
+                    next: Some(ID_SPACE),
+                },
+            ),
+            (
+                "last",
+                MgmtAppSpaces {
+                    app_id: "home".into(),
+                    items: vec![],
+                    next: None,
                 },
             ),
         ]

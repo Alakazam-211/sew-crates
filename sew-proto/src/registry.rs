@@ -241,6 +241,7 @@ pub const NESTED: &[&str] = &[
     "MgmtSpaceMemberRef",
     // One link of `GET /mgmt/v1/spaces/{space_id}/apps`.
     "MgmtSpaceApp",
+    "MgmtAppSpace",
     // One item of a bulk member-channels sync, and its answer.
     "MgmtMemberChannelsItem",
     "MgmtMemberChannelsItemResult",
@@ -1186,6 +1187,31 @@ pub fn all() -> Vec<WireType> {
             "GET /mgmt/v1/spaces/{space_id}/apps"
         ),
         wire!(Enum, "mgmt", MgmtSpaceAppRole, "MgmtSpaceApp.role"),
+        // Participant links (Sew 0.8.0).
+        wire!(
+            Request,
+            "mgmt",
+            MgmtSpaceAppLinkRequest,
+            "POST /mgmt/v1/spaces/{space_id}/apps/link, POST /mgmt/v1/spaces/{space_id}/apps/unlink"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtSpaceAppsChange,
+            "POST /mgmt/v1/spaces/{space_id}/apps/link, POST /mgmt/v1/spaces/{space_id}/apps/unlink"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtAppSpacesQuery,
+            "GET /mgmt/v1/apps/{app_id}/spaces"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtAppSpaces,
+            "GET /mgmt/v1/apps/{app_id}/spaces"
+        ),
         // The member-channels sync.
         wire!(
             Request,

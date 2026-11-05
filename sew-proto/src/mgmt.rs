@@ -74,14 +74,16 @@ pub use ops::{
     AuditVerifyMode, AuditVerifyReport, AuditVerifyRequest, EXPORT_RECIPIENTS_MAX, ExportRequest,
 };
 pub use spaces::{
-    ADMIN_SPACE_SLUG, APP_ID_MAX_BYTES, FEATURE_APP_GOVERNED_SPACES, FEATURE_PRIVATE_SPACES,
-    FEATURE_SERVER_GOVERNED_SPACE, FEATURE_SPACE_UNBIND, MgmtBoxUsersDetails, MgmtSpaceApp,
-    MgmtSpaceAppRole, MgmtSpaceApps, MgmtSpaceBindRequest, MgmtSpaceCreateRequest,
-    MgmtSpaceMemberRef, MgmtSpaceMemberRemoveRequest, MgmtSpaceMemberRemoveResponse,
-    MgmtSpaceMembersAddRequest, MgmtSpaceMembersAddResponse, MgmtSpaceNotAdded,
-    MgmtSpaceNotAddedReason, MgmtSpaceOrphanResponse, MgmtSpaceReleaseRequest, MgmtSpaceResponse,
-    MgmtSpaceSettings, MgmtSpaceSettingsRequest, MgmtSpaceUnbindRequest, SPACE_MANAGER_ROLE_NAME,
-    SPACE_MANAGERS_MAX, SPACE_MEMBERS_ADD_MAX, is_app_id,
+    ADMIN_SPACE_SLUG, APP_ID_MAX_BYTES, FEATURE_APP_GOVERNED_SPACES, FEATURE_APP_PARTICIPANT_LINKS,
+    FEATURE_PRIVATE_SPACES, FEATURE_SERVER_GOVERNED_SPACE, FEATURE_SPACE_UNBIND,
+    MGMT_APP_SPACES_LIMIT_DEFAULT, MGMT_APP_SPACES_LIMIT_MAX, MgmtAppSpace, MgmtAppSpaces,
+    MgmtAppSpacesQuery, MgmtBoxUsersDetails, MgmtSpaceApp, MgmtSpaceAppLinkRequest,
+    MgmtSpaceAppRole, MgmtSpaceApps, MgmtSpaceAppsChange, MgmtSpaceBindRequest,
+    MgmtSpaceCreateRequest, MgmtSpaceMemberRef, MgmtSpaceMemberRemoveRequest,
+    MgmtSpaceMemberRemoveResponse, MgmtSpaceMembersAddRequest, MgmtSpaceMembersAddResponse,
+    MgmtSpaceNotAdded, MgmtSpaceNotAddedReason, MgmtSpaceOrphanResponse, MgmtSpaceReleaseRequest,
+    MgmtSpaceResponse, MgmtSpaceSettings, MgmtSpaceSettingsRequest, MgmtSpaceUnbindRequest,
+    SPACE_MANAGER_ROLE_NAME, SPACE_MANAGERS_MAX, SPACE_MEMBERS_ADD_MAX, is_app_id,
 };
 pub use voice::{
     FEATURE_MGMT_VOICE_STATES, FEATURE_VOICE_CHANNEL_CLOSING, FEATURE_VOICE_MEDIA_PATH,
@@ -694,6 +696,8 @@ pub const FEATURES: &[&str] = &[
     FEATURE_APP_ORIGIN,
     // Since 0.7.2: `origins` in the App settings; a voice or call join may name its `origin`.
     FEATURE_APP_ORIGINS,
+    // Since 0.8.0: participant links (`spaces/{space_id}/apps/link`, `participant_app_ids`).
+    FEATURE_APP_PARTICIPANT_LINKS,
     // `GET`/`POST /mgmt/v1/apps/{app_id}/quotas` and their enforcement.
     "app_quotas",
     // The pass's `app` claim scopes the session.
@@ -1451,6 +1455,17 @@ pub mod reasons {
     /// The home client never governs a Space: a governing link for it, `max_level`
     /// on it, or a home client that governs a Space (409).
     pub const HOME_CLIENT_CANNOT_GOVERN: &str = "home_client_cannot_govern";
+    /// Sew 0.8.0: an App id on a Space write names a participant App of the Space, not
+    /// its governing App (409; a participant App has no say over the Space).
+    pub const APP_NOT_GOVERNING: &str = "app_not_governing";
+    /// Sew 0.8.0: a participant link (or unlink) names the Space's governing App
+    /// (409; use `spaces/unbind`).
+    pub const APP_IS_GOVERNING: &str = "app_is_governing";
+    /// Sew 0.8.0: the Space has 8 participant Apps already (409).
+    pub const PARTICIPANT_APPS_MAX: &str = "participant_apps_max";
+    /// Sew 0.8.0: the home client is never a participant App: a link naming it, or a home
+    /// client that is a participant somewhere (409).
+    pub const HOME_CLIENT_CANNOT_LINK: &str = "home_client_cannot_link";
     /// `governance: app` while box users (`k2:owner`, `k2:connect:`) other than
     /// the owner are members of the Space (409, `MgmtBoxUsersDetails`).
     pub const BOX_USERS_PRESENT: &str = "box_users_present";

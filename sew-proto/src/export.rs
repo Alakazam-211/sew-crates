@@ -509,6 +509,10 @@ pub struct SpaceRecord {
     /// The App the space belongs to (minor 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// The participant Apps (minor 10, Sew 0.8.0): Apps whose sessions also see the Space,
+    /// sorted; omitted when none. Only with `app_id`, never naming it, at most 8.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_app_ids: Vec<String>,
     /// A hidden Space, such as the Meetings Space (minor 3); omitted when `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub hidden: bool,

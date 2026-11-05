@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/spaces/{space_id}/apps/link` and `…/apps/unlink` (Sew 0.8.0):\na participant link of `app_id` to the Space. `governing_app_id` must name the\nSpace's governing App (`409 conflict` `app_mismatch`), which guards against a stale view\nafter an unbind or rebind.",
+  "properties": {
+    "app_id": {
+      "description": "The participant App.",
+      "type": "string"
+    },
+    "governing_app_id": {
+      "description": "The Space's governing App.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "governing_app_id",
+    "app_id"
+  ],
+  "title": "MgmtSpaceAppLinkRequest",
+  "type": "object"
+}

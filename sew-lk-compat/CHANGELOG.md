@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0 (2026-11-05)
+
+- The version follows Sew 0.8.0. The README is revised. No API or behaviour change.
+
 ## 0.7.4 (2026-11-05)
 
 - `rust-crypto` feature (phones): LkGcm's AES-128-GCM and HKDF-SHA256 on RustCrypto
