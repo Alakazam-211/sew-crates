@@ -1,6 +1,6 @@
-sew-proto is the wire contract of Sew, a self-hosted team chat server: the Rust types of every JSON body its HTTP API and realtime gateway send and receive.
-
 # sew-proto
+
+sew-proto is the wire contract of Sew, a self-hosted team chat server: the Rust types of every JSON body its HTTP API and realtime gateway send and receive.
 
 Sew is Alakazam Labs' chat server for companies that run their own (channels, threads, direct
 messages, spaces with roles and permissions, voice channels, search, retention, legal hold).
@@ -18,19 +18,20 @@ What it holds:
 - the JSON Schema of every type, in `schema/` (generated with `schemars`).
 
 The crate is pure: apart from the clock in `clock`, it does no I/O. Its dependencies are
-`serde`, `serde_json`, `schemars` and `chrono`. It builds on Linux and macOS.
+`serde`, `serde_json`, `schemars` and `chrono`. It has no platform-specific code and works on
+Linux, macOS and Windows (Sew's own builds cover Linux and macOS; a compile check covers
+Windows).
+
+- Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
+  repository at each release, so pull requests are not merged there)
+- API documentation: <https://docs.rs/sew-proto>
 
 ## Usage
 
-The crate is not on crates.io yet. It is published in the `sew-crates` mirror, a directory of
-packaged crates; point Cargo at it from your workspace's root `Cargo.toml`:
-
 ```toml
 [dependencies]
-sew-proto = "0.7.3"
-
-[patch.crates-io]
-sew-proto = { path = "third_party/sew-crates/sew-proto" }
+sew-proto = "0.7.4"
+serde_json = "1" # for the example below
 ```
 
 Reading an error answer:

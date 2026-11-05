@@ -46,7 +46,7 @@ use super::{
 };
 use crate::Clock;
 use crate::config::ClientConfig;
-use crate::device::{StoreChoice, VaultConfig, platform_name};
+use crate::device::{DevicePlatform, StoreChoice, VaultConfig, default_platform, platform_name};
 use crate::provider::BoxFuture;
 
 /// How often the bridge re-checks the key state when nothing else happened.
@@ -97,6 +97,7 @@ struct Pending {
 pub struct MlsKeys {
     store: StoreChoice,
     label: String,
+    platform: DevicePlatform,
     clock: Clock,
     pending: Mutex<Option<Pending>>,
 }
@@ -124,6 +125,7 @@ impl MlsKeys {
         MlsKeys {
             store,
             label: format!("Sew voice on {}", platform_name()),
+            platform: default_platform(),
             clock: crate::system_clock(),
             pending: Mutex::new(None),
         }
@@ -132,6 +134,13 @@ impl MlsKeys {
     /// The device label Sew shows ("K2 on macOS").
     pub fn with_label(mut self, label: &str) -> MlsKeys {
         label.clone_into(&mut self.label);
+        self
+    }
+
+    /// The platform the device enrols as (default from `target_os`: iOS, Android, otherwise
+    /// desktop).
+    pub fn with_platform(mut self, platform: DevicePlatform) -> MlsKeys {
+        self.platform = platform;
         self
     }
 
@@ -147,6 +156,7 @@ impl MlsKeys {
             app_id: app_id.to_owned(),
             store: self.store.clone(),
             label: self.label.clone(),
+            platform: self.platform,
         }
     }
 
@@ -327,6 +337,7 @@ impl KeySession for MlsKeySession {
                 Ok(())
             }
             Err(RecvRefused::Unverified) => Err(CryptoError::NoKey),
+            Err(RecvRefused::KeyPending(_)) => Err(CryptoError::KeyPending),
             Err(RecvRefused::Undecryptable(_)) => Err(CryptoError::BadFrame),
         }
     }
@@ -387,6 +398,10 @@ impl KeySession for MlsKeySession {
 
     fn recording(&self, recording_id: Option<Id>, my_consent: ConsentState) {
         let _ = self.recording.send((recording_id, my_consent));
+    }
+
+    fn network_changed(&self) {
+        self.session.network_changed();
     }
 
     fn device_id(&self) -> Option<String> {
@@ -480,18 +495,23 @@ async fn bridge(
                     code: "network".to_owned(),
                     detail: format!("the call socket ended: {why:?}"),
                 }),
-                // The key group removed this device and said why (Sew's voice leave reason;
-                // a move re-keys instead of ending the call).
+                // The key group removed this device and said why (Sew's voice leave reason,
+                // or `disconnected` for one the key protocol cannot name, so the call socket's
+                // reason still wins; a move re-keys instead of ending the call).
                 KeySessionEvent::Ended(KeyEnd::Left(LeftReason::Removed(r)))
                     if r != RemoveReason::Moved =>
                 {
-                    out.push(E2eeEvent::Ended {
+                    out.push(E2eeEvent::KeysRemoved {
                         reason: r.as_str().to_owned(),
                     });
                 }
                 KeySessionEvent::Ended(KeyEnd::Left(why)) => out.push(E2eeEvent::Refused {
                     code: "e2ee_refused".to_owned(),
                     detail: format!("the key session left: {why:?}"),
+                }),
+                KeySessionEvent::Ended(KeyEnd::Device(e)) => out.push(E2eeEvent::Refused {
+                    code: "e2ee_refused".to_owned(),
+                    detail: format!("the device key could not sign: {e}"),
                 }),
             }
         }

@@ -50,8 +50,8 @@ pub mod transport;
 pub use credential::{Bearer, CredentialGrant, RenewAnswer, RenewRefused, SharedBearer};
 pub use frame::{FrameCrypto, IvParts, OpenError, SealError};
 pub use guard::{
-    PublishGuard, PublishRefused, RecvGate, RecvRefused, SendGate, SubscribeDecision,
-    SubscribeGuard, SubscribeRefused,
+    KEY_PENDING_GRACE_MS, PublishGuard, PublishRefused, RecvGate, RecvRefused, SendGate,
+    SubscribeDecision, SubscribeGuard, SubscribeRefused,
 };
 pub use keys::{MediaCounters, MediaKeys, MediaReport, PublishState, engine_caps};
 pub use lkgcm::LkGcm;
@@ -95,12 +95,19 @@ pub enum CryptoError {
     /// No active send slot yet (the frame is dropped, never sent in the clear).
     #[error("no send key")]
     NoSendKey,
-    /// No key for this sender or slot.
+    /// The sender is not (or no longer) a verified, subscribed publisher: the frame is
+    /// refused before any key lookup (`CallCounters::refused_frames`).
     #[error("no key")]
     NoKey,
-    /// The frame did not verify (wrong key, tampered, malformed).
+    /// The frame did not verify (wrong key, tampered, malformed), or its key index stayed
+    /// empty past [`KEY_PENDING_GRACE_MS`] (`CallCounters::decrypt_failures`).
     #[error("bad frame")]
     BadFrame,
+    /// The sender's key at the frame's index is not installed (yet): a frame that crossed a
+    /// join or a key switch. Dropped, not a decrypt failure
+    /// (`CallCounters::frames_before_key`).
+    #[error("key not installed yet")]
+    KeyPending,
 }
 
 /// Something the keys tell the engine.
@@ -149,6 +156,15 @@ pub enum E2eeEvent {
     /// `session_revoked`, …); the call ends with it (`replaced`: `credential_lost`).
     Ended {
         /// Sew's reason.
+        reason: String,
+    },
+    /// The key group removed this device and named a reason: Sew's voice leave reason, or
+    /// `disconnected` for one the key protocol has no code for (Sew 0.7.3's
+    /// `media_path_down`, the recording reasons, …). Media stops at once; the call ends with
+    /// the reason the call socket brings within 1.5 s ([`E2eeEvent::Ended`]: its self copy of
+    /// `voice_state_updated` or its `4011` close), else with this one.
+    KeysRemoved {
+        /// The key group's reason.
         reason: String,
     },
 }
@@ -272,6 +288,10 @@ pub trait KeySession: Send + Sync + 'static {
     fn media_reconnected(&self, full: bool) {
         let _ = full;
     }
+
+    /// The device's network changed ([`crate::Call::network_changed`]): reconnect any
+    /// connection of the keys' own (the call socket) on the new network now.
+    fn network_changed(&self) {}
 
     /// The call's recording as Sew said it (Sew 0.7.3): the live recording of the call's room
     /// (`None`: none) and this member's consent for it (`Pending` until the person answered).

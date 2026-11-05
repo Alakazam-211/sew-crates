@@ -19,11 +19,14 @@ use tokio::sync::{Notify, broadcast};
 use tokio::time::Instant;
 
 use crate::engine::{
-    BoxFuture, CallEvent, CallHandle, CallSnapshot, JoinProvider, JoinRequest, VoiceEngine,
+    AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, JoinProvider, JoinRequest,
+    VoiceEngine,
 };
+use crate::listener::VoiceListener;
 use crate::wire::{
     CallState, ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinResult, MuteArgs, Participant,
-    PluginEvent, RecordingInfo, SetDeviceArgs, Speaking, StateEvent, StateSnapshot, code, reason,
+    PluginEvent, RecordingInfo, SelfMute, SetDeviceArgs, Speaking, StateEvent, StateSnapshot, code,
+    reason,
 };
 
 /// The `speaking` event's floor: at most 10 a second.
@@ -32,7 +35,8 @@ pub const SPEAKING_MIN_INTERVAL: Duration = Duration::from_millis(100);
 /// Where the plugin's events go (Tauri's emitter in the app, a recorder in tests).
 ///
 /// `emit` is called with the plugin's state lock held, so events keep their order; it must not
-/// block or call back into the [`VoiceService`].
+/// block or call back into the [`VoiceService`]. The native [`VoiceListener`], when there is
+/// one, is called right after each `emit`, under the same lock.
 pub trait EventSink: Send + Sync + 'static {
     /// Deliver one event to every window.
     fn emit(&self, event: &PluginEvent);
@@ -59,6 +63,8 @@ struct Inner {
     engine: Arc<dyn VoiceEngine>,
     provider: Arc<dyn JoinProvider>,
     sink: Arc<dyn EventSink>,
+    /// The native listener (`Builder::listener`), called after the sink under the lock.
+    listener: Option<Arc<dyn VoiceListener>>,
     spawn: Spawn,
     slot: Mutex<Slot>,
     /// [`VoiceService::start`] was called: forward device events from the first use on.
@@ -82,6 +88,12 @@ struct Slot {
     generation: u64,
     /// Stops the current call's pump.
     stop: Option<Arc<Notify>>,
+    /// This device's own mute choice (the join's `muted`, then each mute command's): the
+    /// listener's `self_muted` while a deafen, a moderator mute or SPEAK lost hides it in the
+    /// row; resynced from the row whenever nothing does.
+    own_muted: bool,
+    /// The last `on_self_mute` the listener got (`None`: no own row, so none yet).
+    self_mute: Option<SelfMute>,
 }
 
 impl VoiceService {
@@ -92,11 +104,34 @@ impl VoiceService {
         sink: Arc<dyn EventSink>,
         spawn: Spawn,
     ) -> VoiceService {
+        VoiceService::build(engine, provider, sink, None, spawn)
+    }
+
+    /// As [`VoiceService::new`], with a native [`VoiceListener`] called after each event,
+    /// under the same lock and in the same order.
+    pub fn with_listener(
+        engine: Arc<dyn VoiceEngine>,
+        provider: Arc<dyn JoinProvider>,
+        sink: Arc<dyn EventSink>,
+        listener: Arc<dyn VoiceListener>,
+        spawn: Spawn,
+    ) -> VoiceService {
+        VoiceService::build(engine, provider, sink, Some(listener), spawn)
+    }
+
+    fn build(
+        engine: Arc<dyn VoiceEngine>,
+        provider: Arc<dyn JoinProvider>,
+        sink: Arc<dyn EventSink>,
+        listener: Option<Arc<dyn VoiceListener>>,
+        spawn: Spawn,
+    ) -> VoiceService {
         VoiceService {
             inner: Arc::new(Inner {
                 engine,
                 provider,
                 sink,
+                listener,
                 spawn,
                 slot: Mutex::new(Slot {
                     state: CallState::Idle,
@@ -108,6 +143,8 @@ impl VoiceService {
                     call_id: None,
                     generation: 0,
                     stop: None,
+                    own_muted: false,
+                    self_mute: None,
                 }),
                 devices_wanted: AtomicBool::new(false),
                 devices_on: AtomicBool::new(false),
@@ -140,8 +177,8 @@ impl VoiceService {
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
                 let Some(inner) = inner.upgrade() else { return };
-                let _slot = lock(&inner.slot);
-                inner.sink.emit(&PluginEvent::Devices(list));
+                let mut slot = lock(&inner.slot);
+                notify(&inner, &mut slot, &PluginEvent::Devices(list));
             }
         }));
     }
@@ -154,6 +191,7 @@ impl VoiceService {
     pub async fn join(&self, args: JoinArgs) -> Result<JoinResult, ErrorInfo> {
         self.use_devices();
         let deafened = args.deafened.unwrap_or(false);
+        let own_muted = args.muted.unwrap_or(false);
         let req = JoinRequest {
             target: args.target,
             room: args.room,
@@ -173,11 +211,8 @@ impl VoiceService {
             slot.call_id = None;
             slot.target = Some(req.target.clone());
             slot.room = Some(req.room.clone());
-            let had_participants = !slot.participants.is_empty();
-            slot.participants.clear();
-            if had_participants {
-                self.inner.sink.emit(&PluginEvent::Participants(Vec::new()));
-            }
+            slot.own_muted = own_muted;
+            set_participants(&self.inner, &mut slot, Vec::new());
             set_recording(&self.inner, &mut slot, None);
             self.set_state(&mut slot, CallState::Connecting);
             slot.generation
@@ -194,10 +229,11 @@ impl VoiceService {
             // A leave came while we were joining: hang the new call up.
             drop(slot);
             if let Ok(call) = joined {
-                let sink = Arc::clone(&self.inner.sink);
+                let inner = Arc::clone(&self.inner);
                 (self.inner.spawn)(Box::pin(async move {
                     if let Err(e) = call.leave().await {
-                        sink.emit(&PluginEvent::Errors(e.to_info()));
+                        let mut slot = lock(&inner.slot);
+                        notify(&inner, &mut slot, &PluginEvent::Errors(e.to_info()));
                     }
                 }));
             }
@@ -207,7 +243,7 @@ impl VoiceService {
             Ok(call) => call,
             Err(e) => {
                 let info = e.to_info();
-                self.inner.sink.emit(&PluginEvent::Errors(info.clone()));
+                notify(&self.inner, &mut slot, &PluginEvent::Errors(info.clone()));
                 self.set_state(
                     &mut slot,
                     CallState::Ended {
@@ -255,10 +291,7 @@ impl VoiceService {
             }
             let call = slot.call.take();
             slot.call_id = None;
-            if !slot.participants.is_empty() {
-                slot.participants.clear();
-                self.inner.sink.emit(&PluginEvent::Participants(Vec::new()));
-            }
+            set_participants(&self.inner, &mut slot, Vec::new());
             set_recording(&self.inner, &mut slot, None);
             self.set_state(
                 &mut slot,
@@ -271,8 +304,8 @@ impl VoiceService {
         if let Some(call) = call
             && let Err(e) = call.leave().await
         {
-            let _slot = self.lock();
-            self.inner.sink.emit(&PluginEvent::Errors(e.to_info()));
+            let mut slot = self.lock();
+            notify(&self.inner, &mut slot, &PluginEvent::Errors(e.to_info()));
         }
         Ok(())
     }
@@ -285,14 +318,30 @@ impl VoiceService {
                 "mute needs muted or deafened",
             ));
         }
-        let call = self
-            .lock()
-            .call
-            .clone()
-            .ok_or_else(|| ErrorInfo::new(code::NOT_IN_CALL))?;
-        call.mute(args.muted, args.deafened)
-            .await
-            .map_err(|e| e.to_info())
+        let (call, generation, before) = {
+            let mut slot = self.lock();
+            let call = slot
+                .call
+                .clone()
+                .ok_or_else(|| ErrorInfo::new(code::NOT_IN_CALL))?;
+            let before = slot.own_muted;
+            // The choice first, so a listener's `self_muted` follows it even when the row
+            // cannot show it (deafened, a moderator mute, SPEAK lost).
+            if let Some(m) = args.muted {
+                slot.own_muted = m;
+                self_mute_changed(&self.inner, &mut slot, false);
+            }
+            (call, slot.generation, before)
+        };
+        let r = call.mute(args.muted, args.deafened).await;
+        if r.is_err() && args.muted.is_some() {
+            let mut slot = self.lock();
+            if slot.generation == generation {
+                slot.own_muted = before;
+                self_mute_changed(&self.inner, &mut slot, false);
+            }
+        }
+        r.map_err(|e| e.to_info())
     }
 
     /// `consent {granted, notice_version}`: the person's answer to the recording notice (Sew
@@ -348,6 +397,23 @@ impl VoiceService {
         Ok(self.snapshot())
     }
 
+    /// The device's network changed: the live call's engine resumes now (a phone's
+    /// `NWPathMonitor` or `ConnectivityManager`, through [`crate::VoiceControl`]). With no
+    /// call it does nothing.
+    pub fn network_changed(&self) {
+        let call = self.lock().call.clone();
+        if let Some(call) = call {
+            call.network_changed();
+        }
+    }
+
+    /// The phone's audio session changed (CallKit or Telecom, through
+    /// [`crate::VoiceControl`]): passed to the engine (and so kessel-audio) unchanged, with
+    /// or without a call.
+    pub fn audio_session(&self, event: AudioSessionEvent) {
+        self.inner.engine.audio_session(event);
+    }
+
     /// The state now (what the `state` command answers).
     pub fn snapshot(&self) -> StateSnapshot {
         let slot = self.lock();
@@ -376,6 +442,44 @@ fn lock(m: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// One event: to the webview's sink, then to the native listener, under the slot's lock (the
+/// caller holds it), so both see every event in the same order.
+fn notify(inner: &Inner, slot: &mut Slot, event: &PluginEvent) {
+    inner.sink.emit(event);
+    let Some(l) = &inner.listener else { return };
+    match event {
+        PluginEvent::State(s) => l.on_state(s),
+        PluginEvent::Participants(p) => {
+            l.on_participants(p);
+            self_mute_changed(inner, slot, true);
+        }
+        // No on_speaking: CallKit doesn't need levels.
+        PluginEvent::Speaking(_) => {}
+        PluginEvent::Errors(e) => l.on_error(e),
+        PluginEvent::Devices(d) => l.on_devices(d),
+        PluginEvent::Recording(r) => l.on_recording(r.as_ref()),
+    }
+}
+
+/// The listener's `on_self_mute`, when this device's flags changed (from the own row in the
+/// slot's participants and the own mute choice). No own row (idle, ended, held): nothing.
+/// `resync` (a new row): where nothing forces the mute, the row's `muted` is the choice.
+fn self_mute_changed(inner: &Inner, slot: &mut Slot, resync: bool) {
+    let Some(l) = &inner.listener else { return };
+    let Some(me) = slot.participants.iter().find(|p| p.is_self) else {
+        slot.self_mute = None;
+        return;
+    };
+    if resync && SelfMute::is_unforced(me) {
+        slot.own_muted = me.muted;
+    }
+    let now = SelfMute::of(me, slot.own_muted);
+    if slot.self_mute != Some(now) {
+        slot.self_mute = Some(now);
+        l.on_self_mute(&now);
+    }
+}
+
 /// The `state` event for the slot now.
 fn state_event(slot: &Slot) -> PluginEvent {
     PluginEvent::State(StateEvent {
@@ -388,7 +492,8 @@ fn state_event(slot: &Slot) -> PluginEvent {
 fn set_state(inner: &Inner, slot: &mut Slot, state: CallState) {
     if slot.state != state {
         slot.state = state;
-        inner.sink.emit(&state_event(slot));
+        let ev = state_event(slot);
+        notify(inner, slot, &ev);
     }
 }
 
@@ -396,14 +501,15 @@ fn set_state(inner: &Inner, slot: &mut Slot, state: CallState) {
 fn set_room(inner: &Inner, slot: &mut Slot, room: String) {
     if slot.room.as_deref() != Some(room.as_str()) {
         slot.room = Some(room);
-        inner.sink.emit(&state_event(slot));
+        let ev = state_event(slot);
+        notify(inner, slot, &ev);
     }
 }
 
 fn set_recording(inner: &Inner, slot: &mut Slot, recording: Option<RecordingInfo>) {
     if slot.recording != recording {
         slot.recording.clone_from(&recording);
-        inner.sink.emit(&PluginEvent::Recording(recording));
+        notify(inner, slot, &PluginEvent::Recording(recording));
     }
 }
 
@@ -420,7 +526,7 @@ fn refresh_call_id(slot: &mut Slot, call: &dyn CallHandle) {
 fn set_participants(inner: &Inner, slot: &mut Slot, participants: Vec<Participant>) {
     if slot.participants != participants {
         slot.participants = participants.clone();
-        inner.sink.emit(&PluginEvent::Participants(participants));
+        notify(inner, slot, &PluginEvent::Participants(participants));
     }
 }
 
@@ -434,10 +540,8 @@ fn end(inner: &Inner, slot: &mut Slot, reason: String) {
     set_state(inner, slot, CallState::Ended { reason });
 }
 
+/// The state comes before the recording: a held join is `consent_required`, then its notice.
 fn apply_snapshot(inner: &Inner, slot: &mut Slot, snap: CallSnapshot) -> bool {
-    if !matches!(snap.state, CallState::Ended { .. }) {
-        set_recording(inner, slot, snap.recording);
-    }
     match snap.state {
         CallState::Ended { reason } => {
             end(inner, slot, reason);
@@ -446,11 +550,13 @@ fn apply_snapshot(inner: &Inner, slot: &mut Slot, snap: CallSnapshot) -> bool {
         // An engine never reports idle; a fresh call is connecting.
         CallState::Idle => {
             set_participants(inner, slot, snap.participants);
+            set_recording(inner, slot, snap.recording);
             false
         }
         state => {
             set_participants(inner, slot, snap.participants);
             set_state(inner, slot, state);
+            set_recording(inner, slot, snap.recording);
             false
         }
     }
@@ -526,6 +632,14 @@ impl Pump {
                     if slot.generation != self.generation {
                         return;
                     }
+                    // A re-join held for the notice: the engine sends the notice, then the
+                    // state; its snapshot already says `consent_required`, so the state goes
+                    // first (its own event then changes nothing), as for a held join.
+                    if r.as_ref().is_some_and(|r| r.consent_prompt.is_some())
+                        && let held @ CallState::ConsentRequired { .. } = self.call.snapshot().state
+                    {
+                        set_state(&self.inner, &mut slot, held);
+                    }
                     set_recording(&self.inner, &mut slot, r);
                 }
                 Ok(CallEvent::State(state)) => {
@@ -573,11 +687,11 @@ impl Pump {
 
     /// Emit if this call is still current; false when it is not (the pump stops).
     fn emit_current(&self, event: PluginEvent) -> bool {
-        let slot = lock(&self.inner.slot);
+        let mut slot = lock(&self.inner.slot);
         if slot.generation != self.generation {
             return false;
         }
-        self.inner.sink.emit(&event);
+        notify(&self.inner, &mut slot, &event);
         true
     }
 }

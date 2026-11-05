@@ -9,7 +9,9 @@
 //!    verified MLS tree (the DS-signed leaf binding table, `lk_identity` = `p_` + base32 of the
 //!    leaf's `join_id`). Anything else is left unsubscribed; an unencrypted track is reported
 //!    (`report` route, `engine_unencrypted_track`). [`RecvGate::open`] refuses frames of any sender
-//!    that did not pass, and a frame that fails to decrypt is counted and never played.
+//!    that did not pass, and a frame that fails to decrypt is counted and never played (a frame
+//!    whose key is not installed yet, around a join or a key switch, is counted apart:
+//!    [`KEY_PENDING_GRACE_MS`]).
 //! 3. **Publish only through the checked path** ([`PublishGuard`]): the `AddTrackRequest` asks
 //!    for `GCM`, and the publication counts as encrypted only when the server's
 //!    `TrackPublishedResponse` echoes `GCM`. A downgrade refuses the publication for the rest of
@@ -255,6 +257,14 @@ impl<C: FrameCrypto> SendGate<C> {
 /// receiver check debounces short gaps around a key switch).
 pub const UNDECRYPTABLE_REPORT_AFTER_MS: u64 = 2_000;
 
+/// How long a sender's frames may carry a key index this device holds no key at before they
+/// count as decrypt failures. Until then such a frame is one that crossed a join or a key
+/// switch (`frames_before_key`): a member that just joined holds only the new epoch's keys
+/// while the others still send under the old one until `activate`, and a new epoch's frame can
+/// beat its install by a moment. The same span as the receiver check's report, so a key still
+/// missing when the key session is told about it is a decrypt failure from then on.
+pub const KEY_PENDING_GRACE_MS: u64 = UNDECRYPTABLE_REPORT_AFTER_MS;
+
 /// Why a received frame was not passed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -262,6 +272,10 @@ pub enum RecvRefused {
     /// The sender did not pass the subscribe check (or is no longer verified).
     #[error("sender is not a verified encrypted publisher")]
     Unverified,
+    /// No key at the frame's key index yet, within [`KEY_PENDING_GRACE_MS`] of the sender's
+    /// first undecryptable frame (counted in `frames_before_key`, not `decrypt_failures`).
+    #[error("no key at index {0} yet")]
+    KeyPending(u8),
     /// The frame did not decrypt.
     #[error("frame did not decrypt: {0}")]
     Undecryptable(OpenError),
@@ -323,7 +337,6 @@ impl<C: FrameCrypto> RecvGate<C> {
                 Ok(out)
             }
             Err(e) => {
-                s.counters.decrypt_failures += 1;
                 let (reason, slot) = match e {
                     OpenError::NoKey(i) => (UndecryptReason::MissingKey, Slot::new(i)),
                     OpenError::BadTag(i) => (UndecryptReason::InvalidKey, Slot::new(i)),
@@ -342,6 +355,11 @@ impl<C: FrameCrypto> RecvGate<C> {
                 f.failures = f.failures.saturating_add(1);
                 f.reason = reason;
                 f.slot = slot;
+                // A key index with no key, early in the sender's failing streak: the key has not
+                // landed (or, for an old epoch's frame at a member that just joined, never will),
+                // which is not a decrypt failure. A tag that does not verify always is.
+                let pending = matches!(e, OpenError::NoKey(_))
+                    && now.saturating_sub(f.since) < KEY_PENDING_GRACE_MS;
                 let due =
                     !f.reported && now.saturating_sub(f.since) >= UNDECRYPTABLE_REPORT_AFTER_MS;
                 let report = due.then(|| {
@@ -354,11 +372,19 @@ impl<C: FrameCrypto> RecvGate<C> {
                         slot,
                     }
                 });
+                if pending {
+                    s.counters.frames_before_key += 1;
+                } else {
+                    s.counters.decrypt_failures += 1;
+                }
                 drop(guard);
                 if let Some(r) = report {
                     self.keys.report(r);
                 }
-                Err(RecvRefused::Undecryptable(e))
+                match e {
+                    OpenError::NoKey(i) if pending => Err(RecvRefused::KeyPending(i)),
+                    _ => Err(RecvRefused::Undecryptable(e)),
+                }
             }
         }
     }

@@ -60,6 +60,11 @@
         "reason": "credential_lost",
         "cause": "another device of the member took the call over (Sew's replaced)",
         "payload": { "state": "ended", "reason": "credential_lost", "target": "k2:acme", "room": "48831765147549698" }
+      },
+      {
+        "reason": "credential_expired",
+        "cause": "the call credential expired: Sew refused its renewal as expired, or no renewal got through before it ran out",
+        "payload": { "state": "ended", "reason": "credential_expired", "target": "k2:acme", "room": "48831765147549698" }
       }
     ],
     "recording_reasons": [

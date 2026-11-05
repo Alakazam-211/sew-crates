@@ -1,6 +1,6 @@
-sew-mls-crypto is an OpenMLS crypto provider built only on permissively licensed crates: openmls_traits' crypto and randomness over RustCrypto, with HPKE (RFC 9180) from the `hpke` crate.
-
 # sew-mls-crypto
+
+sew-mls-crypto is an OpenMLS crypto provider built only on permissively licensed crates: openmls_traits' crypto and randomness over RustCrypto, with HPKE (RFC 9180) from the `hpke` crate.
 
 [OpenMLS](https://crates.io/crates/openmls) needs a provider for its cryptography. The usual
 one, `openmls_rust_crypto`, does HPKE through `hpke-rs`, which is MPL-2.0. This crate is a
@@ -25,13 +25,15 @@ the end-to-end encrypted calls (`sew-e2ee`).
 
 ## Usage
 
-The crate is not on crates.io yet. It is published in the read-only
-[sew-crates](https://github.com/Alakazam-211/sew-crates) repository (clone it, for example, as
-`third_party/sew-crates`); point Cargo at it from your workspace's root `Cargo.toml`:
+The crate is not published on crates.io yet. It is held back, with `sew-e2ee`, until the
+dependency change for the P-256 advisory below (RUSTSEC-2026-0387) is made. Until then, get it
+from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository: clone
+it into your project (for example as `third_party/sew-crates`), and point Cargo at it from your
+workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-mls-crypto = "0.7.3"
+sew-mls-crypto = "0.7.4"
 openmls = "=0.9.0"
 
 [patch.crates-io]

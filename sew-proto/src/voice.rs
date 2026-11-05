@@ -1061,9 +1061,12 @@ pub mod reasons {
     pub const CALL_CREDENTIAL_STALE: &str = "call_credential_stale";
     /// `401` on a credential renewal: the credential's join has ended.
     pub const CALL_ENDED: &str = "call_ended";
-    /// `401` on a credential renewal: the login lineage has no live session.
+    /// `401` on a credential renewal: the login lineage was revoked (a sign-out, a device
+    /// revoke) or the member deactivated. A lineage that merely expired still renews.
     pub const SIGNED_OUT: &str = "signed_out";
-    /// `401` on a credential renewal: the credential expired.
+    /// `401` on a credential renewal: the credential expired, or its login lineage expired
+    /// (not revoked) longer ago than the server's call bound (4 h from the credential's mint)
+    /// allows.
     pub const EXPIRED: &str = "expired";
     /// `422 invalid_state` (flag `app_origins`): a voice or call join's `origin` is
     /// neither the session App's `origin` nor one of its `origins` (or the session has no App);

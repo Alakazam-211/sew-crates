@@ -33,8 +33,8 @@ use std::time::Duration;
 use sew_e2ee::keypackage::on_join_failure;
 use sew_e2ee::{
     ApiFailure, CallSession, E2eeClient, E2eeStatus, Input, JoinId, KeyEvent, KeySink as _,
-    LeftReason, LkIdentity, Output, PreparedKp, SessionState, SinkAck, SoftwareSigner,
-    TrustAnchors, UnknownCallBuffer,
+    LeftReason, LkIdentity, Output, PreparedKp, SessionState, SinkAck, TrustAnchors,
+    UnknownCallBuffer,
 };
 use sew_proto::e2ee::{CallKeysInit, CallScope, ConsentState, E2eeJoin};
 use sew_proto::id::Id;
@@ -48,7 +48,9 @@ use super::frame::FrameCrypto;
 use super::keys::{MediaKeys, MediaReport, engine_caps, lock};
 use super::transport::{KeyTransport, TransportError};
 use crate::Clock;
-use crate::device::{DeviceError, DeviceVault, DeviceWarning, VaultConfig, is_device_refused};
+use crate::device::{
+    DeviceError, DeviceKey, DeviceVault, DeviceWarning, VaultConfig, is_device_refused,
+};
 use crate::gateway::{CallReadyInfo, CallSocket, SocketClosed, SocketError, SocketEvent};
 
 /// How long [`MlsSession::connect`] waits for the call socket's READY.
@@ -205,6 +207,9 @@ pub enum KeyEnd {
     Socket(SocketClosed),
     /// The MLS session left (removed, or failed for good).
     Left(LeftReason),
+    /// The device key could not sign in the call (a hardware key's error: `e2ee_refused`; no
+    /// software fallback).
+    Device(DeviceError),
 }
 
 /// What the key session tells the engine.
@@ -236,7 +241,7 @@ struct Core<C: FrameCrypto> {
     session: Option<CallSession>,
     sink: MediaKeys<C>,
     client: E2eeClient,
-    signer: Arc<SoftwareSigner>,
+    signer: DeviceKey,
     prepared: BTreeMap<[u8; 32], PreparedKp>,
     buffer: UnknownCallBuffer,
     gateway_session: String,
@@ -280,14 +285,6 @@ impl<C: FrameCrypto> Drop for MlsSession<C> {
         self.stop.notify_one();
         self.socket.close();
     }
-}
-
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, DeviceError> + Send + 'static,
-) -> Result<T, DeviceError> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|_| DeviceError::Store("blocking task failed".to_owned()))?
 }
 
 /// Builds the trust anchors from READY against the pins (TOFU; a change is refused) and pages
@@ -350,9 +347,8 @@ impl<C: FrameCrypto> MlsSession<C> {
             .ok_or(KeyError::NoInstallId)?;
         let member = ready.member_id.ok_or(KeyError::NoReady)?;
         tracing::debug!(target: "sew_call_client::keys", member = %member, install, "call socket ready");
-        let vcfg = cfg.vault.clone();
-        let scope = cfg.device_scope.clone();
-        let mut vault = blocking(move || DeviceVault::open(&vcfg, install, member, &scope)).await?;
+        let mut vault =
+            DeviceVault::open_async(&cfg.vault, install, member, &cfg.device_scope).await?;
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
         for w in vault.take_warnings() {
             let _ = ev_tx.send(KeySessionEvent::Warning(w));
@@ -371,7 +367,7 @@ impl<C: FrameCrypto> MlsSession<C> {
                 session: None,
                 sink: keys,
                 client,
-                signer: Arc::new(signer),
+                signer,
                 prepared: BTreeMap::new(),
                 buffer,
                 gateway_session: ready.session_id.clone(),
@@ -533,6 +529,11 @@ impl<C: FrameCrypto> MlsSession<C> {
         self.shared.http.bearer().get()
     }
 
+    /// The device's network changed: the call socket reconnects at once and resumes.
+    pub fn network_changed(&self) {
+        self.socket.reconnect();
+    }
+
     /// The engine renewed the call credential: the key routes use the new token from now on,
     /// and the call socket re-authenticates with it (REAUTH keeps the `session_id`).
     pub fn renewed(&self, token: Bearer) {
@@ -630,7 +631,7 @@ async fn upload_kp<C: FrameCrypto>(
             (pending, req.message, c.signer.clone())
         };
         let mut kp = pending
-            .finish(signer.sign(&msg))
+            .finish(signer.sign(&msg).await?)
             .map_err(|e| KeyError::Session(e.to_string()))?;
         match shared.http.upload_key_package(&mut kp).await {
             Ok(()) => return Ok(kp),
@@ -657,7 +658,7 @@ async fn recover_device<C: FrameCrypto>(shared: &Arc<Shared<C>>) -> Result<(), K
     let c = &mut *guard;
     let cfg = c.client.config().clone();
     c.client = E2eeClient::new(identity, trust).with_config(cfg);
-    c.signer = Arc::new(signer);
+    c.signer = signer;
     // Packages signed by the old device are useless now.
     c.prepared.clear();
     Ok(())
@@ -753,14 +754,16 @@ async fn start_session<C: FrameCrypto>(
 }
 
 /// Applies key events, answers signatures and self-checks, and POSTs every request (lock
-/// released), feeding the answers back, until the session is quiet.
+/// released), feeding the answers back, until the session is quiet. Signatures are made with
+/// the lock released too: a hardware key's `sign` is async and may take its time.
 async fn pump<C: FrameCrypto>(shared: &Arc<Shared<C>>) {
     loop {
-        let (sends, roster_changed, ended) = {
+        let (sends, roster_changed, ended, signs, key) = {
             let mut guard = lock(&shared.core);
             let c = &mut *guard;
             let now = (shared.clock)();
             let mut sends = Vec::new();
+            let mut signs = Vec::new();
             let mut roster = false;
             let Some(session) = c.session.as_mut() else {
                 return;
@@ -786,8 +789,7 @@ async fn pump<C: FrameCrypto>(shared: &Arc<Shared<C>>) {
                         }
                     }
                     Output::NeedDeviceSignature { request, message } => {
-                        let sig = c.signer.sign(&message);
-                        let _ = session.handle(now, Input::DeviceSignature { request, sig });
+                        signs.push((request, message));
                     }
                     Output::CheckSenderSlot { .. } => {
                         if let Some(observed) = c.sink.local_slot() {
@@ -817,7 +819,7 @@ async fn pump<C: FrameCrypto>(shared: &Arc<Shared<C>>) {
                 }
                 _ => None,
             };
-            (sends, roster, ended)
+            (sends, roster, ended, signs, c.signer.clone())
         };
         if roster_changed {
             shared.emit(KeySessionEvent::Roster);
@@ -828,8 +830,32 @@ async fn pump<C: FrameCrypto>(shared: &Arc<Shared<C>>) {
             shared.emit(KeySessionEvent::Ended(KeyEnd::Left(r)));
         }
         shared.changed.notify_waiters();
-        if sends.is_empty() {
+        if sends.is_empty() && signs.is_empty() {
             return;
+        }
+        for (request, message) in signs {
+            match key.sign(&message).await {
+                Ok(sig) => {
+                    let now = (shared.clock)();
+                    let mut guard = lock(&shared.core);
+                    if let Some(s) = guard.session.as_mut() {
+                        let _ = s.handle(now, Input::DeviceSignature { request, sig });
+                    }
+                }
+                Err(e) => {
+                    // No software fallback: the hardware key could not sign, so the session
+                    // cannot re-add this device. End it.
+                    tracing::warn!(target: "sew_call_client::keys", error = %e, "the device key could not sign");
+                    let first = {
+                        let mut c = lock(&shared.core);
+                        !std::mem::replace(&mut c.ended, true)
+                    };
+                    if first {
+                        shared.emit(KeySessionEvent::Ended(KeyEnd::Device(e)));
+                    }
+                    return;
+                }
+            }
         }
         for (id, req) in sends {
             let r = shared.http.key_request(&req).await;

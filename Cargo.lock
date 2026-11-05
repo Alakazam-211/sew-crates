@@ -1256,21 +1256,33 @@ version = "0.7.4"
 source = "git+https://github.com/Alakazam-211/dimpl?rev=a3481943e8e3fa270990e7c05a27d015cfbe4d77#a3481943e8e3fa270990e7c05a27d015cfbe4d77"
 dependencies = [
  "aes",
+ "aes-gcm",
  "arrayvec",
  "aws-lc-rs",
  "ccm",
+ "chacha20 0.9.1",
+ "chacha20poly1305",
  "der 0.7.10",
+ "ecdsa",
+ "generic-array",
+ "hkdf",
+ "hmac",
  "log",
  "nom 8.0.0",
  "once_cell",
+ "p256",
+ "p384",
  "pkcs8 0.10.2",
  "rand 0.9.5",
+ "rand_core 0.6.4",
  "rcgen",
  "sec1",
+ "sha2",
  "signature 2.2.0",
  "spki 0.7.3",
  "subtle",
  "time",
+ "x25519-dalek",
  "x509-cert",
 ]
 
@@ -3970,6 +3982,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
  "aws-lc-rs",
+ "ring",
  "rustls-pki-types",
  "time",
  "x509-parser",
@@ -4722,17 +4735,23 @@ dependencies = [
 
 [[package]]
 name = "sew-call-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "aws-lc-rs",
+ "aes",
+ "aes-gcm",
  "bytes",
+ "ctr",
+ "dimpl",
  "futures-util",
  "hex",
+ "hmac",
  "http",
+ "jni 0.21.1",
  "kessel-audio",
  "keyring",
  "prost",
  "rand 0.8.8",
+ "rcgen",
  "reqwest 0.12.28",
  "rustls",
  "rustls-platform-verifier",
@@ -4742,6 +4761,8 @@ dependencies = [
  "sew-lk-compat",
  "sew-lkproto",
  "sew-proto",
+ "sha1",
+ "sha2",
  "str0m",
  "thiserror 2.0.21",
  "tokio",
@@ -4754,7 +4775,7 @@ dependencies = [
 
 [[package]]
 name = "sew-e2ee"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",
@@ -4780,15 +4801,18 @@ dependencies = [
 
 [[package]]
 name = "sew-lk-compat"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
+ "aes-gcm",
  "aws-lc-rs",
  "base64 0.22.1",
+ "hkdf",
  "prost",
  "rand 0.8.8",
  "serde",
  "serde_json",
  "sew-lkproto",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -4797,7 +4821,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lkproto"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -4807,7 +4831,7 @@ dependencies = [
 
 [[package]]
 name = "sew-mls-crypto"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -4828,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "sew-proto"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5405,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-voice"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "serde",
@@ -6738,6 +6762,8 @@ checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
 dependencies = [
  "curve25519-dalek",
  "rand_core 0.6.4",
+ "serde",
+ "zeroize",
 ]
 
 [[package]]
@@ -6764,6 +6790,7 @@ dependencies = [
  "lazy_static",
  "nom 7.1.3",
  "oid-registry",
+ "ring",
  "rusticata-macros",
  "thiserror 2.0.21",
  "time",

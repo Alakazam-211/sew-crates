@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-proto"
-version = "0.7.3"
+version = "0.7.4"
 build = false
 include = [
     "src/**",

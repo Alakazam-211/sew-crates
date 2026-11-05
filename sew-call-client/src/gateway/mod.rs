@@ -148,6 +148,8 @@ pub enum SocketClosed {
 enum Cmd {
     Reauth,
     Close,
+    /// The device's network changed: drop the connection now and RESUME on a new one.
+    Reconnect,
 }
 
 /// Counters (no content).
@@ -205,6 +207,7 @@ impl CallSocket {
             counters: counters.clone(),
             session: None,
             seq: 0,
+            now: false,
         };
         tokio::spawn(task.run());
         Ok((
@@ -219,6 +222,13 @@ impl CallSocket {
     /// Sends REAUTH with the bearer's current token (after a renewal).
     pub fn reauth(&self) {
         let _ = self.cmd.send(Cmd::Reauth);
+    }
+
+    /// The device's network changed (`Call::network_changed`): drops the connection
+    /// without waiting for it to time out and reconnects at once on the current network with
+    /// RESUME (missed dispatches are replayed). A no-op once closed.
+    pub fn reconnect(&self) {
+        let _ = self.cmd.send(Cmd::Reconnect);
     }
 
     /// Closes the socket.
@@ -473,6 +483,8 @@ struct Task {
     counters: Arc<SocketCounters>,
     session: Option<String>,
     seq: u64,
+    /// Reconnect without waiting (a network change).
+    now: bool,
 }
 
 impl Task {
@@ -503,10 +515,17 @@ impl Task {
                 }
             };
             backoff = (backoff * 2).min(RECONNECT_MAX);
+            if self.now {
+                // A network change: straight back, from the shortest backoff.
+                self.now = false;
+                backoff = RECONNECT_BASE;
+                continue;
+            }
             tokio::select! {
                 _ = tokio::time::sleep(jitter(wait)) => {}
                 c = self.cmd.recv() => match c {
                     Some(Cmd::Reauth) => {}
+                    Some(Cmd::Reconnect) => backoff = RECONNECT_BASE,
                     Some(Cmd::Close) | None => {
                         let _ = self.events.send(SocketEvent::Closed(SocketClosed::Closed)).await;
                         return;
@@ -579,6 +598,12 @@ impl Task {
                         if Self::send(&mut ws, &ClientOp::Reauth(ReauthRequest { token })).await.is_err() {
                             return Outcome::Retry(*backoff);
                         }
+                    }
+                    Some(Cmd::Reconnect) => {
+                        // The old network's connection may be dead: no close handshake.
+                        drop(ws);
+                        self.now = true;
+                        return Outcome::Retry(RECONNECT_BASE);
                     }
                     Some(Cmd::Close) | None => {
                         let _ = ws.close(None).await;

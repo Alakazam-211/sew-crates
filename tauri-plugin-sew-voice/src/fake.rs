@@ -19,18 +19,21 @@
 //! with [`FakeCall::set_recording`].
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::json;
 use tokio::sync::{Semaphore, broadcast};
 
 use crate::engine::{
-    BoxFuture, CallEvent, CallHandle, CallSnapshot, ConsentRequired, EngineError, JoinAnswer,
-    JoinProvider, JoinRequest, ProviderError, VoiceEngine,
+    AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, ConsentRequired,
+    EngineError, JoinAnswer, JoinProvider, JoinRequest, ProviderError, VoiceEngine,
 };
+use crate::listener::VoiceListener;
 use crate::service::EventSink;
 use crate::wire::{
-    CallState, Device, DeviceChoice, DeviceList, ErrorInfo, Participant, PluginEvent, RecordingInfo,
+    CallState, Device, DeviceChoice, DeviceList, ErrorInfo, Participant, PluginEvent,
+    RecordingInfo, SelfMute, StateEvent,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -51,6 +54,8 @@ struct EngineState {
     joins: Vec<JoinRequest>,
     next_join_error: Option<EngineError>,
     auto_connect: bool,
+    /// Every audio-session event, in order ([`VoiceEngine::audio_session`]).
+    audio_sessions: Vec<AudioSessionEvent>,
 }
 
 impl Default for FakeEngine {
@@ -70,6 +75,7 @@ impl FakeEngine {
                 joins: Vec::new(),
                 next_join_error: None,
                 auto_connect: true,
+                audio_sessions: Vec::new(),
             }),
             devices_tx,
         }
@@ -112,6 +118,11 @@ impl FakeEngine {
     /// on the first use of the devices, not at start).
     pub fn device_subscribers(&self) -> usize {
         self.devices_tx.receiver_count()
+    }
+
+    /// Every audio-session event the plugin passed on (CallKit's or Telecom's), in order.
+    pub fn audio_sessions(&self) -> Vec<AudioSessionEvent> {
+        lock(&self.state).audio_sessions.clone()
     }
 }
 
@@ -212,6 +223,10 @@ impl VoiceEngine for FakeEngine {
     fn device_events(&self) -> broadcast::Receiver<DeviceList> {
         self.devices_tx.subscribe()
     }
+
+    fn audio_session(&self, event: AudioSessionEvent) {
+        lock(&self.state).audio_sessions.push(event);
+    }
 }
 
 /// One fake call. Tests drive it with [`FakeCall::emit`] and its shortcuts.
@@ -222,6 +237,8 @@ pub struct FakeCall {
     state: Mutex<CallFake>,
     /// A held join's way back in: the provider and the request (`consent` joins again).
     held: Mutex<Option<Held>>,
+    /// How many times [`CallHandle::network_changed`] was called.
+    network_changes: AtomicUsize,
 }
 
 struct Held {
@@ -342,6 +359,7 @@ impl FakeCall {
                 prompt: c.clone(),
                 auto_connect,
             })),
+            network_changes: AtomicUsize::new(0),
         }
     }
 
@@ -359,6 +377,7 @@ impl FakeCall {
             self_member: Mutex::new(self_member),
             tx,
             held: Mutex::new(None),
+            network_changes: AtomicUsize::new(0),
             state: Mutex::new(CallFake {
                 snapshot: CallSnapshot {
                     state: if auto_connect {
@@ -405,6 +424,11 @@ impl FakeCall {
         lock(&self.state).next_consent_error = Some(e);
     }
 
+    /// How many times the plugin passed a network change to this call.
+    pub fn network_changes(&self) -> usize {
+        self.network_changes.load(Ordering::Acquire)
+    }
+
     /// Whether the join is held for the recording notice.
     pub fn is_held(&self) -> bool {
         lock(&self.held).is_some()
@@ -444,11 +468,14 @@ impl FakeCall {
                 if let Some(h) = lock(&self.held).as_mut() {
                     h.prompt = (*next).clone();
                 }
-                self.set_recording(Some(held_recording(&next)));
-                self.emit(CallEvent::State(CallState::ConsentRequired {
+                // As the real engine: the snapshot first, then the notice and the state.
+                let held = CallState::ConsentRequired {
                     recording_id: next.consent_prompt.recording_id.to_string(),
                     notice_version: next.notice_version(),
-                }));
+                };
+                lock(&self.state).snapshot.state = held.clone();
+                self.set_recording(Some(held_recording(&next)));
+                self.emit(CallEvent::State(held));
                 Err(EngineError::Provider(ProviderError::ConsentRequired(next)))
             }
             Err(e) => {
@@ -640,6 +667,10 @@ impl CallHandle for FakeCall {
 
     fn moved_room(&self) -> Option<String> {
         lock(&self.state).moved_room.clone()
+    }
+
+    fn network_changed(&self) {
+        self.network_changes.fetch_add(1, Ordering::AcqRel);
     }
 
     fn mute(
@@ -856,5 +887,66 @@ impl RecordingSink {
 impl EventSink for RecordingSink {
     fn emit(&self, event: &PluginEvent) {
         lock(&self.events).push((event.name().to_owned(), event.payload()));
+    }
+}
+
+/// Records every [`VoiceListener`] call as one `{"<method>": <argument as JSON>}` object, in
+/// order (the shape of `tests/sew-native-voice-listener.json`), for tests of a native shim.
+#[derive(Debug, Default)]
+pub struct RecordingListener {
+    calls: Mutex<Vec<serde_json::Value>>,
+}
+
+impl RecordingListener {
+    /// An empty recorder.
+    pub fn new() -> RecordingListener {
+        RecordingListener::default()
+    }
+
+    /// Every call so far.
+    pub fn calls(&self) -> Vec<serde_json::Value> {
+        lock(&self.calls).clone()
+    }
+
+    /// Forget what was recorded.
+    pub fn clear(&self) {
+        lock(&self.calls).clear();
+    }
+
+    fn push(&self, method: &str, arg: serde_json::Value) {
+        let mut call = serde_json::Map::new();
+        call.insert(method.to_owned(), arg);
+        lock(&self.calls).push(serde_json::Value::Object(call));
+    }
+}
+
+/// A listener argument as JSON (plain structs of strings, bools and numbers: never fails).
+fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> serde_json::Value {
+    serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
+}
+
+impl VoiceListener for RecordingListener {
+    fn on_state(&self, state: &StateEvent) {
+        self.push("on_state", to_json(state));
+    }
+
+    fn on_participants(&self, participants: &[Participant]) {
+        self.push("on_participants", to_json(participants));
+    }
+
+    fn on_self_mute(&self, me: &SelfMute) {
+        self.push("on_self_mute", to_json(me));
+    }
+
+    fn on_recording(&self, recording: Option<&RecordingInfo>) {
+        self.push("on_recording", to_json(&recording));
+    }
+
+    fn on_error(&self, error: &ErrorInfo) {
+        self.push("on_error", to_json(error));
+    }
+
+    fn on_devices(&self, devices: &DeviceList) {
+        self.push("on_devices", to_json(devices));
     }
 }

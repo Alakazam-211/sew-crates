@@ -1,6 +1,6 @@
-sew-call-client is the native voice engine for Sew, a self-hosted team chat server: it joins a Sew voice call from a desktop app, with end-to-end encrypted audio, TURN relay and reconnects.
-
 # sew-call-client
+
+sew-call-client is the native voice engine for Sew, a self-hosted team chat server: it joins a Sew voice call from a desktop app, with end-to-end encrypted audio, TURN relay and reconnects.
 
 Everything below the user interface for one call:
 
@@ -34,19 +34,29 @@ Not affiliated with or endorsed by LiveKit.
 - `keyring-store` (off by default): the device key in the OS credential store (macOS Keychain,
   Windows Credential Manager, the Linux Secret Service). Without it, or a store of your own
   (`ClientConfig::with_device_key_store`), the key is a 0600 file under the data directory.
+- `rust-crypto`: the call's DTLS/SRTP in pure Rust (dimpl's RustCrypto backend and RustCrypto
+  ciphers) and the E2EE frame cipher on RustCrypto, instead of aws-lc-rs; `CRYPTO_BACKEND` says
+  which one a build has.
+- `mobile`: what an iOS or Android build needs (today `rust-crypto`; aws-lc-rs is never built
+  for phones, and the crate refuses to compile there without it). On Android call
+  `sew_call_client::android_init(env, context)` before the first join (the platform TLS
+  verifier needs the JVM), and add rustls-platform-verifier's Kotlin component to the app.
 - `testing`: test-only helpers. Never in a release build.
 
 ## Usage
 
-The crate is not on crates.io yet. It is published in the read-only
-[sew-crates](https://github.com/Alakazam-211/sew-crates) repository, with the crates it depends
-on. Its dependencies include `kessel-audio`, which you supply, and forks of `str0m` and `dimpl`;
-that repository's README lists the `[patch.crates-io]` rows to copy into your workspace's root
-`Cargo.toml`. It needs a Sew server to join calls on (see the same README).
+The crate is not published on crates.io yet, because some of its dependencies are not:
+`sew-e2ee` and `sew-mls-crypto` (held back for the P-256 advisory below), `kessel-audio` (K2's
+audio pipeline, which you supply) and Alakazam Labs' forks of `str0m` and `dimpl`. Until they
+are, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates)
+repository, which holds it with the Sew crates it depends on: clone it into your project (for
+example as `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists
+into your workspace's root `Cargo.toml`. It needs a Sew server to join calls on (see the same
+README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.2.0"
+sew-call-client = "0.3.0"
 ```
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
@@ -165,6 +175,14 @@ device's key to the recorder only while Sew says `granted`.
   and `body` are Sew's route and body). The default `consent` sends nothing
   (`consent_unsupported`): the person stays unrecorded.
 - `Participant::recorder` marks the recorder in the roster.
+
+### Network changes (phones)
+
+Call `call.network_changed()` from your path monitor (`NWPathMonitor` on iOS,
+`ConnectivityManager.NetworkCallback` on Android) when the default network changes. The engine
+resumes at once on a fresh TURN allocation over the new network and restarts ICE, instead of
+waiting for the old connections to time out; the state is `reconnecting` until it's done. It
+is cheap and safe to repeat.
 
 For a Tauri 2 app, `tauri-plugin-sew-voice` wraps this engine in eight commands and six events.
 

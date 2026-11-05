@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.0 (2026-11-05, Sew 0.7.4)
+
+- Needs sew-call-client 0.3.0 (breaking there: `VaultConfig.platform`, and the vault's
+  `ensure_device` / `enroll` return `device::DeviceKey`). The plugin's own API change is additive.
+
+- The native side for phones (additive):
+  - `VoiceListener` (`on_state`, `on_participants`, `on_self_mute`, `on_recording`,
+    `on_error`, `on_devices`; empty defaults) and `Builder::listener`: called after each
+    `sew-voice://` event, in order, under the plugin's lock, with the same payload.
+  - `SelfMute` (`muted`, `deafened`, `self_muted`, `server_muted`, `speak_denied`).
+  - `VoiceControl`, managed as Tauri state: `join`, `leave` (safe to repeat), `set_muted` and
+    `set_deafened` (`not_in_call` without a call, as the webview's `mute`), `consent`,
+    `withdraw_consent`, `snapshot`, `network_changed`, and `session_activated`, `session_deactivated`, `suspend`, `resume`
+    and `route_changed` (to kessel-audio unchanged).
+  - `CallHandle::network_changed` and `VoiceEngine::audio_session` (`AudioSessionEvent`),
+    with defaults that do nothing; `VoiceService::with_listener`, `VoiceService::network_changed`
+    and `VoiceService::audio_session`; `fake::RecordingListener`.
+  - The real engine's call (`CallClientEngine`) forwards `network_changed` to sew-call-client's
+    `Call::network_changed`. Its `audio_session` still does nothing: kessel-audio's phone
+    session hooks are not in the pinned kessel-audio yet.
+  - `ConsentAsk` and `ConsentChoice` re-exported from sew-proto (`ConsentPrompt::title_en`,
+    `text_en`, `choices_en`: the web kit's consent words).
+- A held join's `state` event (`consent_required`) now comes before its `recording` event with
+  the notice (it came after), for a fresh join and a re-join alike.
+- iOS and Android: no device enumeration between calls (`CallClientEngine::with_mls` sets no
+  lister there; `real::system_devices` is desktop-only), and `keyring-store` refuses to build.
+- `tests/sew-native-voice-listener.json`: the listener's exact calls per scenario, checked by
+  `tests/listener.rs`.
+- `Builder::hardware_device_key(key)`: the device key in the Secure Enclave or StrongBox/TEE
+  through `HardwareDeviceKey` (re-exported, with `DevicePlatform`). No software fallback: a key
+  error fails the join with `e2ee_refused`; it replaces `Builder::device_key_store`.
+- `Builder::device_platform(platform)`: the platform the device enrols as. Default from
+  `target_os` (`ios`, `android`, otherwise `desktop`; it was always `desktop`).
+- Feature `sim-software-key` (off; iOS simulator and x86 Android emulator builds only):
+  `SimSoftwareKey`, a software stand-in for the hardware key.
+- Fix (through sew-call-client): a call Sew ends with `media_path_down` (or another reason the
+  key protocol cannot name) ends with that reason, not `disconnected`.
+- `ended.reason` `credential_expired` (`wire::reason::CREDENTIAL_EXPIRED`, in the contract
+  fixture's fallbacks): the call credential expired (Sew refused a renewal `expired`, or no
+  renewal got through before it ran out). A renewal Sew refuses `signed_out` ends
+  `signin_required`, also when Sew's call socket closed first.
+
 ## 0.2.0 (2026-11-04, Sew 0.7.3)
 
 - Needs sew-call-client 0.2.0. Breaking: `JoinRequest` has `recording_notice` (below).

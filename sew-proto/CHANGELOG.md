@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.4 (2026-11-05)
+
+- `ConsentPrompt::title_en`, `feature_en`, `lines_en`, `text_en` and `choices_en`, with
+  `recording::ConsentAsk` (`Join`, `InCall`) and `recording::ConsentChoice`: the web kit's
+  consent modal in English, word for word, for native hosts. No wire change.
+
 ## 0.7.3 (2026-11-04)
 
 - `CallReady.recording`: the call channel's active recording as the member sees it, or `null`

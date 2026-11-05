@@ -84,8 +84,16 @@ pub struct MediaCounters {
     pub opened: u64,
     /// Received frames dropped: the sender is not a verified, subscribed, encrypted publisher.
     pub dropped_unverified_sender: u64,
-    /// Received frames that did not decrypt (never played).
+    /// Received frames that did not decrypt (never played): a tag that did not verify (a wrong
+    /// or retired key, a forged or corrupted frame), a malformed trailer, or a key index still
+    /// empty once the sender's frames have failed for [`super::KEY_PENDING_GRACE_MS`].
     pub decrypt_failures: u64,
+    /// Received frames dropped (never played) because the sender's key at the frame's index was
+    /// not installed yet, within [`super::KEY_PENDING_GRACE_MS`] of the sender's first such
+    /// frame: frames that crossed a join or a key switch (the old epoch's, which a member that
+    /// just joined never holds, or the new one's a moment before its install). Not a decrypt
+    /// failure.
+    pub frames_before_key: u64,
 }
 
 /// How the local publication stands (the "checked path" of the publish check).

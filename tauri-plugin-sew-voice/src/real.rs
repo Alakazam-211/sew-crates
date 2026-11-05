@@ -36,8 +36,8 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 
 use crate::engine::{
-    BoxFuture, CallEvent, CallHandle, CallSnapshot, EngineError, JoinAnswer, JoinProvider,
-    JoinRequest, ProviderError, VoiceEngine,
+    AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, EngineError, JoinAnswer,
+    JoinProvider, JoinRequest, ProviderError, VoiceEngine,
 };
 use crate::wire::{
     CallState, Device, DeviceChoice as Choice, DeviceList, ErrorInfo, Participant, RecordingInfo,
@@ -143,10 +143,25 @@ impl CallClientEngine {
     /// The production engine: Sew's MLS call keys ([`CallClient::with_mls`]: the device key
     /// where `cfg.device_store` says, by default a 0600 file under `cfg.data_dir`), the
     /// system's audio devices through kessel-audio, and the system device list between calls.
+    ///
+    /// On iOS and Android nothing is listed between calls (no device enumeration, no poll):
+    /// the OS owns the route there (CallKit, Telecom), and `devices` answers the last call's
+    /// list, empty before the first.
     #[cfg(feature = "audio")]
     pub fn with_mls(cfg: sew_call_client::ClientConfig) -> CallClientEngine {
-        CallClientEngine::new(CallClient::with_mls(cfg), system_audio())
-            .devices_from(system_devices())
+        CallClientEngine::new(CallClient::with_mls(cfg), system_audio()).with_idle_devices()
+    }
+
+    /// The system's devices between calls (desktop).
+    #[cfg(all(feature = "audio", not(any(target_os = "ios", target_os = "android"))))]
+    fn with_idle_devices(self) -> CallClientEngine {
+        self.devices_from(system_devices())
+    }
+
+    /// No listing between calls on phones.
+    #[cfg(all(feature = "audio", any(target_os = "ios", target_os = "android")))]
+    fn with_idle_devices(self) -> CallClientEngine {
+        self
     }
 
     /// Lists the devices between calls with `lister`: first on the first use of the devices
@@ -269,8 +284,9 @@ pub fn system_audio() -> AudioConfig {
     })
 }
 
-/// The system's device list through cpal, with kessel-audio's ids and names.
-#[cfg(feature = "audio")]
+/// The system's device list through cpal, with kessel-audio's ids and names (desktop only: on
+/// iOS and Android the OS owns the route).
+#[cfg(all(feature = "audio", not(any(target_os = "ios", target_os = "android"))))]
 pub fn system_devices() -> DeviceLister {
     Arc::new(|| {
         use cpal::traits::{DeviceTrait, HostTrait};
@@ -434,6 +450,16 @@ impl VoiceEngine for CallClientEngine {
         let rx = self.inner.devices_tx.subscribe();
         self.use_devices();
         rx
+    }
+
+    /// Does nothing yet, on purpose. kessel-audio's phone session hooks
+    /// (`start_when_session_active`, `session_activated` / `session_deactivated`, `suspend` /
+    /// `resume`, `route_changed`) are not in the kessel-audio this crate pins (K2 rev bc78b69a,
+    /// and not on K2 main as of 2026-11-04). Once they land, this forwards each event to the
+    /// live call's bridge unchanged (and keeps an early `Activated` for the next call). The
+    /// plugin never configures `AVAudioSession` or the Android audio mode itself.
+    fn audio_session(&self, event: AudioSessionEvent) {
+        let _ = event;
     }
 }
 
@@ -678,6 +704,16 @@ impl CallHandle for RealCall {
         })
     }
 
+    fn network_changed(&self) {
+        // Sync and never blocks: `Call::network_changed` only queues the command. A leave
+        // holding the write lock is taking the call away, so there is nothing to move.
+        if let Ok(g) = self.shared.call.try_read()
+            && let Some(call) = g.as_ref()
+        {
+            call.network_changed();
+        }
+    }
+
     fn mute(
         &self,
         muted: Option<bool>,
@@ -895,6 +931,7 @@ pub(crate) fn end_reason(r: &EndReason) -> String {
         EndReason::Network => "network".into(),
         EndReason::E2eeRefused => "e2ee_refused".into(),
         EndReason::CredentialLost => reason::CREDENTIAL_LOST.into(),
+        EndReason::CredentialExpired => reason::CREDENTIAL_EXPIRED.into(),
         EndReason::Kicked => reason::KICKED.into(),
         EndReason::RoomClosed => reason::ROOM_CLOSED.into(),
         EndReason::Refused(code) => code.clone(),
@@ -1036,6 +1073,7 @@ mod tests {
             (EndReason::Network, "network"),
             (EndReason::E2eeRefused, "e2ee_refused"),
             (EndReason::CredentialLost, "credential_lost"),
+            (EndReason::CredentialExpired, "credential_expired"),
             (EndReason::Kicked, "kicked"),
             (EndReason::RoomClosed, "room_closed"),
             (EndReason::Refused("channel_full".into()), "channel_full"),

@@ -1,6 +1,6 @@
-tauri-plugin-sew-voice is a Tauri 2 plugin that adds Sew voice calls to a desktop app: join, leave, mute, device choice, recording consent and live call state for the web view, with the sign-in kept in the app's Rust code.
-
 # tauri-plugin-sew-voice
+
+tauri-plugin-sew-voice is a Tauri 2 plugin that adds Sew voice calls to a desktop app: join, leave, mute, device choice, recording consent and live call state for the web view, with the sign-in kept in the app's Rust code.
 
 Sew is Alakazam Labs' self-hosted team chat server. This plugin runs its native voice engine,
 `sew-call-client`, inside your Tauri app's process: end-to-end encrypted audio, TURN relay,
@@ -24,24 +24,29 @@ Not affiliated with or endorsed by LiveKit.
 - `audio-core`: the real engine on `kessel-audio`'s null device only, with no system libraries.
 - `keyring-store` (off by default): the device key in the OS credential store. Without it, or
   your own store (`Builder::device_key_store`), the key is a 0600 file under the app's data
-  directory.
+  directory. On phones, `Builder::hardware_device_key` keeps it in the Secure Enclave or
+  StrongBox/TEE instead (docs/native-voice-sdk.md §6).
+- `sim-software-key` (off; iOS simulator and x86 Android emulator builds only, refused
+  elsewhere): `SimSoftwareKey`, a software stand-in for the hardware key.
 - With no features: the plugin's core (`VoiceService`, the JSON shapes in `wire`, the engine
   interface in `engine`) and the in-memory fake engine (`fake`) for tests and offline UI work.
 
 ## Usage
 
-The crate is not on crates.io yet. It is published in the read-only
-[sew-crates](https://github.com/Alakazam-211/sew-crates) repository, with the crates it depends
-on. The engine depends on `kessel-audio`, which you supply, and on forks of `str0m` and
-`dimpl`; that repository's README lists the `[patch.crates-io]` rows to copy into your app's
-workspace root. It needs a Sew server to join calls on (see the same README).
+The crate is not published on crates.io yet, because the voice engine it runs,
+`sew-call-client`, is not: the engine waits on dependencies of its own (`sew-e2ee`,
+`kessel-audio`, which you supply, and Alakazam Labs' forks of `str0m` and `dimpl`). Until then,
+get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository,
+which holds it with the Sew crates it depends on: clone it into your project (for example as
+`third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists into your
+app's workspace root. It needs a Sew server to join calls on (see the same README).
 
 `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.2.0"
+tauri-plugin-sew-voice = "0.3.0"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"

@@ -42,6 +42,8 @@ mod engine;
 pub mod gateway;
 mod pc;
 mod provider;
+#[cfg(feature = "rust-crypto")]
+mod rust_crypto;
 mod signal;
 pub mod stats;
 mod transport;
@@ -66,8 +68,49 @@ pub use provider::{
 /// Sew's recording types the engine's recording API carries (from `sew-proto`).
 pub use sew_proto::recording::{ConsentPrompt, Recording, RecordingNotice, RecordingRef};
 pub use stats::{
-    BeaconOutcome, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals, StatsWindow,
+    BeaconOutcome, BeforeFirstWindow, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals,
+    StatsWindow,
 };
+
+// aws-lc-rs is never built for the phones; their DTLS/SRTP is the pure-Rust provider.
+#[cfg(all(
+    any(target_os = "ios", target_os = "android"),
+    not(feature = "rust-crypto")
+))]
+compile_error!(
+    "sew-call-client on iOS and Android needs the `mobile` feature (or `rust-crypto`): aws-lc-rs is not built for phones"
+);
+
+/// The call peer connection's DTLS/SRTP provider in this build: `"rust-crypto"` (features
+/// `rust-crypto`, `mobile`: dimpl's RustCrypto backend and RustCrypto SRTP) or `"aws-lc-rs"`.
+pub const CRYPTO_BACKEND: &str = if cfg!(feature = "rust-crypto") {
+    "rust-crypto"
+} else {
+    "aws-lc-rs"
+};
+
+/// Android only: hands the app's JNI env and `android.content.Context` to the platform TLS
+/// verifier (rustls-platform-verifier), which needs the JVM to reach Android's trust store.
+///
+/// **Call it once, before the first [`CallClient::join`]** (from `JNI_OnLoad` or the
+/// `Application.onCreate` bridge), with the application Context. Without it the first TLS
+/// connection (signalling, TURN-TLS, the key routes) panics inside the verifier. Later calls are
+/// no-ops. The Android build side is the host's: the app must include the verifier's Kotlin
+/// component (the `rustls-platform-verifier-android` package, as that crate's README
+/// describes) and keep its classes from the Android code shrinker (ProGuard rules).
+///
+/// [`jni`] is re-exported so the host passes the version the verifier takes.
+#[cfg(target_os = "android")]
+pub fn android_init(
+    env: &mut jni::JNIEnv<'_>,
+    context: jni::objects::JObject<'_>,
+) -> Result<(), jni::errors::Error> {
+    rustls_platform_verifier::android::init_with_env(env, context)
+}
+
+/// The `jni` crate [`android_init`] takes (Android only).
+#[cfg(target_os = "android")]
+pub use jni;
 
 /// The engine's name and version as Sew sees it (`ClientInfo`, the caps' `sdk_version`).
 pub const ENGINE_VERSION: &str = concat!("sew-call-client/", env!("CARGO_PKG_VERSION"));

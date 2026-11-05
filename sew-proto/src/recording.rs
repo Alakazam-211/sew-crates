@@ -16,6 +16,9 @@ use crate::error::{Validate, ValidationError};
 use crate::id::Id;
 use crate::time::Timestamp;
 
+mod consent_text;
+pub use consent_text::{ConsentAsk, ConsentChoice};
+
 /// The recorder's display name: the roster entry, the recording banner and every
 /// notice text use it. Never sent to the engine (its engine name stays empty).
 pub const RECORDER_DISPLAY_NAME: &str = crate::RECORDER_DISPLAY_NAME;

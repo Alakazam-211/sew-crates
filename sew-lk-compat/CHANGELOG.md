@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.4 (2026-11-05)
+
+- `rust-crypto` feature (phones): LkGcm's AES-128-GCM and HKDF-SHA256 on RustCrypto
+  (`aes-gcm`, `hkdf`, `sha2`) instead of aws-lc-rs; the same frames, byte for byte (a
+  known-answer test pins both). aws-lc-rs is no longer built for iOS and Android, where the crate
+  refuses to compile without `rust-crypto` (sew-call-client's `mobile` turns it on).
+
 ## 0.7.3 (2026-11-04)
 
 - The version follows Sew 0.7.3. No API or behaviour change.

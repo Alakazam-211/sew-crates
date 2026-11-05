@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use sew_lkproto::livekit::IceServer;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -274,7 +274,11 @@ impl Transport {
                 }
             };
             toward.get_or_insert(addr);
-            match t.allocate(*via, addr, &url.host, server, tls, &in_tx).await {
+            let source = crate::config::source_ip(cfg);
+            match t
+                .allocate(*via, addr, &url.host, server, tls, &in_tx, source)
+                .await
+            {
                 Ok(()) => {
                     last_err = None;
                     break;
@@ -291,7 +295,10 @@ impl Transport {
             ));
         }
         if gather == Gather::All {
-            let ip = local_ip_toward(toward).await;
+            let ip = match crate::config::source_ip(cfg) {
+                Some(ip) => ip,
+                None => local_ip_toward(toward).await,
+            };
             let s = Arc::new(UdpSocket::bind(SocketAddr::new(ip, 0)).await?);
             let addr = s.local_addr()?;
             t.spawn_udp_reader(s.clone(), addr, in_tx.clone());
@@ -331,6 +338,7 @@ impl Transport {
         }));
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn allocate(
         &mut self,
         via: Via,
@@ -339,6 +347,7 @@ impl Transport {
         server: &IceServer,
         tls: &Arc<rustls::ClientConfig>,
         in_tx: &mpsc::UnboundedSender<TransportEvent>,
+        source: Option<IpAddr>,
     ) -> Result<(), String> {
         let mut client = TurnClient::new(&server.username, &server.credential, via != Via::Udp);
         client.start(Instant::now());
@@ -347,10 +356,10 @@ impl Transport {
         let in_tx = in_tx.clone();
         let (base, task) = match via {
             Via::Udp => {
-                let bind = if server_addr.is_ipv4() {
-                    SocketAddr::from(([0, 0, 0, 0], 0))
-                } else {
-                    SocketAddr::from(([0u16; 8], 0))
+                let bind = match source {
+                    Some(ip) => SocketAddr::new(ip, 0),
+                    None if server_addr.is_ipv4() => SocketAddr::from(([0, 0, 0, 0], 0)),
+                    None => SocketAddr::from(([0u16; 8], 0)),
                 };
                 let s = UdpSocket::bind(bind).await.map_err(|e| e.to_string())?;
                 s.connect(server_addr).await.map_err(|e| e.to_string())?;
@@ -361,7 +370,7 @@ impl Transport {
                 )
             }
             Via::Tcp | Via::Tls => {
-                let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(server_addr))
+                let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tcp_connect(server_addr, source))
                     .await
                     .map_err(|_| format!("TCP connect to {server_addr} timed out"))?
                     .map_err(|e| format!("TCP connect to {server_addr}: {e}"))?;
@@ -434,6 +443,20 @@ impl Transport {
     pub(crate) async fn recv(&mut self) -> Option<TransportEvent> {
         self.in_rx.recv().await
     }
+}
+
+/// A TCP connection to `to`, from `source` when one is set (else the OS's choice).
+async fn tcp_connect(to: SocketAddr, source: Option<IpAddr>) -> io::Result<TcpStream> {
+    let Some(ip) = source else {
+        return TcpStream::connect(to).await;
+    };
+    let s = if ip.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    s.bind(SocketAddr::new(ip, 0))?;
+    s.connect(to).await
 }
 
 /// The local address the OS would use toward `toward` (no packet is sent), else loopback.

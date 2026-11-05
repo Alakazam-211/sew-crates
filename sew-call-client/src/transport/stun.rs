@@ -10,7 +10,9 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use aws_lc_rs::hmac;
+use hmac::{Hmac, Mac as _};
+
+type HmacSha1 = Hmac<sha1::Sha1>;
 
 /// The STUN magic cookie.
 pub(crate) const MAGIC_COOKIE: u32 = 0x2112_A442;
@@ -228,9 +230,8 @@ impl Message {
             // Length includes the MESSAGE-INTEGRITY attribute (RFC 8489 §14.5).
             let len = (out.len() - 20 + 24) as u16;
             out[2..4].copy_from_slice(&len.to_be_bytes());
-            let k = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key);
-            let tag = hmac::sign(&k, &out);
-            push_attr(&mut out, attr::MESSAGE_INTEGRITY, tag.as_ref());
+            let tag = hmac_sha1(key, &out);
+            push_attr(&mut out, attr::MESSAGE_INTEGRITY, &tag);
         }
         let len = (out.len() - 20) as u16;
         out[2..4].copy_from_slice(&len.to_be_bytes());
@@ -453,6 +454,16 @@ pub(crate) fn md5(input: &[u8]) -> [u8; 16] {
     out
 }
 
+/// HMAC-SHA1 of `data` under `key` (MESSAGE-INTEGRITY, RFC 8489 §14.5).
+pub(crate) fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
+    // HMAC takes a key of any length: `new_from_slice` never fails.
+    let Ok(mut mac) = HmacSha1::new_from_slice(key) else {
+        return [0; 20];
+    };
+    mac.update(data);
+    mac.finalize().into_bytes().into()
+}
+
 /// Verifies MESSAGE-INTEGRITY of raw bytes with `key` (for tests and server replies).
 pub(crate) fn verify_integrity(b: &[u8], key: &[u8]) -> bool {
     let Ok(_) = Message::decode(b) else {
@@ -469,8 +480,12 @@ pub(crate) fn verify_integrity(b: &[u8], key: &[u8]) -> bool {
             let mut head = b[..at].to_vec();
             let len = (at - 20 + 24) as u16;
             head[2..4].copy_from_slice(&len.to_be_bytes());
-            let k = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key);
-            return hmac::verify(&k, &head, &b[at + 4..at + 24]).is_ok();
+            let Ok(mut mac) = HmacSha1::new_from_slice(key) else {
+                return false;
+            };
+            mac.update(&head);
+            // Constant time.
+            return mac.verify_slice(&b[at + 4..at + 24]).is_ok();
         }
         at += 4 + l.div_ceil(4) * 4;
     }
@@ -494,6 +509,42 @@ mod tests {
             hex::encode(long_term_key("user", "realm", "pass")),
             hex::encode(md5(b"user:realm:pass"))
         );
+    }
+
+    #[test]
+    fn hmac_sha1_known_vectors() {
+        // RFC 2202 §3, test cases 1, 2 and 6 (a key longer than the block).
+        assert_eq!(
+            hex::encode(hmac_sha1(&[0x0b; 20], b"Hi There")),
+            "b617318655057264e28bc0b6fb378c8ef146be00"
+        );
+        assert_eq!(
+            hex::encode(hmac_sha1(b"Jefe", b"what do ya want for nothing?")),
+            "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"
+        );
+        assert_eq!(
+            hex::encode(hmac_sha1(
+                &[0xaa; 80],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "aa4ae5e15272d00e95705637ce8a3b55ed402112"
+        );
+    }
+
+    #[test]
+    fn integrity_verifies_and_refuses_a_flipped_bit() {
+        let m =
+            Message::new(Method::Refresh, Class::Request).with(attr::LIFETIME, vec![0, 0, 2, 88]);
+        let key = long_term_key("user", "sew", "pass");
+        let mut b = m.encode(Some(&key));
+        assert!(verify_integrity(&b, &key));
+        assert!(!verify_integrity(
+            &b,
+            &long_term_key("user", "sew", "other")
+        ));
+        let n = b.len();
+        b[n - 1] ^= 1;
+        assert!(!verify_integrity(&b, &key));
     }
 
     #[test]

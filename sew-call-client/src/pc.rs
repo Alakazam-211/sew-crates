@@ -7,7 +7,9 @@
 //! to audio. All of this crate's str0m use lives here.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(not(feature = "rust-crypto"))]
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use str0m::change::{SdpAnswer, SdpPendingOffer};
@@ -73,6 +75,14 @@ enum Change {
     IceRestart,
 }
 
+/// The DTLS/SRTP provider: this crate's pure-Rust one with `rust-crypto`.
+#[cfg(feature = "rust-crypto")]
+fn provider() -> Arc<CryptoProvider> {
+    crate::rust_crypto::provider()
+}
+
+/// The DTLS/SRTP provider: str0m's aws-lc-rs one (without `rust-crypto`).
+#[cfg(not(feature = "rust-crypto"))]
 fn provider() -> Arc<CryptoProvider> {
     static P: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
     P.get_or_init(|| Arc::new(str0m::crypto::from_feature_flags()))
@@ -125,6 +135,8 @@ pub(crate) struct Pc {
     fed: Option<Instant>,
     /// Errors str0m returned (counted, logged).
     pub(crate) errors: u64,
+    /// The local candidates added (a network change invalidates them).
+    locals: Vec<Candidate>,
 }
 
 impl std::fmt::Debug for Pc {
@@ -154,9 +166,12 @@ impl Pc {
             .enable_opus(true, false)
             .set_stats_interval(Some(Duration::from_secs(1)));
         let mut rtc = cfg.build(now);
+        let mut added = Vec::new();
         for l in locals {
-            if let Some(c) = ice_candidate(l) {
-                let _ = rtc.add_local_candidate(c);
+            if let Some(c) = ice_candidate(l)
+                && rtc.add_local_candidate(c.clone()).is_some()
+            {
+                added.push(c);
             }
         }
         Pc {
@@ -172,6 +187,22 @@ impl Pc {
             timeout: now,
             fed: None,
             errors: 0,
+            locals: added,
+        }
+    }
+
+    /// A network change: the old transport's local candidates are invalidated (their
+    /// pairs go) and the new transport's are added; the next ICE restart offers only these.
+    pub(crate) fn replace_local_candidates(&mut self, locals: &[LocalCandidate]) {
+        for c in std::mem::take(&mut self.locals) {
+            let _ = self.rtc.direct_api().invalidate_candidate(&c);
+        }
+        for l in locals {
+            if let Some(c) = ice_candidate(l)
+                && self.rtc.add_local_candidate(c.clone()).is_some()
+            {
+                self.locals.push(c);
+            }
         }
     }
 

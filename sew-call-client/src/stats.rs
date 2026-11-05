@@ -24,7 +24,7 @@
 //! | Field | From |
 //! |---|---|
 //! | `interval_ms` | the window's wall length (the leave sample: the partial window, at least 1 ms) |
-//! | `decrypt_failures` | remote frames that failed to decrypt in the window ([`crate::CallCounters::decrypt_failures`]) |
+//! | `decrypt_failures` | remote frames that failed to decrypt in the window ([`crate::CallCounters::decrypt_failures`]): not the frames whose key was not installed yet, around a join or a key switch ([`crate::CallCounters::frames_before_key`], in the host's window only) |
 //! | `candidate`, `relay_protocol` | the local candidate of str0m's selected pair (its latest `PeerStats`, once a second), matched to the transport's candidates: a TURN relay is `relay` with its `udp`/`tcp`/`tls`, else `host` |
 //! | `rtt_ms` | the selected pair's latest ICE (STUN consent) round-trip time from the same `PeerStats` |
 //! | `audio_played_ms` | 20 ms × the frames the audio pipeline played in the window, summed over streams: kessel-audio's `frames_decoded + frames_fec + frames_concealed` (DTX silence not counted, as kessel-audio's `concealed_pct`), read once a second and differenced; a host with its own pipeline reports them through [`crate::Call::set_playout_stats`]; with neither, the engine's view: 20 ms × (frames handed to the pipeline + loss marks) |
@@ -34,9 +34,20 @@
 //! | `audio_jitter_ms` | the worst stream's RFC 3550 interarrival jitter (arrival time against the 48 kHz RTP timestamp, smoothed 1/16), the highest value it reached in the window |
 //! | `audio_longest_gap_ms` | the longest stretch with no audio arriving on one stream, counted when the stream's next packet arrives: the arrival interval beyond what the RTP timestamps advanced (a network stall) plus 20 ms per packet missing in between (loss), at most the arrival interval; sender silence (DTX, or a pause the timestamps cover) is not a gap. A gap is counted in the window where audio resumes, clipped to that window |
 //!
-//! Known limits: a stream that stops and never resumes adds no gap (and no loss) for that
-//! stretch; a track removed mid-window keeps the counts up to its removal; a host that never
-//! plays audio (no pipeline attached) gets the engine's fallback for played and concealed.
+//! **Before the first window.** Frames counted before the call first reached `connected` (the
+//! keys still settling: refused before the subscription, or crossing the join's key switch) are
+//! in no window; [`CallStatsReport::before_first_window`] holds them, so a counter of
+//! [`crate::CallCounters`] is that bucket plus the sum of the windows (while every window is
+//! kept).
+//!
+//! Known limits: `audio_longest_gap_ms` is an inter-packet measure on one stream. A stream
+//! that stops and never resumes adds no gap (and no loss) for that stretch, and a reconnect
+//! that replaces a track (a full reconnect, a re-join or a move: new PC, new streams) starts a
+//! new stream, so the silence of the reconnect itself is never a gap: a call with reconnects
+//! of 1 to 3 s of silence can read gaps of a few ms. Silence at the speaker across reconnects
+//! is the host's to measure (the playout side). A track removed mid-window keeps the counts up
+//! to its removal; a host that never plays audio (no pipeline attached) gets the engine's
+//! fallback for played and concealed.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -166,12 +177,19 @@ pub struct StatsWindow {
     pub audio_packets_lost: u32,
     /// The worst stream's jitter, ms.
     pub audio_jitter_ms: u32,
-    /// The longest gap on one stream, ms.
+    /// The longest gap between two packets of one stream, ms (counted when the next packet
+    /// arrives; a reconnect starts new streams, so its silence is not counted: see the module
+    /// docs).
     pub audio_longest_gap_ms: u32,
     /// Where played and concealed came from.
     pub playout_source: PlayoutSource,
     /// Remote frames that failed to decrypt.
     pub decrypt_failures: u32,
+    /// Remote frames dropped because the sender's key was not installed yet (a join or a key
+    /// switch; the host's view only, not sent to Sew).
+    pub frames_before_key: u64,
+    /// Remote frames of tracks the keys did not allow (the host's view only).
+    pub refused_frames: u64,
     /// Frames encrypted and sent in the window.
     pub frames_sent: u64,
     /// Remote frames decrypted in the window.
@@ -188,12 +206,43 @@ pub struct StatsWindow {
     pub beacon: BeaconOutcome,
 }
 
+/// What the counters held when the first window started (the call first `connected`): the
+/// frames no window covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct BeforeFirstWindow {
+    /// Remote frames that failed to decrypt.
+    pub decrypt_failures: u64,
+    /// Remote frames dropped because the sender's key was not installed yet.
+    pub frames_before_key: u64,
+    /// Remote frames of tracks the keys did not allow yet.
+    pub refused_frames: u64,
+    /// Remote frames decrypted.
+    pub frames_received: u64,
+    /// Frames encrypted and sent.
+    pub frames_sent: u64,
+}
+
+impl BeforeFirstWindow {
+    fn of(c: &CallCounters) -> BeforeFirstWindow {
+        BeforeFirstWindow {
+            decrypt_failures: c.decrypt_failures,
+            frames_before_key: c.frames_before_key,
+            refused_frames: c.refused_frames,
+            frames_received: c.frames_received,
+            frames_sent: c.frames_sent,
+        }
+    }
+}
+
 /// The call's stats so far ([`crate::Call::stats`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct CallStatsReport {
     /// The beacon's terms of the current join (`None`: the beacon is off).
     pub terms: Option<CallStatsBeacon>,
+    /// The counts from before the first window (`None` until the call first connected).
+    pub before_first_window: Option<BeforeFirstWindow>,
     /// The latest windows (at most 256), oldest first.
     pub windows: Vec<StatsWindow>,
     /// Samples sent.
@@ -288,14 +337,20 @@ impl Meter {
         self.interval = interval_of(terms);
     }
 
-    /// The call is connected: the first window starts (once).
-    pub(crate) fn start(&mut self, now: Instant, counters: &CallCounters) {
+    /// The call is connected: the first window starts (once). Returns what the counters held
+    /// before it (`None` when the window had already started).
+    pub(crate) fn start(
+        &mut self,
+        now: Instant,
+        counters: &CallCounters,
+    ) -> Option<BeforeFirstWindow> {
         if self.started.is_some() {
-            return;
+            return None;
         }
         self.started = Some(now);
         self.next_poll = now;
         self.reset_window(counters);
+        Some(BeforeFirstWindow::of(counters))
     }
 
     pub(crate) fn started(&self) -> bool {
@@ -473,6 +528,10 @@ impl Meter {
                     .saturating_sub(c0.decrypt_failures)
                     .min(u64::from(CALL_STATS_EVENTS_MAX)),
             ),
+            frames_before_key: counters
+                .frames_before_key
+                .saturating_sub(c0.frames_before_key),
+            refused_frames: counters.refused_frames.saturating_sub(c0.refused_frames),
             frames_sent: counters.frames_sent.saturating_sub(c0.frames_sent),
             frames_received: counters.frames_received.saturating_sub(c0.frames_received),
             candidate,
@@ -677,6 +736,65 @@ mod tests {
         assert_eq!(w.audio_concealed_ms, 200);
         assert_eq!(w.decrypt_failures, 2);
         assert_eq!(w.frames_sent, 750);
+    }
+
+    /// Every counted frame is in the bucket before the first window or in exactly one window:
+    /// the call's counter is their sum (the harness summary's `counters.decrypt_failures` once
+    /// disagreed with the windows' sum by the failures before `connected`). Frames whose key was
+    /// not installed yet are never in the sample's `decrypt_failures`.
+    #[test]
+    fn counters_are_the_bucket_before_the_first_window_plus_the_windows() {
+        let t0 = Instant::now();
+        let mut m = Meter::new(t0, Some(&TERMS));
+        // Before `connected`: the join's key switch.
+        let pre = CallCounters {
+            decrypt_failures: 1,
+            frames_before_key: 15,
+            refused_frames: 6,
+            frames_received: 20,
+            frames_sent: 30,
+            ..CallCounters::default()
+        };
+        let b = m.start(t0, &pre).expect("the first start");
+        assert_eq!(
+            b,
+            BeforeFirstWindow {
+                decrypt_failures: 1,
+                frames_before_key: 15,
+                refused_frames: 6,
+                frames_received: 20,
+                frames_sent: 30,
+            }
+        );
+        assert_eq!(m.start(t0 + ms(5), &pre), None, "once");
+        let mut c = pre.clone();
+        c.frames_before_key += 3;
+        c.decrypt_failures += 2;
+        c.frames_received += 700;
+        let w1 = m.close(t0 + ms(15_000), &c, None, false);
+        c.refused_frames += 1;
+        c.frames_received += 750;
+        let w2 = m.close(t0 + ms(30_000), &c, None, true);
+        assert_eq!((w1.frames_before_key, w1.decrypt_failures), (3, 2));
+        assert_eq!((w2.frames_before_key, w2.decrypt_failures), (0, 0));
+        assert_eq!(sample(&w1, &TERMS).unwrap().decrypt_failures, 2);
+        let sum = |f: fn(&StatsWindow) -> u64| [&w1, &w2].iter().map(|w| f(w)).sum::<u64>();
+        assert_eq!(
+            b.decrypt_failures + sum(|w| u64::from(w.decrypt_failures)),
+            c.decrypt_failures
+        );
+        assert_eq!(
+            b.frames_before_key + sum(|w| w.frames_before_key),
+            c.frames_before_key
+        );
+        assert_eq!(
+            b.refused_frames + sum(|w| w.refused_frames),
+            c.refused_frames
+        );
+        assert_eq!(
+            b.frames_received + sum(|w| w.frames_received),
+            c.frames_received
+        );
     }
 
     #[test]

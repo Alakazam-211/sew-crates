@@ -26,8 +26,19 @@
 //!   (`uncryptedMagicBytes` empty): a frame that does not decrypt is a failure, whatever it ends
 //!   with.
 
+#[cfg(not(feature = "rust-crypto"))]
 use aws_lc_rs::aead::{AES_128_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+#[cfg(not(feature = "rust-crypto"))]
 use aws_lc_rs::hkdf::{HKDF_SHA256, KeyType, Salt};
+
+// aws-lc-rs is never built for the phones.
+#[cfg(all(
+    any(target_os = "ios", target_os = "android"),
+    not(feature = "rust-crypto")
+))]
+compile_error!(
+    "sew-lk-compat on iOS and Android needs the `rust-crypto` feature (sew-call-client's `mobile`)"
+);
 use zeroize::Zeroizing;
 
 use super::{DecryptError, DecryptFail, KEY_RING_SIZE, PRODUCTION};
@@ -63,7 +74,10 @@ pub enum Codec {
 
 /// A derived AES-128-GCM frame key.
 pub struct FrameKey {
+    #[cfg(not(feature = "rust-crypto"))]
     key: LessSafeKey,
+    #[cfg(feature = "rust-crypto")]
+    key: aes_gcm::Aes128Gcm,
 }
 
 impl std::fmt::Debug for FrameKey {
@@ -72,8 +86,10 @@ impl std::fmt::Debug for FrameKey {
     }
 }
 
+#[cfg(not(feature = "rust-crypto"))]
 struct Len16;
 
+#[cfg(not(feature = "rust-crypto"))]
 impl KeyType for Len16 {
     fn len(&self) -> usize {
         16
@@ -89,12 +105,56 @@ impl FrameKey {
 
     /// A frame key from raw AES-128 key bytes (tests; retire uses random IKM instead).
     pub fn from_aes_key(raw: &[u8; 16]) -> FrameKey {
+        #[cfg(not(feature = "rust-crypto"))]
         // AES_128_GCM accepts every 16-byte key, so this cannot fail.
         let key = match UnboundKey::new(&AES_128_GCM, raw) {
             Ok(k) => LessSafeKey::new(k),
             Err(_) => panic!("AES-128-GCM rejected a 16-byte key"),
         };
+        #[cfg(feature = "rust-crypto")]
+        let key = {
+            use aes_gcm::KeyInit as _;
+            aes_gcm::Aes128Gcm::new(raw.into())
+        };
         FrameKey { key }
+    }
+
+    /// AES-128-GCM: seals `buf` in place under `iv` and `aad`, appending the 16-byte tag.
+    #[cfg(not(feature = "rust-crypto"))]
+    fn seal(&self, iv: [u8; IV_LEN], aad: &[u8], buf: &mut Vec<u8>) -> Result<(), ()> {
+        self.key
+            .seal_in_place_append_tag(Nonce::assume_unique_for_key(iv), Aad::from(aad), buf)
+            .map_err(|_| ())
+    }
+
+    /// AES-128-GCM: seals `buf` in place under `iv` and `aad`, appending the 16-byte tag.
+    #[cfg(feature = "rust-crypto")]
+    fn seal(&self, iv: [u8; IV_LEN], aad: &[u8], buf: &mut Vec<u8>) -> Result<(), ()> {
+        use aes_gcm::aead::AeadInPlace as _;
+        self.key
+            .encrypt_in_place(&iv.into(), aad, buf)
+            .map_err(|_| ())
+    }
+
+    /// AES-128-GCM: opens `buf` (ciphertext and tag) in place; the plaintext on success.
+    #[cfg(not(feature = "rust-crypto"))]
+    // The same signature as the RustCrypto one, which needs the `Vec` (an `aead::Buffer`).
+    #[allow(clippy::ptr_arg)]
+    fn open<'a>(&self, iv: [u8; IV_LEN], aad: &[u8], buf: &'a mut Vec<u8>) -> Result<&'a [u8], ()> {
+        self.key
+            .open_in_place(Nonce::assume_unique_for_key(iv), Aad::from(aad), buf)
+            .map(|p| &*p)
+            .map_err(|_| ())
+    }
+
+    /// AES-128-GCM: opens `buf` (ciphertext and tag) in place; the plaintext on success.
+    #[cfg(feature = "rust-crypto")]
+    fn open<'a>(&self, iv: [u8; IV_LEN], aad: &[u8], buf: &'a mut Vec<u8>) -> Result<&'a [u8], ()> {
+        use aes_gcm::aead::AeadInPlace as _;
+        self.key
+            .decrypt_in_place(&iv.into(), aad, buf)
+            .map_err(|_| ())?;
+        Ok(&buf[..])
     }
 
     /// A key derived from 32 random bytes (a retired slot is overwritten with one).
@@ -106,6 +166,18 @@ impl FrameKey {
 }
 
 /// The AES-128 key HKDF derives from `ikm` (exposed so tests can pin the KDF).
+#[cfg(feature = "rust-crypto")]
+pub fn derive_aes_key(ikm: &[u8; 32]) -> Zeroizing<[u8; 16]> {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(PRODUCTION.ratchet_salt.as_bytes()), ikm);
+    let info = [0u8; 128];
+    let mut out = Zeroizing::new([0u8; 16]);
+    let ok = hk.expand(&info, out.as_mut()).is_ok();
+    assert!(ok, "HKDF-SHA256 expand to 16 bytes failed");
+    out
+}
+
+/// The AES-128 key HKDF derives from `ikm` (exposed so tests can pin the KDF).
+#[cfg(not(feature = "rust-crypto"))]
 pub fn derive_aes_key(ikm: &[u8; 32]) -> Zeroizing<[u8; 16]> {
     let salt = Salt::new(HKDF_SHA256, PRODUCTION.ratchet_salt.as_bytes());
     let prk = salt.extract(ikm);
@@ -442,15 +514,7 @@ impl FrameCryptor for LkGcmV1 {
         let (header, body) = frame.split_at(info.unencrypted);
         let mut sealed = Vec::with_capacity(body.len() + TAG_LEN + IV_LEN + TRAILER_LEN);
         sealed.extend_from_slice(body);
-        if key
-            .key
-            .seal_in_place_append_tag(
-                Nonce::assume_unique_for_key(ivb),
-                Aad::from(header),
-                &mut sealed,
-            )
-            .is_err()
-        {
+        if key.seal(ivb, header, &mut sealed).is_err() {
             // AES-GCM sealing only fails for inputs beyond 2^36 bytes.
             return Err(EncryptError::FrameTooShort {
                 len: frame.len(),
@@ -542,12 +606,7 @@ impl LkGcmV1 {
         ivb.copy_from_slice(&data[n - TRAILER_LEN - IV_LEN..n - TRAILER_LEN]);
         let mut ct = data[..n - TRAILER_LEN - IV_LEN].to_vec();
         let plain = key
-            .key
-            .open_in_place(
-                Nonce::assume_unique_for_key(ivb),
-                Aad::from(header),
-                &mut ct,
-            )
+            .open(ivb, header, &mut ct)
             .map_err(|_| bad(DecryptFail::BadTag))?;
         out.extend_from_slice(header);
         out.extend_from_slice(plain);
@@ -556,5 +615,53 @@ impl LkGcmV1 {
             clear_len: header.len(),
             empty: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// The same answers from the aws-lc-rs and the RustCrypto (`rust-crypto`) builds,
+    /// computed independently (Python's hmac/hashlib HKDF and `cryptography`'s AES-GCM).
+    #[test]
+    fn known_answers_whichever_backend() {
+        let seq: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(
+            hex(&*derive_aes_key(&seq)),
+            "6d0dd7b3d6f4efde47ab9a9e15abde76"
+        );
+        let key = FrameKey::derive(&[7; 32]);
+        let iv = FrameIv {
+            ssrc: 0x1234_5678,
+            timestamp: 90_000,
+            send_count: 4242,
+        };
+        let mut frame = vec![0xfc];
+        frame.extend(1u8..40);
+        let mut ct = Vec::new();
+        LkGcmV1
+            .encrypt(Codec::Opus, &frame, &key, 9, iv, &mut ct)
+            .unwrap();
+        assert_eq!(
+            hex(&ct),
+            "fc16beb1823135e887ad84265f847367af03460fc99487b42ddd452f8df0edd494c1aa282d2fe32bcbb92998b062a878c5ed61259658e4d71234567800015f9000014efe0c09"
+        );
+        let mut out = Vec::new();
+        LkGcmV1
+            .decrypt_with_key(Codec::Opus, &ct, &key, &mut out)
+            .unwrap();
+        assert_eq!(out, frame);
+        let mut bad = ct.clone();
+        bad[3] ^= 1;
+        let e = LkGcmV1
+            .decrypt_with_key(Codec::Opus, &bad, &key, &mut Vec::new())
+            .unwrap_err();
+        assert!(matches!(e.reason, DecryptFail::BadTag), "{e:?}");
     }
 }

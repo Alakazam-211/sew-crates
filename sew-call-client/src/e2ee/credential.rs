@@ -95,16 +95,25 @@ impl fmt::Debug for RenewAnswer {
     }
 }
 
-/// Why renewing failed for good (`401` with `details.reason`).
+/// Why renewing failed for good (`401` with `details.reason`), as a key session that renews
+/// its own credential reads it: it ends with [`KeyEnd::CredentialLost`](super::KeyEnd), whose
+/// `rejoin` is [`RenewRefused::allows_rejoin`].
+///
+/// The call engine ([`crate::Call`]) renews the call credential itself (its key session does
+/// not) and ends the call by Sew's reason: `signed_out` is `signin_required`, `expired` is
+/// `credential_expired`, `call_ended` (or none) is `credential_lost`. It never re-joins on a
+/// refused renewal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RenewRefused {
-    /// The join ended (`call_ended`): end with `credential_lost`.
+    /// The join ended (`call_ended`).
     CallEnded,
-    /// The login lineage has no live session (`signed_out`): end with `credential_lost`.
+    /// The login lineage was revoked or the member deactivated (`signed_out`). A lineage that
+    /// merely expired still renews, up to the server's call bound.
     SignedOut,
-    /// The credential expired (`expired`, e.g. after a long sleep): re-join through the
-    /// `JoinProvider` with `rejoin`.
+    /// The credential expired (`expired`, e.g. after a long sleep), or its login expired longer
+    /// ago than the server's call bound (4 h from the credential's mint) allows. The only one
+    /// that [`allows_rejoin`](RenewRefused::allows_rejoin).
     Expired,
     /// Any other final answer.
     Other(u16, Option<String>),

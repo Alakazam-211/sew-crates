@@ -14,7 +14,7 @@ use std::time::Duration;
 use rustls::ClientConfig as TlsConfig;
 use rustls_platform_verifier::Verifier;
 
-use crate::device::{DeviceKeyStore, StoreChoice};
+use crate::device::{DeviceKeyStore, DevicePlatform, HardwareDeviceKey, StoreChoice};
 
 /// The engine's configuration (one per app).
 #[derive(Clone, Debug)]
@@ -30,6 +30,9 @@ pub struct ClientConfig {
     /// `keyring-store`, the OS credential store first). A host passes its own store with
     /// [`ClientConfig::with_device_key_store`].
     pub device_store: StoreChoice,
+    /// The platform the device enrols as. Default from `target_os` (iOS, Android, otherwise
+    /// desktop); a host sets it with [`ClientConfig::with_device_platform`].
+    pub device_platform: DevicePlatform,
     /// The reconnect window (Sew's media server's `reconnect_window_ms`, 20 s): resume and full
     /// reconnects inside it; after it, a re-join through the provider.
     pub reconnect_window: Duration,
@@ -47,6 +50,7 @@ impl ClientConfig {
             app_id: app_id.to_owned(),
             data_dir,
             device_store: StoreChoice::Auto,
+            device_platform: crate::device::default_platform(),
             reconnect_window: Duration::from_secs(20),
             connect_timeout: Duration::from_secs(20),
             #[cfg(feature = "testing")]
@@ -60,6 +64,21 @@ impl ClientConfig {
         self.device_store = StoreChoice::Host(store);
         self
     }
+
+    /// Keeps the device's private key in the host's hardware (Secure Enclave, StrongBox/TEE)
+    /// through [`HardwareDeviceKey`] ([`StoreChoice::Hardware`]); the public record stays in
+    /// the data directory. It replaces any other store, and the engine never falls back to a
+    /// software key.
+    pub fn with_hardware_device_key(mut self, key: Arc<dyn HardwareDeviceKey>) -> ClientConfig {
+        self.device_store = StoreChoice::Hardware(key);
+        self
+    }
+
+    /// The platform the device enrols as (instead of the `target_os` default).
+    pub fn with_device_platform(mut self, platform: DevicePlatform) -> ClientConfig {
+        self.device_platform = platform;
+        self
+    }
 }
 
 /// TEST ONLY (feature `testing`): what the loopback lanes change.
@@ -71,6 +90,26 @@ pub struct TestingOverrides {
     /// Fixed name resolution (`turn.sew.test` → 127.0.0.1), as Chrome's
     /// `--host-resolver-rules`.
     pub resolve: Vec<(String, IpAddr)>,
+    /// The media transport's source address (the TURN sockets and the host candidate bind
+    /// to it), shared so a test can move the client to another "network" mid-call (`None`: the
+    /// OS chooses, as in production).
+    pub source_ip: Arc<std::sync::RwLock<Option<IpAddr>>>,
+    /// The RTP sequence number the microphone's first packet carries in each new media session
+    /// (each new PC; `None`: the engine's own random start in [0, 2^15)). Lanes set it near
+    /// 65535 to make the sequence wrap early.
+    pub first_seq: Option<u16>,
+}
+
+/// The testing source address of the media transport, if one is set.
+#[cfg(feature = "testing")]
+pub(crate) fn source_ip(cfg: &ClientConfig) -> Option<IpAddr> {
+    cfg.testing.source_ip.read().ok().and_then(|g| *g)
+}
+
+/// The media transport's source address: the OS chooses (no testing override in this build).
+#[cfg(not(feature = "testing"))]
+pub(crate) fn source_ip(_cfg: &ClientConfig) -> Option<IpAddr> {
+    None
 }
 
 /// The TLS client config every connection of the engine uses.

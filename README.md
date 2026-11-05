@@ -54,13 +54,13 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.7.3 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.7.3 | Apache-2.0 |
-| `sew-mls-crypto` | 0.7.3 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.7.3 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.7.3 | Apache-2.0 |
-| `sew-call-client` | 0.2.0 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.2.0 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.7.4 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.7.4 | Apache-2.0 |
+| `sew-mls-crypto` | 0.7.4 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.7.4 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.7.4 | Apache-2.0 |
+| `sew-call-client` | 0.3.0 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.3.0 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
@@ -73,7 +73,12 @@ that crate.
 
 ## Using the crates
 
-They depend on each other by version and are not on crates.io yet. In your workspace's root
+They depend on each other by version. `sew-proto`, `sew-lkproto` and `sew-lk-compat` are
+published on crates.io as well, so on their own they need only a dependency line. The other four
+are not on crates.io yet: `sew-mls-crypto` and `sew-e2ee` wait for the dependency change
+their READMEs describe (RUSTSEC-2026-0387), and `sew-call-client` and
+`tauri-plugin-sew-voice` wait for those two, for kessel-audio and for the forks below. To use
+them from this directory, in your workspace's root
 `Cargo.toml`, add this one `[patch.crates-io]` block (a `[patch]` applies only from the
 workspace root; if you already have one, add these rows to it, since a second block is a TOML
 error). It points each crate at its directory and adds the forked dependencies and kessel-audio:

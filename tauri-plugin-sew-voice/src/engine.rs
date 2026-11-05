@@ -201,6 +201,33 @@ pub trait CallHandle: Send + Sync + 'static {
             crate::wire::code::CONSENT_UNSUPPORTED,
         ))))
     }
+    /// The device's network changed (a phone's `NWPathMonitor` or `ConnectivityManager`): run
+    /// the resume path now (session resume, then an ICE restart) on a fresh TURN-TLS socket,
+    /// instead of waiting for the old one to die (`sew-call-client`'s `Call::network_changed`).
+    /// It must not block: an engine starts the work and returns. The default does nothing
+    /// (the engine notices the loss itself, later).
+    fn network_changed(&self) {}
+}
+
+/// The phone's audio session, as CallKit (iOS) or Telecom (Android) reports it, for the engine
+/// to pass to kessel-audio unchanged. The plugin never configures `AVAudioSession` or the
+/// Android audio mode itself: CallKit and Telecom own them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AudioSessionEvent {
+    /// The session is active (`CXProviderDelegate` `didActivate`; on Android, the Telecom
+    /// connection is active): kessel-audio's `start_when_session_active` opens the microphone
+    /// now.
+    Activated,
+    /// The session is no longer active (`didDeactivate`).
+    Deactivated,
+    /// An interruption began (kessel-audio's `suspend`).
+    Suspend,
+    /// The interruption ended (kessel-audio's `resume`).
+    Resume,
+    /// The OS audio route changed (speaker, earpiece, Bluetooth; kessel-audio's
+    /// `route_changed`).
+    RouteChanged,
 }
 
 /// The engine (`sew-call-client`'s `CallClient`): one per app.
@@ -222,4 +249,11 @@ pub trait VoiceEngine: Send + Sync + 'static {
     ) -> Result<(), EngineError>;
     /// Device list changes (hot-plug, a default change, a `set_device`).
     fn device_events(&self) -> broadcast::Receiver<DeviceList>;
+    /// The phone's audio session changed ([`AudioSessionEvent`]): passed to kessel-audio
+    /// unchanged, for the live call and (an engine that keeps it) the next one, since CallKit
+    /// may activate the session before the join has a call. It must not block. The default
+    /// does nothing (a desktop engine).
+    fn audio_session(&self, event: AudioSessionEvent) {
+        let _ = event;
+    }
 }

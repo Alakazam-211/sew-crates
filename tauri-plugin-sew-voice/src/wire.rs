@@ -45,8 +45,10 @@ pub enum CallState {
     /// The call is over. `reason` is Sew's voice leave reason as it arrived (Sew 0.7.2:
     /// `perms_lost`, `removed_from_space`, `timed_out`, `channel_archived`, `account_removed`,
     /// `removed_by_moderator`, `session_revoked`, `device_revoked`, `media_path_down`, ...),
-    /// the engine's when Sew gave none within 1.5 s of its `Disconnect` (`kicked`,
-    /// `room_closed`), or one of the plugin's: `left`, `signin_required`, `network`,
+    /// the key group's when the call socket gave none within 1.5 s of the key group's
+    /// removal (`disconnected` for a reason the key protocol cannot name), the engine's when
+    /// Sew gave none within 1.5 s of its `Disconnect` (`kicked`, `room_closed`), or one of the
+    /// plugin's: `left`, `signin_required`, `network`,
     /// `e2ee_refused`, `credential_lost` (another device took the call over), `unavailable`,
     /// `provider_error`, `engine_stopped`, or a provider refusal's code. See [`reason`].
     Ended {
@@ -121,6 +123,9 @@ pub mod reason {
     pub const ROOM_CLOSED: &str = "room_closed";
     /// Another device of the member took the call over (Sew's `replaced`).
     pub const CREDENTIAL_LOST: &str = "credential_lost";
+    /// The call credential expired: Sew refused its renewal as `expired`, or no renewal got
+    /// through before it ran out.
+    pub const CREDENTIAL_EXPIRED: &str = "credential_expired";
     /// The app called `leave`.
     pub const LEFT: &str = "left";
     /// The provider answered [`ProviderError::SigninRequired`](crate::ProviderError).
@@ -160,6 +165,48 @@ pub struct Participant {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// This device's own mute and deafen, for a native listener
+/// ([`VoiceListener::on_self_mute`](crate::VoiceListener::on_self_mute)): what CallKit's or
+/// Telecom's mute button mirrors, from every source (the app's command, the webview, a
+/// moderator, SPEAK lost). The webview has no such event: its own row in `participants` carries
+/// the same flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfMute {
+    /// Nothing of yours is heard: your own mute, or forced by a deafen, a moderator mute or
+    /// SPEAK lost. What CallKit shows.
+    pub muted: bool,
+    /// Deafened (by yourself).
+    pub deafened: bool,
+    /// Your own choice only: `set_muted(false)` undoes this and nothing else.
+    pub self_muted: bool,
+    /// Muted by a moderator.
+    pub server_muted: bool,
+    /// You lack SPEAK in this channel (a role or an overwrite).
+    pub speak_denied: bool,
+}
+
+impl SelfMute {
+    /// From this device's row and its own mute choice (`own`), the flags as [`SelfMute`]
+    /// names them. While nothing else forces the mute (no deafen, no moderator mute, SPEAK allowed)
+    /// the row's `muted` is the choice itself.
+    pub fn of(me: &Participant, own: bool) -> SelfMute {
+        let forced = me.deafened || me.server_muted || me.speak_denied;
+        SelfMute {
+            muted: me.muted || forced,
+            deafened: me.deafened,
+            self_muted: if forced { own } else { me.muted },
+            server_muted: me.server_muted,
+            speak_denied: me.speak_denied,
+        }
+    }
+
+    /// Whether `me`'s row says the choice outright (nothing else forces the mute).
+    pub fn is_unforced(me: &Participant) -> bool {
+        !(me.deafened || me.server_muted || me.speak_denied)
+    }
 }
 
 /// One entry of the `speaking` event: `[{member_id, level}]`, at most 10 a second.
@@ -236,7 +283,8 @@ impl ErrorInfo {
 pub mod code {
     /// `join` while a call is connecting, connected or reconnecting.
     pub const ALREADY_IN_CALL: &str = "already_in_call";
-    /// `mute` with no call.
+    /// `mute` (and [`VoiceControl`](crate::VoiceControl)'s `set_muted` and `set_deafened`)
+    /// with no call.
     pub const NOT_IN_CALL: &str = "not_in_call";
     /// A command's arguments make no sense (e.g. `mute {}`).
     pub const INVALID_ARGS: &str = "invalid_args";

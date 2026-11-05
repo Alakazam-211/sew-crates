@@ -1,0 +1,1078 @@
+{
+  "about": "tauri-plugin-sew-voice 0.3.0: the exact VoiceListener calls a native shim (CallKit, Telecom) gets, scenario by scenario. Each step is what the host or Sew does ('do'), then every listener call that follows, in order, as {\"<method>\": <argument as JSON>}; the arguments serialise as the sew-voice:// events do (on_self_mute's is SelfMute). Every call but on_self_mute follows the webview event with the same payload. tests/listener.rs drives the fake engine through VoiceControl with these steps and checks the calls are exactly these. Member ids, target and room are the tests' (as in native-voice-contract.json); 1001 started the recording.",
+  "sew": "0.7.3",
+  "plugin": "0.3.0",
+  "scenarios": {
+    "held_join": {
+      "about": "A join into a recorded room. Sew refuses it with 409 recording_consent_required, so the plugin holds it: join answers call_id \"\", then on_state(consent_required) and on_recording with Sew's notice (consent_prompt; ConsentPrompt::title_en(ConsentAsk::Join) and text_en give the kit's words). No microphone, no media, no keys. VoiceControl::consent(true, notice_version) joins again with the answer: the held notice clears (on_recording(null)), your row arrives, the call connects, and Sew's recording follows with my_consent granted. To give up instead (your 30 s timer), call leave().",
+      "provider": "consent_required",
+      "steps": [
+        {
+          "do": "join",
+          "args": {
+            "target": "k2:acme",
+            "room": "48831765147549698"
+          },
+          "answer": {
+            "call_id": ""
+          },
+          "calls": [
+            {
+              "on_state": {
+                "state": "connecting",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            },
+            {
+              "on_state": {
+                "state": "consent_required",
+                "recording_id": "48831765147549720",
+                "notice_version": 3141,
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            },
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "pending",
+                "consent_prompt": {
+                  "recording_id": "48831765147549720",
+                  "notice_version": 3141,
+                  "recorder_name": "Sew Notes",
+                  "feature_label": "Sew Notes",
+                  "started_by": {
+                    "member_id": "1001",
+                    "display_name": "Alice"
+                  },
+                  "room": {
+                    "channel_id": "48831765147549698",
+                    "kind": "voice",
+                    "name": "lounge"
+                  },
+                  "audio_keep_days": 30,
+                  "transcript": {
+                    "posted_to_channel": true,
+                    "readable_by": [
+                      "channel_members"
+                    ],
+                    "e2ee": false
+                  },
+                  "admin_download": true,
+                  "decline_mode": "join_unrecorded",
+                  "recorded_now": [
+                    "1001"
+                  ]
+                },
+                "participants": [],
+                "recorder_present": false
+              }
+            }
+          ]
+        },
+        {
+          "do": "consent",
+          "granted": true,
+          "notice_version": 3141,
+          "calls": [
+            {
+              "on_recording": null
+            },
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            },
+            {
+              "on_state": {
+                "state": "connected",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            }
+          ]
+        },
+        {
+          "do": "sew_recording",
+          "recording": {
+            "recording_id": "48831765147549720",
+            "auto": false,
+            "started_by": "1001",
+            "my_consent": "granted",
+            "participants": [
+              {
+                "member_id": "48831765147549699",
+                "consent": "granted",
+                "recorded": true
+              },
+              {
+                "member_id": "1001",
+                "consent": "granted",
+                "recorded": true
+              }
+            ],
+            "recorder_present": true
+          },
+          "calls": [
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "granted",
+                "participants": [
+                  {
+                    "member_id": "48831765147549699",
+                    "consent": "granted",
+                    "recorded": true
+                  },
+                  {
+                    "member_id": "1001",
+                    "consent": "granted",
+                    "recorded": true
+                  }
+                ],
+                "recorder_present": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "mid_call_pending": {
+      "about": "A recording starts while you are connected (or its notice changes): on_recording with my_consent pending and the notice (ConsentAsk::InCall). Pending people are not recorded and keep talking and hearing; show the prompt (a local notification in the background). consent(true, notice_version) is answered by Sew's recording event (granted, recorded); withdraw_consent() (\"Stop recording me\") by withdrawn. Neither command sends a listener call itself.",
+      "steps": [
+        {
+          "do": "join",
+          "args": {
+            "target": "k2:acme",
+            "room": "48831765147549698"
+          },
+          "answer": {
+            "call_id": "r_fakeroomfakeroomfakeroomfa"
+          },
+          "calls": [
+            {
+              "on_state": {
+                "state": "connecting",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            },
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            },
+            {
+              "on_state": {
+                "state": "connected",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            }
+          ]
+        },
+        {
+          "do": "sew_recording",
+          "recording": {
+            "recording_id": "48831765147549720",
+            "auto": false,
+            "started_by": "1001",
+            "my_consent": "pending",
+            "consent_prompt": {
+              "recording_id": "48831765147549720",
+              "notice_version": 3141,
+              "recorder_name": "Sew Notes",
+              "feature_label": "Sew Notes",
+              "started_by": {
+                "member_id": "1001",
+                "display_name": "Alice"
+              },
+              "room": {
+                "channel_id": "48831765147549698",
+                "kind": "voice",
+                "name": "lounge"
+              },
+              "audio_keep_days": 30,
+              "transcript": {
+                "posted_to_channel": true,
+                "readable_by": [
+                  "channel_members"
+                ],
+                "e2ee": false
+              },
+              "admin_download": true,
+              "decline_mode": "join_unrecorded",
+              "recorded_now": [
+                "1001"
+              ]
+            },
+            "participants": [
+              {
+                "member_id": "48831765147549699",
+                "consent": "pending",
+                "recorded": false
+              },
+              {
+                "member_id": "1001",
+                "consent": "granted",
+                "recorded": true
+              }
+            ],
+            "recorder_present": true
+          },
+          "calls": [
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "pending",
+                "consent_prompt": {
+                  "recording_id": "48831765147549720",
+                  "notice_version": 3141,
+                  "recorder_name": "Sew Notes",
+                  "feature_label": "Sew Notes",
+                  "started_by": {
+                    "member_id": "1001",
+                    "display_name": "Alice"
+                  },
+                  "room": {
+                    "channel_id": "48831765147549698",
+                    "kind": "voice",
+                    "name": "lounge"
+                  },
+                  "audio_keep_days": 30,
+                  "transcript": {
+                    "posted_to_channel": true,
+                    "readable_by": [
+                      "channel_members"
+                    ],
+                    "e2ee": false
+                  },
+                  "admin_download": true,
+                  "decline_mode": "join_unrecorded",
+                  "recorded_now": [
+                    "1001"
+                  ]
+                },
+                "participants": [
+                  {
+                    "member_id": "48831765147549699",
+                    "consent": "pending",
+                    "recorded": false
+                  },
+                  {
+                    "member_id": "1001",
+                    "consent": "granted",
+                    "recorded": true
+                  }
+                ],
+                "recorder_present": true
+              }
+            }
+          ]
+        },
+        {
+          "do": "consent",
+          "granted": true,
+          "notice_version": 3141,
+          "calls": []
+        },
+        {
+          "do": "sew_recording",
+          "recording": {
+            "recording_id": "48831765147549720",
+            "auto": false,
+            "started_by": "1001",
+            "my_consent": "granted",
+            "participants": [
+              {
+                "member_id": "48831765147549699",
+                "consent": "granted",
+                "recorded": true
+              },
+              {
+                "member_id": "1001",
+                "consent": "granted",
+                "recorded": true
+              }
+            ],
+            "recorder_present": true
+          },
+          "calls": [
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "granted",
+                "participants": [
+                  {
+                    "member_id": "48831765147549699",
+                    "consent": "granted",
+                    "recorded": true
+                  },
+                  {
+                    "member_id": "1001",
+                    "consent": "granted",
+                    "recorded": true
+                  }
+                ],
+                "recorder_present": true
+              }
+            }
+          ]
+        },
+        {
+          "do": "withdraw_consent",
+          "calls": []
+        },
+        {
+          "do": "sew_recording",
+          "recording": {
+            "recording_id": "48831765147549720",
+            "auto": false,
+            "started_by": "1001",
+            "my_consent": "withdrawn",
+            "participants": [
+              {
+                "member_id": "48831765147549699",
+                "consent": "withdrawn",
+                "recorded": false
+              },
+              {
+                "member_id": "1001",
+                "consent": "granted",
+                "recorded": true
+              }
+            ],
+            "recorder_present": true
+          },
+          "calls": [
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "withdrawn",
+                "participants": [
+                  {
+                    "member_id": "48831765147549699",
+                    "consent": "withdrawn",
+                    "recorded": false
+                  },
+                  {
+                    "member_id": "1001",
+                    "consent": "granted",
+                    "recorded": true
+                  }
+                ],
+                "recorder_present": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "mid_call_declined": {
+      "about": "A mid-call notice declined: consent(false, notice_version), then Sew's recording with my_consent declined. You stay in the call unrecorded (decline_mode join_unrecorded; where it is not_join, Sew ends the call with recording_declined).",
+      "steps": [
+        {
+          "do": "join",
+          "args": {
+            "target": "k2:acme",
+            "room": "48831765147549698"
+          },
+          "answer": {
+            "call_id": "r_fakeroomfakeroomfakeroomfa"
+          },
+          "calls": [
+            {
+              "on_state": {
+                "state": "connecting",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            },
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            },
+            {
+              "on_state": {
+                "state": "connected",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            }
+          ]
+        },
+        {
+          "do": "sew_recording",
+          "recording": {
+            "recording_id": "48831765147549720",
+            "auto": false,
+            "started_by": "1001",
+            "my_consent": "pending",
+            "consent_prompt": {
+              "recording_id": "48831765147549720",
+              "notice_version": 3141,
+              "recorder_name": "Sew Notes",
+              "feature_label": "Sew Notes",
+              "started_by": {
+                "member_id": "1001",
+                "display_name": "Alice"
+              },
+              "room": {
+                "channel_id": "48831765147549698",
+                "kind": "voice",
+                "name": "lounge"
+              },
+              "audio_keep_days": 30,
+              "transcript": {
+                "posted_to_channel": true,
+                "readable_by": [
+                  "channel_members"
+                ],
+                "e2ee": false
+              },
+              "admin_download": true,
+              "decline_mode": "join_unrecorded",
+              "recorded_now": [
+                "1001"
+              ]
+            },
+            "participants": [
+              {
+                "member_id": "48831765147549699",
+                "consent": "pending",
+                "recorded": false
+              },
+              {
+                "member_id": "1001",
+                "consent": "granted",
+                "recorded": true
+              }
+            ],
+            "recorder_present": true
+          },
+          "calls": [
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "pending",
+                "consent_prompt": {
+                  "recording_id": "48831765147549720",
+                  "notice_version": 3141,
+                  "recorder_name": "Sew Notes",
+                  "feature_label": "Sew Notes",
+                  "started_by": {
+                    "member_id": "1001",
+                    "display_name": "Alice"
+                  },
+                  "room": {
+                    "channel_id": "48831765147549698",
+                    "kind": "voice",
+                    "name": "lounge"
+                  },
+                  "audio_keep_days": 30,
+                  "transcript": {
+                    "posted_to_channel": true,
+                    "readable_by": [
+                      "channel_members"
+                    ],
+                    "e2ee": false
+                  },
+                  "admin_download": true,
+                  "decline_mode": "join_unrecorded",
+                  "recorded_now": [
+                    "1001"
+                  ]
+                },
+                "participants": [
+                  {
+                    "member_id": "48831765147549699",
+                    "consent": "pending",
+                    "recorded": false
+                  },
+                  {
+                    "member_id": "1001",
+                    "consent": "granted",
+                    "recorded": true
+                  }
+                ],
+                "recorder_present": true
+              }
+            }
+          ]
+        },
+        {
+          "do": "consent",
+          "granted": false,
+          "notice_version": 3141,
+          "calls": []
+        },
+        {
+          "do": "sew_recording",
+          "recording": {
+            "recording_id": "48831765147549720",
+            "auto": false,
+            "started_by": "1001",
+            "my_consent": "declined",
+            "participants": [
+              {
+                "member_id": "48831765147549699",
+                "consent": "declined",
+                "recorded": false
+              },
+              {
+                "member_id": "1001",
+                "consent": "granted",
+                "recorded": true
+              }
+            ],
+            "recorder_present": true
+          },
+          "calls": [
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "declined",
+                "participants": [
+                  {
+                    "member_id": "48831765147549699",
+                    "consent": "declined",
+                    "recorded": false
+                  },
+                  {
+                    "member_id": "1001",
+                    "consent": "granted",
+                    "recorded": true
+                  }
+                ],
+                "recorder_present": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "self_mute_server_muted": {
+      "about": "A moderator mutes you: on_participants, then on_self_mute with muted and server_muted. set_muted(false) is Ok but changes only your own choice, which was already false: muted stays true and no on_self_mute comes. set_muted(true) records self_muted at once (on_self_mute before the roster). When the moderator unmutes you, your own mute is still on; set_muted(false) then unmutes you.",
+      "steps": [
+        {
+          "do": "join",
+          "args": {
+            "target": "k2:acme",
+            "room": "48831765147549698"
+          },
+          "answer": {
+            "call_id": "r_fakeroomfakeroomfakeroomfa"
+          },
+          "calls": [
+            {
+              "on_state": {
+                "state": "connecting",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            },
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            },
+            {
+              "on_state": {
+                "state": "connected",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            }
+          ]
+        },
+        {
+          "do": "engine_participants",
+          "participants": [
+            {
+              "member_id": "48831765147549699",
+              "is_self": true,
+              "muted": true,
+              "deafened": false,
+              "server_muted": true,
+              "server_deafened": false
+            }
+          ],
+          "calls": [
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": true,
+                  "deafened": false,
+                  "server_muted": true,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": true,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": true,
+                "speak_denied": false
+              }
+            }
+          ]
+        },
+        {
+          "do": "set_muted",
+          "muted": false,
+          "calls": [
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": true,
+                  "server_deafened": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "do": "set_muted",
+          "muted": true,
+          "calls": [
+            {
+              "on_self_mute": {
+                "muted": true,
+                "deafened": false,
+                "self_muted": true,
+                "server_muted": true,
+                "speak_denied": false
+              }
+            },
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": true,
+                  "deafened": false,
+                  "server_muted": true,
+                  "server_deafened": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "do": "engine_participants",
+          "participants": [
+            {
+              "member_id": "48831765147549699",
+              "is_self": true,
+              "muted": true,
+              "deafened": false,
+              "server_muted": false,
+              "server_deafened": false
+            }
+          ],
+          "calls": [
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": true,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": true,
+                "deafened": false,
+                "self_muted": true,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            }
+          ]
+        },
+        {
+          "do": "set_muted",
+          "muted": false,
+          "calls": [
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "self_mute_speak_denied": {
+      "about": "SPEAK lost (a role or an overwrite): your row shows muted and speak_denied, and on_self_mute says so. set_muted(true) and set_muted(false) while denied are Ok and change only self_muted (the roster does not change, so only on_self_mute comes). SPEAK back: your own mute as it was, here off.",
+      "steps": [
+        {
+          "do": "join",
+          "args": {
+            "target": "k2:acme",
+            "room": "48831765147549698"
+          },
+          "answer": {
+            "call_id": "r_fakeroomfakeroomfakeroomfa"
+          },
+          "calls": [
+            {
+              "on_state": {
+                "state": "connecting",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            },
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            },
+            {
+              "on_state": {
+                "state": "connected",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            }
+          ]
+        },
+        {
+          "do": "speak_denied",
+          "denied": true,
+          "calls": [
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": true,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false,
+                  "speak_denied": true
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": true,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": true
+              }
+            }
+          ]
+        },
+        {
+          "do": "set_muted",
+          "muted": true,
+          "calls": [
+            {
+              "on_self_mute": {
+                "muted": true,
+                "deafened": false,
+                "self_muted": true,
+                "server_muted": false,
+                "speak_denied": true
+              }
+            }
+          ]
+        },
+        {
+          "do": "set_muted",
+          "muted": false,
+          "calls": [
+            {
+              "on_self_mute": {
+                "muted": true,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": true
+              }
+            }
+          ]
+        },
+        {
+          "do": "speak_denied",
+          "denied": false,
+          "calls": [
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "stop": {
+      "about": "The recording stops (on_recording(null)), then you leave: the roster empties (no on_self_mute: there is no own row any more) and the call ends left. A second leave() is Ok and sends nothing.",
+      "steps": [
+        {
+          "do": "join",
+          "args": {
+            "target": "k2:acme",
+            "room": "48831765147549698"
+          },
+          "answer": {
+            "call_id": "r_fakeroomfakeroomfakeroomfa"
+          },
+          "calls": [
+            {
+              "on_state": {
+                "state": "connecting",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            },
+            {
+              "on_participants": [
+                {
+                  "member_id": "48831765147549699",
+                  "is_self": true,
+                  "muted": false,
+                  "deafened": false,
+                  "server_muted": false,
+                  "server_deafened": false
+                }
+              ]
+            },
+            {
+              "on_self_mute": {
+                "muted": false,
+                "deafened": false,
+                "self_muted": false,
+                "server_muted": false,
+                "speak_denied": false
+              }
+            },
+            {
+              "on_state": {
+                "state": "connected",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            }
+          ]
+        },
+        {
+          "do": "sew_recording",
+          "recording": {
+            "recording_id": "48831765147549720",
+            "auto": false,
+            "started_by": "1001",
+            "my_consent": "granted",
+            "participants": [
+              {
+                "member_id": "48831765147549699",
+                "consent": "granted",
+                "recorded": true
+              },
+              {
+                "member_id": "1001",
+                "consent": "granted",
+                "recorded": true
+              }
+            ],
+            "recorder_present": true
+          },
+          "calls": [
+            {
+              "on_recording": {
+                "recording_id": "48831765147549720",
+                "auto": false,
+                "started_by": "1001",
+                "my_consent": "granted",
+                "participants": [
+                  {
+                    "member_id": "48831765147549699",
+                    "consent": "granted",
+                    "recorded": true
+                  },
+                  {
+                    "member_id": "1001",
+                    "consent": "granted",
+                    "recorded": true
+                  }
+                ],
+                "recorder_present": true
+              }
+            }
+          ]
+        },
+        {
+          "do": "sew_recording",
+          "recording": null,
+          "calls": [
+            {
+              "on_recording": null
+            }
+          ]
+        },
+        {
+          "do": "leave",
+          "calls": [
+            {
+              "on_participants": []
+            },
+            {
+              "on_state": {
+                "state": "ended",
+                "reason": "left",
+                "target": "k2:acme",
+                "room": "48831765147549698"
+              }
+            }
+          ]
+        },
+        {
+          "do": "leave",
+          "calls": []
+        }
+      ]
+    }
+  }
+}

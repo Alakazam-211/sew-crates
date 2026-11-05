@@ -857,7 +857,7 @@ async fn sew_end_reasons_reach_the_webview_unchanged() {
             .expect("fallbacks")
             .clone(),
     );
-    assert_eq!(cases.len(), 11);
+    assert_eq!(cases.len(), 12);
     for c in cases {
         let w = joined().await;
         let call = w.engine.last_call().expect("call");

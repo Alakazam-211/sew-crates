@@ -1,6 +1,6 @@
-sew-e2ee is the client library for end-to-end encrypted calls on Sew, a self-hosted team chat server: MLS (RFC 9420) key agreement per call, and the per-sender media frame keys derived from it.
-
 # sew-e2ee
+
+sew-e2ee is the client library for end-to-end encrypted calls on Sew, a self-hosted team chat server: MLS (RFC 9420) key agreement per call, and the per-sender media frame keys derived from it.
 
 Every Sew call is end-to-end encrypted. The keys exist only on the participants' devices (and,
 when a call is recorded, on the recorder the members admit; see below): they agree on them with
@@ -33,14 +33,16 @@ Not affiliated with or endorsed by LiveKit.
 
 ## Usage
 
-The crate is not on crates.io yet. It is published in the read-only
-[sew-crates](https://github.com/Alakazam-211/sew-crates) repository (clone it, for example, as
-`third_party/sew-crates`); point Cargo at it, and at the Sew crates it depends on, from your workspace's
-root `Cargo.toml`:
+The crate is not published on crates.io yet. It is held back, with `sew-mls-crypto` (one of
+its dependencies), until the dependency change for the P-256 advisory below
+(RUSTSEC-2026-0387) is made. Until then, get it from the read-only
+[sew-crates](https://github.com/Alakazam-211/sew-crates) repository: clone it into your project
+(for example as `third_party/sew-crates`), and point Cargo at it, and at the Sew crates it
+depends on, from your workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-e2ee = "0.7.3"
+sew-e2ee = "0.7.4"
 
 [patch.crates-io]
 sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }

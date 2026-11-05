@@ -15,6 +15,11 @@
 //!   (`OsSecretStore`: macOS login Keychain, Windows Credential Manager, Linux Secret Service
 //!   over `keyring`'s `async-secret-service`), service `sew-voice.<app identifier>`, account
 //!   `<install_id>:<device_scope>`, and falls back to the file when it does not answer.
+//! - **A hardware key** ([`HardwareDeviceKey`], [`StoreChoice::Hardware`]): the private key is
+//!   a non-exportable P-256 key in the Secure Enclave or StrongBox/TEE, behind the host's
+//!   trait; the public record stays in the [`DeviceFile`]. No software fallback: an error from
+//!   the key fails the call (`e2ee_refused`); a key that is gone enrols a new device
+//!   ([`hardware`]).
 //! - **The public data** ([`DeviceFile`]): the TOFU `Pins` (CA, DS, `external_sender`) and,
 //!   with the built-in stores, the `StoredDevice` (device id, certificate) in
 //!   `<data dir>/sew-voice/<install_id>/device-<device_scope>.json`, 0600 in a 0700 directory,
@@ -32,15 +37,51 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sew_e2ee::identity::DeviceSigner as _;
 use sew_e2ee::{
     DeviceIdentity, DeviceStore, Enrollment, MemberId, Pins, SoftwareSigner, TrustAnchors,
 };
-use sew_proto::e2ee::DevicePlatform;
+/// The device's platform in its enrolment (Sew's `DeviceEnrollRequest.platform`).
+pub use sew_proto::e2ee::DevicePlatform;
 use sew_proto::e2ee::reasons;
 use zeroize::Zeroizing;
 
 use crate::e2ee::transport::KeyTransport;
+
+pub mod hardware;
+
+#[cfg(feature = "sim-software-key")]
+pub use hardware::SimSoftwareKey;
+pub use hardware::{DeviceKey, HardwareDeviceKey, p1363_from_der};
+
+// `sim-software-key` is for the iOS simulator and the x86 Android emulator only. An arm64
+// Android emulator cannot be told from a phone at compile time, so it is refused too.
+#[cfg(all(
+    feature = "sim-software-key",
+    not(any(
+        all(target_os = "ios", target_abi = "sim"),
+        all(target_os = "ios", target_arch = "x86_64"),
+        all(
+            target_os = "android",
+            any(target_arch = "x86_64", target_arch = "x86")
+        ),
+    ))
+))]
+compile_error!(
+    "sew-call-client: feature `sim-software-key` builds only for the iOS simulator \
+     (aarch64-apple-ios-sim, x86_64-apple-ios) and the x86 Android emulator \
+     (x86_64-linux-android, i686-linux-android); never ship it"
+);
+
+/// The platform this build enrols as, from `target_os`: iOS, Android, otherwise desktop.
+pub const fn default_platform() -> DevicePlatform {
+    if cfg!(target_os = "ios") {
+        DevicePlatform::Ios
+    } else if cfg!(target_os = "android") {
+        DevicePlatform::Android
+    } else {
+        DevicePlatform::Desktop
+    }
+}
 
 /// The device's public record in a [`DeviceKeyRecord`] (sew-e2ee's), re-exported so a host's
 /// [`DeviceKeyStore`] needs no sew-e2ee dependency of its own.
@@ -58,6 +99,8 @@ pub enum KeyStorage {
     File,
     /// Process memory only (tests, a host that keeps keys itself).
     Memory,
+    /// The host's hardware key ([`HardwareDeviceKey`]: Secure Enclave, StrongBox/TEE).
+    Hardware,
 }
 
 /// A warning for the host (the `errors` event: a warning, not a failure).
@@ -98,6 +141,10 @@ pub enum DeviceError {
     /// The certificate Sew answered does not verify against the pinned CA.
     #[error("certificate refused: {0}")]
     Certificate(String),
+    /// The hardware key could not answer (a platform error, a signature that is not DER or does
+    /// not verify). The call's key setup fails (`e2ee_refused`); there is no software fallback.
+    #[error("hardware key unavailable: {0}")]
+    Unavailable(String),
 }
 
 /// Which device a [`DeviceKeyStore`] entry belongs to: one install of Sew, one member, one login
@@ -626,6 +673,9 @@ pub enum StoreChoice {
     Custom(Arc<dyn SecretStore>),
     /// The host's own store for the key and the public record ([`DeviceKeyStore`]).
     Host(Arc<dyn DeviceKeyStore>),
+    /// The host's hardware key ([`HardwareDeviceKey`]); the public record stays in the data
+    /// directory. Never falls back to a software key.
+    Hardware(Arc<dyn HardwareDeviceKey>),
 }
 
 impl fmt::Debug for StoreChoice {
@@ -635,6 +685,7 @@ impl fmt::Debug for StoreChoice {
             StoreChoice::File => f.write_str("File"),
             StoreChoice::Custom(s) => write!(f, "Custom({:?})", s.kind()),
             StoreChoice::Host(_) => f.write_str("Host"),
+            StoreChoice::Hardware(_) => f.write_str("Hardware"),
         }
     }
 }
@@ -646,6 +697,8 @@ enum Keys {
     Local(Arc<dyn SecretStore>),
     /// Both in the host's [`DeviceKeyStore`].
     Host(Arc<dyn DeviceKeyStore>),
+    /// The key in the host's hardware, the record in the [`DeviceFile`].
+    Hardware(Arc<dyn HardwareDeviceKey>),
 }
 
 /// Where a vault lives.
@@ -660,6 +713,8 @@ pub struct VaultConfig {
     pub store: StoreChoice,
     /// The device label Sew shows ("K2 on macOS"); trimmed to Sew's limit.
     pub label: String,
+    /// The platform the device enrols as (default [`default_platform`], from `target_os`).
+    pub platform: DevicePlatform,
 }
 
 /// One install's and login lineage's device: the public file, the secret store, and the
@@ -670,6 +725,7 @@ pub struct DeviceVault {
     account: String,
     id: DeviceKeyId,
     label: String,
+    platform: DevicePlatform,
     warnings: Vec<DeviceWarning>,
 }
 
@@ -696,7 +752,9 @@ pub fn platform_name() -> &'static str {
 
 impl DeviceVault {
     /// Opens the vault of `install_id`, `member` and `device_scope`. Blocking (the OS store
-    /// probe, a host store's `load`): call it on a blocking thread from async code.
+    /// probe, a host store's `load`): call it on a blocking thread from async code. With a
+    /// hardware key the `pins_reset` probe (the key survived, the data did not) needs the key's
+    /// async `public_key`: [`DeviceVault::open_async`] does both.
     pub fn open(
         cfg: &VaultConfig,
         install_id: u64,
@@ -713,6 +771,7 @@ impl DeviceVault {
                 Keys::Local(Arc::new(FileSecretStore::new(dir.clone())))
             }
             StoreChoice::Auto => Keys::Local(auto_store(&cfg.app_id, &dir, &mut warnings)),
+            StoreChoice::Hardware(k) => Keys::Hardware(k.clone()),
         };
         let file = DeviceFile::open(&dir, install_id, device_scope)?;
         let scope = sanitize(device_scope);
@@ -725,6 +784,8 @@ impl DeviceVault {
         let survives = match &keys {
             Keys::Local(s) => s.load(&account)?.is_some(),
             Keys::Host(s) => s.load(&id)?.is_some(),
+            // Probed by `open_async`.
+            Keys::Hardware(_) => false,
         };
         if !file.existed && survives {
             warnings.push(DeviceWarning::PinsReset);
@@ -735,8 +796,34 @@ impl DeviceVault {
             account,
             id,
             label: cfg.label.clone(),
+            platform: cfg.platform,
             warnings,
         })
+    }
+
+    /// [`DeviceVault::open`] on a blocking thread, then, with a hardware key, its `pins_reset`
+    /// probe (the key's `public_key`). What the key session uses.
+    pub async fn open_async(
+        cfg: &VaultConfig,
+        install_id: u64,
+        member: MemberId,
+        device_scope: &str,
+    ) -> Result<DeviceVault, DeviceError> {
+        let (cfg2, scope) = (cfg.clone(), device_scope.to_owned());
+        let mut vault =
+            blocking(move || DeviceVault::open(&cfg2, install_id, member, &scope)).await?;
+        if let Keys::Hardware(k) = &vault.keys
+            && !vault.file.existed
+            && k.public_key(&vault.id).await?.is_some()
+        {
+            vault.warnings.push(DeviceWarning::PinsReset);
+        }
+        Ok(vault)
+    }
+
+    /// The platform the device enrols as.
+    pub fn platform(&self) -> DevicePlatform {
+        self.platform
     }
 
     /// Warnings for the host, once each.
@@ -749,6 +836,7 @@ impl DeviceVault {
         match &self.keys {
             Keys::Local(s) => s.kind(),
             Keys::Host(_) => KeyStorage::Host,
+            Keys::Hardware(_) => KeyStorage::Hardware,
         }
     }
 
@@ -767,21 +855,41 @@ impl DeviceVault {
         &self.file
     }
 
-    /// The device key, if stored (on a blocking thread).
+    /// The software device key, if stored (on a blocking thread). Always `None` with a hardware
+    /// key, whose private half never leaves the hardware: see [`DeviceVault::device_key`].
     pub async fn signer(&self) -> Result<Option<SoftwareSigner>, DeviceError> {
+        if matches!(self.keys, Keys::Hardware(_)) {
+            return Ok(None);
+        }
+        Ok(self.stored().await?.1.and_then(DeviceKey::into_software))
+    }
+
+    /// The device key, software or hardware, if stored.
+    pub async fn device_key(&self) -> Result<Option<DeviceKey>, DeviceError> {
         Ok(self.stored().await?.1)
     }
 
     /// The stored public record and key, each if present (on a blocking thread). A host record
-    /// for another install or member is no device.
-    async fn stored(&self) -> Result<(Option<StoredDevice>, Option<SoftwareSigner>), DeviceError> {
+    /// for another install or member is no device; a hardware key whose `public_key` answers
+    /// `None` is a lost key.
+    async fn stored(&self) -> Result<(Option<StoredDevice>, Option<DeviceKey>), DeviceError> {
         match &self.keys {
             Keys::Local(s) => {
                 let (s, a) = (s.clone(), self.account.clone());
                 let signer =
                     blocking(move || Ok(s.load(&a)?.and_then(|k| SoftwareSigner::from_bytes(&k))))
                         .await?;
-                Ok((self.file.load(self.file.install_id), signer))
+                Ok((
+                    self.file.load(self.file.install_id),
+                    signer.map(DeviceKey::software),
+                ))
+            }
+            Keys::Hardware(k) => {
+                let key = match k.public_key(&self.id).await? {
+                    Some(public) => Some(DeviceKey::hardware(k.clone(), self.id.clone(), public)?),
+                    None => None,
+                };
+                Ok((self.file.load(self.file.install_id), key))
             }
             Keys::Host(s) => {
                 let (s, id) = (s.clone(), self.id.clone());
@@ -791,7 +899,7 @@ impl DeviceVault {
                         if r.device.install_id == self.id.install_id
                             && r.device.member_id == self.id.member_id =>
                     {
-                        let signer = SoftwareSigner::from_bytes(&r.key);
+                        let signer = SoftwareSigner::from_bytes(&r.key).map(DeviceKey::software);
                         (Some(r.device), signer)
                     }
                     _ => (None, None),
@@ -805,14 +913,19 @@ impl DeviceVault {
     async fn save_device(
         &mut self,
         stored: &StoredDevice,
-        signer: &SoftwareSigner,
+        signer: &DeviceKey,
         key_changed: bool,
     ) -> Result<(), DeviceError> {
+        let scalar = || {
+            signer
+                .software_bytes()
+                .ok_or_else(|| DeviceError::Store("a hardware key in a software store".to_owned()))
+        };
         match &self.keys {
             Keys::Local(s) => {
                 if key_changed {
                     let (s, a) = (s.clone(), self.account.clone());
-                    let k = signer.to_bytes();
+                    let k = scalar()?;
                     blocking(move || s.save(&a, &k)).await?;
                 }
                 self.file.save(stored).map_err(DeviceError::Store)
@@ -820,11 +933,27 @@ impl DeviceVault {
             Keys::Host(s) => {
                 let (s, id) = (s.clone(), self.id.clone());
                 let rec = DeviceKeyRecord {
-                    key: signer.to_bytes(),
+                    key: scalar()?,
                     device: stored.clone(),
                 };
                 blocking(move || s.store(&id, &rec)).await
             }
+            // The key is the hardware's already (`generate`); only the record is ours.
+            Keys::Hardware(_) => self.file.save(stored).map_err(DeviceError::Store),
+        }
+    }
+
+    /// A new key for an enrolment: a software key, or the hardware's (`generate`, replacing
+    /// any old one).
+    async fn new_key(&self) -> Result<DeviceKey, DeviceError> {
+        match &self.keys {
+            Keys::Hardware(k) => {
+                let public = k.generate(&self.id).await?;
+                DeviceKey::hardware(k.clone(), self.id.clone(), public)
+            }
+            Keys::Local(_) | Keys::Host(_) => Ok(DeviceKey::software(SoftwareSigner::generate(
+                &mut rand::rngs::OsRng,
+            ))),
         }
     }
 
@@ -838,6 +967,7 @@ impl DeviceVault {
                 let (s, id) = (s.clone(), self.id.clone());
                 blocking(move || s.clear(&id)).await
             }
+            Keys::Hardware(k) => k.delete(&self.id).await,
         }
     }
 
@@ -845,7 +975,7 @@ impl DeviceVault {
     pub async fn forget_device(&mut self) -> Result<(), DeviceError> {
         self.delete_key().await?;
         match self.keys {
-            Keys::Local(_) => self.file.forget_device(),
+            Keys::Local(_) | Keys::Hardware(_) => self.file.forget_device(),
             // Nothing of the device is in the file; the pins stay.
             Keys::Host(_) => Ok(()),
         }
@@ -873,7 +1003,7 @@ impl DeviceVault {
         trust: &TrustAnchors,
         me: MemberId,
         now: u64,
-    ) -> Result<(DeviceIdentity, SoftwareSigner), DeviceError> {
+    ) -> Result<(DeviceIdentity, DeviceKey), DeviceError> {
         if let (Some(stored), Some(signer)) = self.stored().await? {
             let key_matches = signer.public_key_sec1() == stored.pubkey;
             match DeviceIdentity::from_stored(stored, trust, me, now) {
@@ -907,22 +1037,23 @@ impl DeviceVault {
         self.enroll(http, trust, me, now).await
     }
 
-    /// Enrols with a fresh key (one retry on `409 device_key_in_use`).
+    /// Enrols with a fresh key (one retry on `409 device_key_in_use`) as
+    /// [`DeviceVault::platform`]. With a hardware key the fresh key is the hardware's
+    /// (`generate`).
     pub async fn enroll(
         &mut self,
         http: &KeyTransport,
         trust: &TrustAnchors,
         me: MemberId,
         now: u64,
-    ) -> Result<(DeviceIdentity, SoftwareSigner), DeviceError> {
+    ) -> Result<(DeviceIdentity, DeviceKey), DeviceError> {
         let install = trust.install_id();
         let mut retried = false;
         loop {
-            let signer = SoftwareSigner::generate(&mut rand::rngs::OsRng);
+            let signer = self.new_key().await?;
             let pubkey = signer.public_key_sec1();
-            let (draft, req) =
-                Enrollment::begin(&pubkey, DevicePlatform::Desktop, &self.label, install, me);
-            let body = Enrollment::request(draft, signer.sign(&req.message));
+            let (draft, req) = Enrollment::begin(&pubkey, self.platform, &self.label, install, me);
+            let body = Enrollment::request(draft, signer.sign(&req.message).await?);
             let resp = match http.enroll(&body).await {
                 Ok(r) => r,
                 Err(f) if !retried && f.status == 409 && f.is(reasons::DEVICE_KEY_IN_USE) => {

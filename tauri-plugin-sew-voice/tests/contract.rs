@@ -156,7 +156,12 @@ fn fixture_ended_payloads_are_the_state_event() {
     assert_eq!(reasons("sew_reasons"), reason::SEW.to_vec());
     assert_eq!(
         reasons("fallbacks"),
-        vec![reason::KICKED, reason::ROOM_CLOSED, reason::CREDENTIAL_LOST]
+        vec![
+            reason::KICKED,
+            reason::ROOM_CLOSED,
+            reason::CREDENTIAL_LOST,
+            reason::CREDENTIAL_EXPIRED
+        ]
     );
     assert_eq!(reasons("recording_reasons"), reason::RECORDING.to_vec());
     // The kicked fallback is also what a Sew older than 0.7.1 ends a removal with.

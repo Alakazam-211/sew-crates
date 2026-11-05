@@ -45,6 +45,9 @@ pub enum EndReason {
     /// Sew no longer accepts the call credential (another device took over: `replaced`, or a
     /// 4011 from a Sew older than 0.7.2 with no engine `Disconnect` before it).
     CredentialLost,
+    /// The call credential expired: Sew refused its renewal as `expired`, or no renewal got
+    /// through (the network, a `5xx`) before it ran out (`credential_expired`).
+    CredentialExpired,
     /// The engine removed this participant and Sew gave no reason within 1.5 s (`kicked`).
     Kicked,
     /// The engine closed or deleted the room and Sew gave no reason within 1.5 s
@@ -53,8 +56,9 @@ pub enum EndReason {
     /// Sew ended this join and said why (Sew 0.7.2): its voice leave reason as it arrived
     /// (`perms_lost`, `removed_from_space`, `timed_out`, `channel_archived`,
     /// `account_removed`, `removed_by_moderator`, `session_revoked`, `device_revoked`, …;
-    /// an open set). From the call socket's self copy of `voice_state_updated`, its `4011`
-    /// close, or the key group's removal.
+    /// an open set). From the call socket's self copy of `voice_state_updated` or its `4011`
+    /// close; the key group's removal only when the call socket said nothing within 1.5 s of
+    /// it (it names `disconnected` for a reason the key protocol has no code for).
     Removed(String),
     /// Sew refused the (re-)join; the code is in the `errors` event.
     Refused(String),
@@ -325,9 +329,14 @@ pub struct CallCounters {
     pub send_queue_drops: u64,
     /// Remote frames decrypted and handed over.
     pub frames_received: u64,
-    /// Remote frames that did not decrypt (never played).
+    /// Remote frames that did not decrypt (never played): a tag that did not verify, a
+    /// malformed frame, or a key that stayed missing past the keys' grace.
     pub decrypt_failures: u64,
-    /// Remote frames of tracks the keys do not allow (never played).
+    /// Remote frames dropped because the sender's key at the frame's index was not installed
+    /// yet (never played): frames that crossed a join or a key switch. Not decrypt failures.
+    pub frames_before_key: u64,
+    /// Remote frames of tracks the keys do not allow (never played): before the subscription
+    /// check passes, or from a sender no longer verified.
     pub refused_frames: u64,
     /// Frames the receive queue was too full for.
     pub recv_queue_drops: u64,
@@ -343,6 +352,8 @@ pub struct CallCounters {
     pub turn_allocations: u64,
     /// Call-credential renewals.
     pub credential_renewals: u64,
+    /// Network changes the host reported ([`Call::network_changed`]).
+    pub network_changes: u64,
 }
 
 /// A point-in-time view of a call (`state` command).
@@ -492,6 +503,7 @@ pub(crate) enum Cmd {
         notice_version: Option<u32>,
         reply: oneshot::Sender<Result<(), CallError>>,
     },
+    NetworkChanged,
 }
 
 /// The engine of one app: at most one live call.
@@ -522,9 +534,12 @@ impl CallClient {
 
     /// An engine with `cfg` and Sew's MLS call keys ([`crate::e2ee::MlsKeys`]), the device key
     /// where `cfg.device_store` says (by default a 0600 file; the host's own store with
-    /// [`ClientConfig::with_device_key_store`]): the production constructor.
+    /// [`ClientConfig::with_device_key_store`], a hardware key with
+    /// [`ClientConfig::with_hardware_device_key`]), enrolled as `cfg.device_platform`: the
+    /// production constructor.
     pub fn with_mls(cfg: ClientConfig) -> CallClient {
-        let keys = crate::e2ee::MlsKeys::new(cfg.device_store.clone());
+        let keys =
+            crate::e2ee::MlsKeys::new(cfg.device_store.clone()).with_platform(cfg.device_platform);
         CallClient::new(cfg, Arc::new(keys))
     }
 
@@ -722,6 +737,25 @@ impl Call {
             })
             .map_err(|_| CallError::Ended)?;
         rx.await.map_err(|_| CallError::Ended)?
+    }
+
+    /// The device's network changed: the host calls this from its path monitor (iOS
+    /// `NWPathMonitor`, Android `ConnectivityManager.NetworkCallback`) when the default route
+    /// moves (Wi-Fi to cellular and back, a new Wi-Fi network, a VPN coming up). Never blocks;
+    /// safe from any thread and to repeat.
+    ///
+    /// In a call it runs the resume path now instead of waiting for the old connections to time
+    /// out: the signalling WebSocket is replaced and the session resumes (`JoinRequest.reconnect`,
+    /// the PC kept), a fresh transport is opened on the new network (a new TURN allocation over a
+    /// new TURN-TLS / TCP / UDP socket and new host candidates) and swapped into the PC, then an
+    /// ICE restart moves the media onto it; the call socket of the keys reconnects and resumes
+    /// too. The state shows `reconnecting` until the resume is done. If the new transport can't
+    /// be opened, or the restart does not connect, the engine falls back to its full reconnect
+    /// (and re-join) inside the usual window. Before the call is connected it retries the
+    /// connect at once; while the join is held for a recording notice it does nothing (no
+    /// connection is open).
+    pub fn network_changed(&self) {
+        let _ = self.cmd.send(Cmd::NetworkChanged);
     }
 
     /// Leaves (Sew's leave with the credential, then the engine's).

@@ -1,6 +1,6 @@
-sew-lk-compat is the LiveKit-protocol layer of Sew's native voice engine: the `/rtc/v1` join request, a sans-I/O signalling session for a single-peer-connection voice client, and LiveKit's AES-GCM media frame format.
-
 # sew-lk-compat
+
+sew-lk-compat is the LiveKit-protocol layer of Sew's native voice engine: the `/rtc/v1` join request, a sans-I/O signalling session for a single-peer-connection voice client, and LiveKit's AES-GCM media frame format.
 
 Sew, Alakazam Labs' self-hosted team chat server, runs its calls on a media server that speaks
 the LiveKit client protocol. Its native voice engine, `sew-call-client`, joins those calls
@@ -13,42 +13,80 @@ through this crate:
   `handle_timeout`); take the `SignalRequest`s to send (`poll_request`) and the
   `SessionEvent`s to act on (`poll_event`). It keeps the ping schedule and round-trip time, the
   roster of remote participants and their tracks, and the leave and refusal rules.
-- `e2ee`: LiveKit's AES-GCM frame format (`LkGcmV1`, `FrameKey`, `SenderRing`) and the
-  production E2EE configuration (`ProductionConfig`), byte-compatible with the LiveKit client
-  SDKs.
-- `compat`: client-sdk-js rules the engine follows (`compare_versions`, `classify_validate`).
+- `e2ee`: LiveKit's AES-GCM frame format (`LkGcmV1`, `FrameKey`, `SenderRing`),
+  byte-compatible with the LiveKit client SDKs, and `ProductionConfig`: the end-to-end
+  encryption settings every client of a Sew call must share (frame format, key ring size, key
+  derivation and its salt, timings), whose one value is `e2ee::PRODUCTION`.
+- `compat`: client-sdk-js rules the engine follows. `compare_versions` compares version strings
+  the way the JS SDK does. `classify_validate` reads the answer of the media server's validate
+  endpoint (which a client asks when its signalling connection is refused) and says why the
+  connection failed, as the JS SDK would: not allowed, no v1 endpoint, or another error.
 
 The protobuf types come from `sew-lkproto`.
 
 **Not affiliated with or endorsed by LiveKit, Inc.**
 
-## Usage
+- Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
+  repository at each release, so pull requests are not merged there)
+- API documentation: <https://docs.rs/sew-lk-compat>
 
-The crate is not on crates.io yet. It is published in the read-only
-[sew-crates](https://github.com/Alakazam-211/sew-crates) repository (clone it, for example, as
-`third_party/sew-crates`); point Cargo at it, and at `sew-lkproto`, from your workspace's root
-`Cargo.toml`:
+## Usage
 
 ```toml
 [dependencies]
-sew-lk-compat = "0.7.3"
-
-[patch.crates-io]
-sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }
-sew-lkproto = { path = "third_party/sew-crates/sew-lkproto" }
+sew-lk-compat = "0.7.4"
+sew-lkproto = "0.7.4"
+prost = "0.14"
 ```
+
+A join starts from the media server's signalling URL and an access token. In a Sew call both
+come from Sew's voice join answer (`url` and `token` of `sew-proto`'s `VoiceJoinResponse`). `JoinParams` turns them into the
+`/rtc/v1` URL to open as a WebSocket; the token goes in that request's
+`Authorization: Bearer` header, not in the URL. The session itself does no I/O: you pass it
+each binary message the socket receives and send what it asks you to send.
 
 ```rust
 use std::time::Instant;
-use sew_lk_compat::{Session, SessionEvent};
 
-let mut session = Session::new(Instant::now());
-// For each SignalResponse from the socket: session.handle_response(now, response);
-// then send every session.poll_request() and act on every session.poll_event().
-while let Some(event) = session.poll_event() {
-    if let SessionEvent::Joined { .. } = event {
-        // media can start
+use prost::Message;
+use sew_lk_compat::{ClientInfoOpts, JoinParams, Session, SessionEvent};
+use sew_lkproto::livekit::SignalResponse;
+
+/// The WebSocket URL to open for a first join, and the session that will run on it.
+fn start(url_from_sew: &str, token_from_sew: &str) -> (String, Session) {
+    let params = JoinParams::new(token_from_sew, ClientInfoOpts::default());
+    // For example "wss://voice.example.com/rtc/v1?join_request=..."; send
+    // `Authorization: Bearer {params.token}` with the WebSocket upgrade.
+    let ws_url = params.url(url_from_sew);
+    (ws_url, Session::new(Instant::now()))
+}
+
+/// One binary message from the socket in; the binary messages to send back out.
+fn on_message(session: &mut Session, bytes: &[u8]) -> Result<Vec<Vec<u8>>, prost::DecodeError> {
+    let now = Instant::now();
+    let response = SignalResponse::decode(bytes)?;
+    session.handle_response(now, response);
+    while let Some(event) = session.poll_event() {
+        match event {
+            SessionEvent::Joined { force_relay, .. } => {
+                // Set up the peer connection (relay only when `force_relay`), then
+                // session.publish_audio(..) and session.offer(..).
+                println!("joined; relay only: {force_relay}");
+            }
+            SessionEvent::Leave { action, .. } => println!("asked to leave: {action:?}"),
+            _ => {}
+        }
     }
+    let mut out = Vec::new();
+    while let Some(request) = session.poll_request() {
+        out.push(request.encode_to_vec());
+    }
+    Ok(out)
+}
+
+/// Call at `session.poll_timeout()` (keep-alive pings), then send what `poll_request` returns.
+fn on_timer(session: &mut Session) {
+    session.handle_timeout(Instant::now());
 }
 ```
 

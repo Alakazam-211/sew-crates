@@ -16,6 +16,14 @@
 //! - after the window, or when the engine refuses the token: a **re-join** through the
 //!   [`JoinProvider`] (a new join answer, credential and key session).
 //!
+//! A **network change** the host reports ([`crate::Call::network_changed`]) runs the resume
+//! on purpose: the WebSocket is replaced at once (resume), a fresh transport is opened on the
+//! new network in parallel (the JoinResponse's ICE servers: a new TURN allocation over a new
+//! socket, new host candidates), swapped into the kept PC (the old local candidates
+//! invalidated), and the resume's ICE restart then runs over it. The old transport's loss
+//! meanwhile is expected and does not force a full reconnect; a failed open, or a restart that
+//! does not connect within [`RESTART_GRACE`], does.
+//!
 //! Recording (Sew 0.7.3): a join that Sew refuses `409 recording_consent_required` is **held**
 //! ([`hold`]: no media, no keys) until the host answers the notice (the join again, with the
 //! answer as `recording_notice`) or leaves; a re-join refused that way holds the same way. In a
@@ -32,7 +40,10 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use sew_lk_compat::session::LeaveAction;
 use sew_lk_compat::{ClientInfoOpts, JoinParams, Session, SessionEvent};
-use sew_lkproto::livekit::{SignalRequest, UpdateSubscription, signal_request};
+use sew_lkproto::livekit::{
+    SignalRequest, SignalResponse, UpdateSubscription, leave_request, signal_request,
+    signal_response,
+};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -64,22 +75,71 @@ const BACKOFF_MIN: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(4);
 /// ICE `disconnected` this long → full reconnect.
 const PC_FAIL_GRACE: Duration = Duration::from_secs(2);
+/// After a network change's transport swap, ICE must connect within this long, else full
+/// reconnect.
+const RESTART_GRACE: Duration = Duration::from_secs(5);
 /// A sequence gap is reported lost after this long.
 const LOSS_GRACE: Duration = Duration::from_millis(60);
 /// Gaps longer than this are not marked packet by packet (a restart, not loss).
 const LOSS_MAX_GAP: u16 = 50;
 /// Speaking events at most this often.
 const SPEAKING_EVERY: Duration = Duration::from_millis(100);
-/// A credential renewal that failed on the network is retried after this.
-const RENEW_RETRY: Duration = Duration::from_secs(10);
+/// A credential renewal that failed on the network, with a `5xx` or a `429` is retried after
+/// this, doubling up to [`RENEW_RETRY_MAX`] and never later than half the time the credential
+/// has left. A renewal whose answer was lost may have rotated the secret: the old one works for
+/// 30 s more, and these retries fall inside that grace.
+const RENEW_RETRY_MIN: Duration = Duration::from_secs(1);
+/// Longest wait between renewal retries.
+const RENEW_RETRY_MAX: Duration = Duration::from_secs(8);
+/// Shortest wait between renewal retries (near the credential's expiry).
+const RENEW_RETRY_FLOOR: Duration = Duration::from_millis(200);
 /// How long a leave waits for Sew's answer.
 const LEAVE_TIMEOUT: Duration = Duration::from_secs(3);
 /// The track name of the microphone.
 const MIC_NAME: &str = "microphone";
-/// How long an engine `Disconnect` waits for Sew's own reason (the call socket's self copy or
-/// `4011`) before the call ends with the engine's (`kicked` or `room_closed`): media and the
-/// call socket may arrive in either order (Sew 0.7.2).
+/// How long an engine `Disconnect` or the key group's removal waits for Sew's own reason (the
+/// call socket's self copy or `4011`) before the call ends with the key group's reason, else
+/// the engine's (`kicked` or `room_closed`): media, the key group and the call socket may
+/// arrive in any order (Sew 0.7.2).
 pub(crate) const END_REASON_GRACE: Duration = Duration::from_millis(1_500);
+
+/// The engine's own end of a `Disconnect` leave (its `DisconnectReason`): 4
+/// PARTICIPANT_REMOVED and 2 DUPLICATE_IDENTITY are `kicked`, 5 ROOM_DELETED and 10
+/// ROOM_CLOSED are `room_closed`; `None` for the rest (a server shutdown or a migration may
+/// come back, so it reconnects within the window).
+fn engine_end_reason(reason: i32) -> Option<EndReason> {
+    match reason {
+        2 | 4 => Some(EndReason::Kicked),
+        5 | 10 => Some(EndReason::RoomClosed),
+        _ => None,
+    }
+}
+
+/// The engine's end in a signalling response from a link the engine has given up on: a
+/// `Disconnect` leave that names a removal or a closed room. Not 2 DUPLICATE_IDENTITY: on
+/// that link it is this engine's own reconnect taking the participant over.
+fn parting_end(r: &SignalResponse) -> Option<EndReason> {
+    let Some(signal_response::Message::Leave(l)) = &r.message else {
+        return None;
+    };
+    match leave_request::Action::try_from(l.action) {
+        Ok(leave_request::Action::Resume | leave_request::Action::Reconnect) => None,
+        _ if l.reason == 2 => None,
+        _ => engine_end_reason(l.reason),
+    }
+}
+
+/// A signalling link given up on because media went (the engine's TURN allocation or ICE),
+/// kept reading until it closes or [`END_REASON_GRACE`] passes: an engine that removes this
+/// participant or closes the room drops the TURN allocation and sends the `Disconnect` leave
+/// at the same moment, so the leave may come after the media's loss.
+struct Parting {
+    id: u64,
+    _link: SignalLink,
+    until: Instant,
+    /// A re-join held back until the link has had its say.
+    rejoin: Option<RejoinReason>,
+}
 
 /// What the [`crate::Call`] handle and the engine task share.
 pub(crate) struct Shared {
@@ -227,6 +287,11 @@ async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
                     let _ = reply.send(());
                     return None;
                 }
+                Some(Cmd::NetworkChanged) => {
+                    // Held: no connection is open; the join after the answer uses the network
+                    // of that moment.
+                    p.counters.network_changes += 1;
+                }
                 Some(Cmd::Mute {
                     muted,
                     deafened,
@@ -367,6 +432,25 @@ struct Consented {
     reply: tokio::sync::oneshot::Sender<Result<(), CallError>>,
 }
 
+/// The extended RTP sequence number of the microphone's first packet in a new media session
+/// (a new PC: a new DTLS handshake, so a new SRTP context on both ends).
+///
+/// Its rollover counter is always 0. The media server starts every new SSRC at rollover
+/// counter 0 (RFC 3711 §3.3.1: a receiver takes the first packet's sequence number with no
+/// rollover unless told otherwise out of band, and nothing here tells it), so a first packet
+/// carrying the previous session's extended number (rollover 1 once that session had passed
+/// 65535) would fail SRTP authentication there, and so would every later one. The start is
+/// random in [0, 2^15), as browsers pick theirs, so a session runs at least 2^15 packets
+/// (about 11 minutes of 20 ms audio) before its first wrap, which the receiver then follows.
+fn fresh_send_seq(cfg: &ClientConfig) -> u64 {
+    #[cfg(feature = "testing")]
+    if let Some(s) = cfg.testing.first_seq {
+        return u64::from(s);
+    }
+    let _ = cfg;
+    u64::from(rand::random::<u16>() & 0x7fff)
+}
+
 impl Engine {
     fn new(p: Parts, answer: JoinAnswer) -> Engine {
         let now = Instant::now();
@@ -404,6 +488,8 @@ impl Engine {
             cred_tx,
             renew_at: None,
             renewing: None,
+            renew_retry: RENEW_RETRY_MIN,
+            renew_held_end: None,
             keys: None,
             keys_active: false,
             keys_start: None,
@@ -412,11 +498,16 @@ impl Engine {
             session: Session::new(now),
             link: None,
             link_id: 0,
+            parting: None,
             sig_tx,
             sig_rx,
             attempt: None,
             rejoining: None,
             opening: None,
+            rebinding: None,
+            resume_waits_rebind: false,
+            restart_deadline: None,
+            ice_servers: Vec::new(),
             transport: None,
             pc: None,
             pc_down_since: None,
@@ -427,7 +518,8 @@ impl Engine {
             track_sid: None,
             published: None,
             send: None,
-            send_seq: u64::from(rand::random::<u16>()),
+            // Set for each new PC (`on_opened`).
+            send_seq: 0,
             media_up: false,
             reconnect: None,
             connect_deadline: now + Duration::from_secs(0),
@@ -581,6 +673,11 @@ struct Engine {
     cred_tx: watch::Sender<Option<CallCredential>>,
     renew_at: Option<Instant>,
     renewing: Option<JoinHandle<Result<api::Renewed, api::ApiError>>>,
+    /// The next renewal retry's wait (reset by every new credential).
+    renew_retry: Duration,
+    /// Sew's end that arrived while a renewal was in flight: the renewal's own answer says why
+    /// when it refused (see [`Engine::on_renewed`]).
+    renew_held_end: Option<EndReason>,
     keys: Option<Arc<dyn KeySession>>,
     keys_active: bool,
     keys_start: Option<JoinHandle<Result<Arc<dyn KeySession>, E2eeError>>>,
@@ -589,11 +686,22 @@ struct Engine {
     session: Session,
     link: Option<SignalLink>,
     link_id: u64,
+    /// The link before a reconnect for lost media, still read for the engine's leave.
+    parting: Option<Parting>,
     sig_tx: mpsc::UnboundedSender<(u64, SignalIn)>,
     sig_rx: mpsc::UnboundedReceiver<(u64, SignalIn)>,
     attempt: Option<(Attempt, Kind)>,
     rejoining: Option<JoinHandle<Result<JoinAnswer, ProviderError>>>,
     opening: Option<JoinHandle<Result<Transport, TransportError>>>,
+    /// A network change's fresh transport, opening.
+    rebinding: Option<JoinHandle<Result<Transport, TransportError>>>,
+    /// The session resumed during a network change before its transport was ready: the ICE
+    /// restart waits for the swap.
+    resume_waits_rebind: bool,
+    /// After a network change's swap: ICE must connect by then.
+    restart_deadline: Option<Instant>,
+    /// The JoinResponse's ICE servers (a network change opens its transport with them).
+    ice_servers: Vec<sew_lkproto::livekit::IceServer>,
     transport: Option<Transport>,
     pc: Option<Pc>,
     pc_down_since: Option<Instant>,
@@ -605,6 +713,8 @@ struct Engine {
     /// The server's answer to our publication (the keys confirm it encrypted, the publish check).
     published: Option<sew_lkproto::livekit::TrackInfo>,
     send: Option<SendPath>,
+    /// The extended RTP sequence number of the next microphone packet, in the current PC's
+    /// SRTP session ([`fresh_send_seq`] for each new PC; a resume keeps the PC and the count).
     send_seq: u64,
     media_up: bool,
     reconnect: Option<Reconnect>,
@@ -702,6 +812,7 @@ enum Step {
     ),
     Rejoined(Result<Result<JoinAnswer, ProviderError>, tokio::task::JoinError>),
     Opened(Result<Result<Transport, TransportError>, tokio::task::JoinError>),
+    Rebound(Result<Result<Transport, TransportError>, tokio::task::JoinError>),
     Renewed(Result<Result<api::Renewed, api::ApiError>, tokio::task::JoinError>),
     Consented(Option<Consented>),
     Timeout,
@@ -723,8 +834,9 @@ struct Flags {
     speak_denied: bool,
 }
 
-/// Sew's reason for ending this join (a voice leave reason: the call socket's self copy, its
-/// `4011` close, or the key group's removal) as the call's end: passed on unchanged,
+/// Sew's reason for ending this join (a voice leave reason: the call socket's self copy or its
+/// `4011` close; the key group's removal only as the fallback) as the call's end: passed on
+/// unchanged,
 /// but `replaced` (another device took the call over) is `credential_lost` and `left` (a leave
 /// from elsewhere) is `left`.
 pub(crate) fn end_for_sew_reason(reason: &str) -> EndReason {
@@ -768,6 +880,7 @@ impl Engine {
                 (r, k) = opt_attempt(&mut self.attempt) => Step::Attempt(r, k),
                 r = opt_join(&mut self.rejoining) => Step::Rejoined(r),
                 r = opt_join(&mut self.opening) => Step::Opened(r),
+                r = opt_join(&mut self.rebinding) => Step::Rebound(r),
                 r = opt_join(&mut self.renewing) => Step::Renewed(r),
                 d = self.consent_rx.recv() => Step::Consented(d),
                 p = self.push_rx.recv() => Step::Push(p),
@@ -791,6 +904,7 @@ impl Engine {
                     self.leave().await;
                     let _ = reply.send(());
                 }
+                Step::Cmd(Some(Cmd::NetworkChanged)) => self.network_changed(now),
                 Step::Cmd(Some(Cmd::Consent {
                     granted,
                     notice_version,
@@ -800,6 +914,11 @@ impl Engine {
                 Step::Consented(None) => {}
                 Step::Push(Some(f)) => self.send_frame(now, f),
                 Step::Push(None) => {}
+                Step::Signal(Some((id, msg)))
+                    if self.parting.as_ref().is_some_and(|p| p.id == id) =>
+                {
+                    self.on_parting(now, msg);
+                }
                 Step::Signal(Some((id, msg))) => {
                     if id == self.link_id {
                         match msg {
@@ -821,11 +940,21 @@ impl Engine {
                     }
                 }
                 Step::Transport(Some(TransportEvent::TurnLost(why))) => {
-                    tracing::info!(target: "sew_call_client", %why, "TURN allocation lost; full reconnect");
-                    self.signal_lost(true);
+                    if self.changing_network() {
+                        // The old network's allocation: its replacement is on the way.
+                        tracing::info!(target: "sew_call_client", %why, "the old network's TURN allocation is gone");
+                        self.transport = None;
+                    } else {
+                        tracing::info!(target: "sew_call_client", %why, "TURN allocation lost; full reconnect");
+                        self.signal_lost(true);
+                    }
                 }
                 Step::Transport(None) => {
-                    self.signal_lost(true);
+                    if self.changing_network() {
+                        self.transport = None;
+                    } else {
+                        self.signal_lost(true);
+                    }
                 }
                 Step::E2ee(Some(ev)) => self.on_e2ee(ev),
                 Step::E2ee(None) => {}
@@ -855,6 +984,7 @@ impl Engine {
                 Step::Attempt(r, kind) => self.on_attempt(now, r, kind),
                 Step::Rejoined(r) => self.on_rejoined(now, r).await,
                 Step::Opened(r) => self.on_opened(now, r).await,
+                Step::Rebound(r) => self.on_rebound(now, r),
                 Step::Renewed(r) => self.on_renewed(now, r).await,
                 Step::Timeout => self.on_timeout(now).await,
             }
@@ -890,8 +1020,14 @@ impl Engine {
         if let Some((at, _)) = &self.pending_end {
             t = t.min(*at);
         }
+        if let Some(p) = &self.parting {
+            t = t.min(p.until);
+        }
         if let Some(d) = self.pc_down_since {
             t = t.min(d + PC_FAIL_GRACE);
+        }
+        if let Some(d) = self.restart_deadline {
+            t = t.min(d);
         }
         if let Some(m) = self.meter.deadline() {
             t = t.min(m);
@@ -956,8 +1092,13 @@ impl Engine {
         }
         self.state = st.clone();
         if st == CallState::Connected {
-            // The first window starts when the call first connects.
-            self.meter.start(Instant::now(), &self.counters);
+            // The first window starts when the call first connects; what came before it is
+            // kept apart, so every counted frame is in a window or in that bucket.
+            if let Some(b) = self.meter.start(Instant::now(), &self.counters)
+                && let Ok(mut r) = self.shared.stats.lock()
+            {
+                r.before_first_window = Some(b);
+            }
         }
         self.snapshot_update();
         let _ = self.shared.events.send(CallEvent::State(st));
@@ -1351,7 +1492,8 @@ impl Engine {
                 self.update_state();
             }
             E2eeEvent::Refused { code, detail } if self.pending_end.is_some() => {
-                // The engine removed us already; Sew's reason (or the fallback) ends the call.
+                // The engine or the key group removed us already; Sew's reason (or the
+                // fallback) ends the call.
                 tracing::debug!(target: "sew_call_client", %code, %detail, "keys ended while the end waits for Sew's reason");
             }
             E2eeEvent::Refused { code, detail } => {
@@ -1393,14 +1535,17 @@ impl Engine {
                     self.answer.join.media = Some(m);
                 }
                 self.moving = true;
+                // A move re-binds the same credential: its renewal stays as scheduled.
+                self.ensure_renew_scheduled(Instant::now());
                 self.session.reset(Instant::now());
                 // The move's admit takes the new token, not the old refresh token.
                 self.session = Session::new(Instant::now());
                 self.signal_lost(true);
             }
             E2eeEvent::CredentialLost => {
-                // An older Sew's 4011 names no reason: after the engine's Disconnect its reason
-                // stands (as before Sew 0.7.2), else the credential was lost.
+                // An older Sew's 4011 names no reason: after the engine's Disconnect (or the
+                // key group's removal) that wait's reason stands (as before Sew 0.7.2), else
+                // the credential was lost.
                 let r = self
                     .pending_end
                     .take()
@@ -1409,9 +1554,54 @@ impl Engine {
             }
             E2eeEvent::Ended { reason } => {
                 tracing::info!(target: "sew_call_client", %reason, "Sew ended the join");
+                if self.renewing.is_some() {
+                    // A renewal Sew refuses can end the credential itself (its login ended), and
+                    // the call socket's close may arrive before the renewal's answer: wait for
+                    // that answer (at most the request's time limit).
+                    let end = end_for_sew_reason(&reason);
+                    // A wait for Sew's reason already under way (the key group's removal or
+                    // the engine's Disconnect came first) now has it: if that wait runs out
+                    // before the renewal answers, the call ends with Sew's reason, not the
+                    // wait's fallback.
+                    if let Some((_, fallback)) = self.pending_end.as_mut() {
+                        *fallback = end.clone();
+                    }
+                    if self.renew_held_end.is_none() {
+                        self.renew_held_end = Some(end);
+                    }
+                    return;
+                }
                 self.ended_soon(end_for_sew_reason(&reason));
             }
+            E2eeEvent::KeysRemoved { reason } => {
+                tracing::info!(target: "sew_call_client", %reason, "the key group removed this device");
+                self.keys_removed(Instant::now(), &reason);
+            }
             E2eeEvent::Recording(r) => self.apply_recording(r.map(|b| *b)),
+        }
+    }
+
+    /// A message on the link given up on: the engine's `Disconnect` leave ends the call as on
+    /// the current link; its close ends the wait.
+    fn on_parting(&mut self, now: Instant, msg: SignalIn) {
+        match msg {
+            SignalIn::Response(r) => {
+                if let Some(end) = parting_end(&r) {
+                    tracing::info!(target: "sew_call_client", ?end, "the engine's leave on the old link");
+                    self.parting = None;
+                    self.engine_disconnected(now, end);
+                }
+            }
+            SignalIn::Closed(_) => self.end_parting(),
+        }
+    }
+
+    /// The old link said nothing more: a re-join held back for it goes now.
+    fn end_parting(&mut self) {
+        if let Some(p) = self.parting.take()
+            && let Some(why) = p.rejoin
+        {
+            self.start_rejoin(why);
         }
     }
 
@@ -1427,8 +1617,32 @@ impl Engine {
             self.ended_soon(fallback);
             return;
         }
+        self.await_sews_reason(now, fallback);
+    }
+
+    /// The key group removed this device: media goes at once, and the call ends with the
+    /// reason the call socket brings within [`END_REASON_GRACE`] (the key group names
+    /// `disconnected` for a voice leave reason it has no code for, such as
+    /// `media_path_down`), else with the key group's. After the engine's `Disconnect` the
+    /// key group's reason replaces the engine's as the fallback, and the wait keeps its end.
+    fn keys_removed(&mut self, now: Instant, reason: &str) {
+        if self.ended.is_some() {
+            return;
+        }
+        let fallback = end_for_sew_reason(reason);
+        if let Some((_, r)) = self.pending_end.as_mut() {
+            *r = fallback;
+            return;
+        }
+        self.await_sews_reason(now, fallback);
+    }
+
+    /// Media and signalling go now; the call ends at the next of Sew's reasons, or with
+    /// `fallback` after [`END_REASON_GRACE`].
+    fn await_sews_reason(&mut self, now: Instant, fallback: EndReason) {
         self.teardown_media();
         self.link = None;
+        self.parting = None;
         if let Some((a, _)) = self.attempt.take() {
             a.abort();
         }
@@ -1596,23 +1810,59 @@ impl Engine {
 
     // ------------------------------------------------------------------ credential
 
-    fn schedule_renew(&mut self, now: Instant) {
-        let cred = self.cred_tx.borrow().clone();
-        let Some(c) = cred else {
-            self.renew_at = None;
-            return;
-        };
+    /// How long the current credential has left on the wall clock (`None`: no credential).
+    fn credential_left(&self) -> Option<Duration> {
+        let c = self.cred_tx.borrow().clone()?;
         // Wall time only through sew-proto's clock (the workspace's time lint).
         let now_ms = {
             use sew_proto::clock::Clock as _;
             sew_proto::clock::SystemClock.now_unix_ms()
         };
-        let left = Duration::from_millis(
+        Some(Duration::from_millis(
             u64::try_from(c.expires_at.unix_ms())
                 .unwrap_or(0)
                 .saturating_sub(now_ms),
+        ))
+    }
+
+    /// Schedules the renewal of the current credential at half the life it has left: called
+    /// for every new token (the join's, each renewal's, each re-join's).
+    fn schedule_renew(&mut self, now: Instant) {
+        self.renew_retry = RENEW_RETRY_MIN;
+        self.renew_at = self.credential_left().map(|left| now + left / 2);
+    }
+
+    /// After a move or a reconnect: a credential always has its renewal scheduled, in flight or
+    /// waiting for a retry. (Neither changes the token, so its schedule stands.)
+    fn ensure_renew_scheduled(&mut self, now: Instant) {
+        if self.renew_at.is_none() && self.renewing.is_none() {
+            self.schedule_renew(now);
+        }
+    }
+
+    /// A renewal failed with something worth retrying: again after a backoff, until the
+    /// credential runs out.
+    async fn retry_renew(&mut self, now: Instant, why: &str) {
+        let left = self.credential_left().unwrap_or_default();
+        if left.is_zero() {
+            tracing::info!(target: "sew_call_client", %why, "the call credential expired before a renewal got through");
+            self.error(
+                "credential_expired",
+                &format!("the call credential expired; the last renewal failed: {why}"),
+            );
+            self.end(EndReason::CredentialExpired).await;
+            return;
+        }
+        let wait = self.renew_retry.min(left / 2).max(RENEW_RETRY_FLOOR);
+        self.renew_retry = (self.renew_retry * 2).min(RENEW_RETRY_MAX);
+        tracing::info!(
+            target: "sew_call_client",
+            %why,
+            retry_ms = wait.as_millis() as u64,
+            left_ms = left.as_millis() as u64,
+            "call credential renewal failed; retrying"
         );
-        self.renew_at = Some(now + left / 2);
+        self.renew_at = Some(now + wait);
     }
 
     async fn on_renewed(
@@ -1620,6 +1870,7 @@ impl Engine {
         now: Instant,
         r: Result<Result<api::Renewed, api::ApiError>, tokio::task::JoinError>,
     ) {
+        let held = self.renew_held_end.take();
         match r {
             Ok(Ok(n)) => {
                 self.counters.credential_renewals += 1;
@@ -1630,29 +1881,60 @@ impl Engine {
                 });
                 self.cred_tx.send_replace(next);
                 self.schedule_renew(now);
+                tracing::info!(
+                    target: "sew_call_client",
+                    renewals = self.counters.credential_renewals,
+                    expires_in_s = self.credential_left().unwrap_or_default().as_secs(),
+                    "call credential renewed"
+                );
                 self.snapshot_update();
+                if let Some(e) = held {
+                    self.ended_soon(e);
+                }
             }
             Ok(Err(api::ApiError::Status {
                 status: 401,
                 reason,
             })) => {
-                // The server's `401` reasons: `call_ended`, `signed_out` and `expired`
-                // all end the call; the reason goes to the host as the `errors` code.
+                // Sew's `401` reasons (`details.reason`) all end the call, each as itself:
+                // `signed_out` (the login lineage has no live session) needs a sign-in,
+                // `expired` is the credential's own expiry, `call_ended` (or none) is the
+                // credential gone with its join. The reason also goes to the host as the
+                // `errors` code. Sew's own end that raced this answer names the join's leave
+                // reason, which `call_ended` cannot improve on.
                 let why = reason.unwrap_or_else(|| "call_ended".to_owned());
+                tracing::info!(target: "sew_call_client", reason = %why, "call credential renewal refused");
                 self.error(&why, "the call credential was refused");
-                match why.as_str() {
-                    "signed_out" => self.end(EndReason::SigninRequired).await,
-                    _ => self.end(EndReason::CredentialLost).await,
-                }
+                let end = match why.as_str() {
+                    "signed_out" => EndReason::SigninRequired,
+                    "expired" => EndReason::CredentialExpired,
+                    _ => held.unwrap_or(EndReason::CredentialLost),
+                };
+                self.end(end).await;
             }
             Ok(Err(api::ApiError::Status { status: 409, .. })) => {
-                self.end(EndReason::CredentialLost).await
+                self.end(held.unwrap_or(EndReason::CredentialLost)).await
             }
             Ok(Err(e)) => {
-                tracing::info!(target: "sew_call_client", ?e, "credential renewal failed; retrying");
-                self.renew_at = Some(now + RENEW_RETRY);
+                if let Some(h) = held {
+                    self.ended_soon(h);
+                    return;
+                }
+                let why = match e {
+                    api::ApiError::Status { status, reason } => {
+                        format!("{status} {}", reason.unwrap_or_default())
+                    }
+                    api::ApiError::Io(e) => e,
+                };
+                self.retry_renew(now, &why).await;
             }
-            Err(_) => self.renew_at = Some(now + RENEW_RETRY),
+            Err(e) => {
+                if let Some(h) = held {
+                    self.ended_soon(h);
+                    return;
+                }
+                self.retry_renew(now, &e.to_string()).await;
+            }
         }
     }
 
@@ -1704,6 +1986,11 @@ impl Engine {
     ) {
         match r {
             Ok(Ok(link)) => {
+                // Signalling is back: no re-join waits for the old link. It is still read: the
+                // engine may remove the old participant (its admit) just after this connect.
+                if let Some(p) = self.parting.as_mut() {
+                    p.rejoin = None;
+                }
                 self.link = Some(link);
                 tracing::debug!(target: "sew_call_client", ?kind, "signalling connected");
             }
@@ -1758,7 +2045,19 @@ impl Engine {
             return;
         }
         let now = Instant::now();
-        self.link = None;
+        // Media went (or the engine asked for a fresh join) and the link may still bring the
+        // engine's leave; a move's old room is not this call's end.
+        if let Some(link) = self.link.take()
+            && force_full
+            && !self.moving
+        {
+            self.parting = Some(Parting {
+                id: self.link_id,
+                _link: link,
+                until: now + END_REASON_GRACE,
+                rejoin: None,
+            });
+        }
         self.session.signal_lost();
         let pc_up = self
             .pc
@@ -1808,6 +2107,11 @@ impl Engine {
         if let Some(o) = self.opening.take() {
             o.abort();
         }
+        if let Some(o) = self.rebinding.take() {
+            o.abort();
+        }
+        self.resume_waits_rebind = false;
+        self.restart_deadline = None;
         self.transport = None;
         self.media_up = false;
         self.send = None;
@@ -1848,11 +2152,23 @@ impl Engine {
         }
         self.moving = false;
         tracing::info!(target: "sew_call_client", ?kind, "reconnected");
+        self.ensure_renew_scheduled(Instant::now());
         self.update_state();
     }
 
     fn start_rejoin(&mut self, why: RejoinReason) {
         if self.rejoining.is_some() || self.ended.is_some() || self.pending_end.is_some() {
+            return;
+        }
+        if let Some(p) = self.parting.as_mut() {
+            // The admit may be gone because the engine removed us: its leave decides first.
+            tracing::debug!(target: "sew_call_client", ?why, "re-join waits for the old link");
+            p.rejoin = Some(why);
+            // No connect attempts and no other re-join meanwhile.
+            if let Some(r) = self.reconnect.as_mut() {
+                r.next_try = r.next_try.max(p.until);
+                r.deadline = r.deadline.max(p.until);
+            }
             return;
         }
         tracing::info!(target: "sew_call_client", ?why, "re-joining through the provider");
@@ -1940,9 +2256,12 @@ impl Engine {
             && now >= *at
         {
             let r = r.clone();
-            tracing::info!(target: "sew_call_client", ?r, "no reason from Sew after the engine's Disconnect");
+            tracing::info!(target: "sew_call_client", ?r, "no reason from Sew's call socket in time");
             self.end(r).await;
             return;
+        }
+        if self.parting.as_ref().is_some_and(|p| now >= p.until) {
+            self.end_parting();
         }
         if let Some(pc) = self.pc.as_mut()
             && pc.timeout() <= now
@@ -1967,6 +2286,19 @@ impl Engine {
             self.pc_down_since = None;
             tracing::info!(target: "sew_call_client", "ICE down; full reconnect");
             self.signal_lost(true);
+        }
+        if let Some(d) = self.restart_deadline
+            && now >= d
+        {
+            self.restart_deadline = None;
+            if self
+                .pc
+                .as_ref()
+                .is_some_and(|p| p.ice != IceState::Connected)
+            {
+                tracing::info!(target: "sew_call_client", "no ICE on the new network; full reconnect");
+                self.signal_lost(true);
+            }
         }
         if let Some(r) = &self.reconnect
             && self.rejoining.is_none()
@@ -2023,6 +2355,7 @@ impl Engine {
                 let cfg = self.cfg.clone();
                 let tls = self.tls.clone();
                 self.teardown_media();
+                self.ice_servers = ice_servers.clone();
                 self.opening = Some(tokio::spawn(async move {
                     Transport::open(&cfg, &tls, &ice_servers, gather).await
                 }));
@@ -2101,10 +2434,13 @@ impl Engine {
             SessionEvent::Resumed { .. } => {
                 if let Some(pc) = self.pc.as_mut() {
                     pc.forget_pending_offer();
-                    pc.ice_restart();
                 }
-                self.negotiate();
-                self.reconnected(Kind::Resume);
+                if self.rebinding.is_some() {
+                    // A network change: the restart runs once the new transport is in.
+                    self.resume_waits_rebind = true;
+                } else {
+                    self.restart_ice();
+                }
             }
             SessionEvent::Leave { reason, action } => {
                 tracing::info!(target: "sew_call_client", reason, ?action, "engine leave");
@@ -2115,12 +2451,7 @@ impl Engine {
                         // DisconnectReason: 4 PARTICIPANT_REMOVED, 2 DUPLICATE_IDENTITY, 5
                         // ROOM_DELETED, 10 ROOM_CLOSED; a server shutdown or a migration may
                         // come back, so it reconnects within the window.
-                        let reason = match reason {
-                            2 | 4 => Some(EndReason::Kicked),
-                            5 | 10 => Some(EndReason::RoomClosed),
-                            _ => None,
-                        };
-                        match reason {
+                        match engine_end_reason(reason) {
                             Some(r) => self.engine_disconnected(now, r),
                             None => self.signal_lost(true),
                         }
@@ -2156,6 +2487,8 @@ impl Engine {
                 pc.handle_timeout(now);
                 self.transport = Some(t);
                 self.pc = Some(pc);
+                // A new SRTP session: never continue the old one's sequence (its rollover).
+                self.send_seq = fresh_send_seq(&self.cfg);
                 self.publishing = false;
                 self.cid_on_pc = false;
                 // Without SPEAK nothing is published until the engine allows the microphone.
@@ -2177,6 +2510,140 @@ impl Engine {
             }
             Err(_) => self.signal_lost(true),
         }
+    }
+
+    /// The resume's ICE restart (after a network change: over the swapped transport).
+    fn restart_ice(&mut self) {
+        if let Some(pc) = self.pc.as_mut() {
+            pc.ice_restart();
+        }
+        self.negotiate();
+        self.reconnected(Kind::Resume);
+    }
+
+    /// A network change is under way (its transport opening, or the resume waiting for it).
+    fn changing_network(&self) -> bool {
+        self.rebinding.is_some() || self.resume_waits_rebind
+    }
+
+    /// The host says the network changed ([`crate::Call::network_changed`]).
+    fn network_changed(&mut self, now: Instant) {
+        self.counters.network_changes += 1;
+        if self.ended.is_some() || self.pending_end.is_some() {
+            return;
+        }
+        if let Some(k) = &self.keys {
+            k.network_changed();
+        }
+        if self.rejoining.is_some() {
+            // A re-join through the provider is under way: it connects afresh.
+            return;
+        }
+        let pc_connected = self.pc.as_ref().is_some_and(|p| p.connected);
+        let full = self
+            .reconnect
+            .as_ref()
+            .is_some_and(|r| r.kind == Kind::Full);
+        if self.sid.is_none() || !pc_connected || full {
+            // Not connected yet, or already rebuilding everything: retry the connect now, on
+            // the new network.
+            tracing::info!(target: "sew_call_client", "network changed; connecting again now");
+            if let Some((a, _)) = self.attempt.take() {
+                a.abort();
+            }
+            self.link = None;
+            if let Some(r) = self.reconnect.as_mut() {
+                r.next_try = now;
+                r.backoff = BACKOFF_MIN;
+                if r.kind == Kind::Full {
+                    self.teardown_media();
+                }
+            } else {
+                self.signal_lost(true);
+            }
+            self.update_state();
+            return;
+        }
+        tracing::info!(target: "sew_call_client", "network changed; resuming on a fresh transport");
+        // The resume: a new WebSocket now (the old one may be dead on the old network).
+        if let Some((a, _)) = self.attempt.take() {
+            a.abort();
+        }
+        self.link = None;
+        self.session.signal_lost();
+        self.pc_down_since = None;
+        self.restart_deadline = None;
+        match self.reconnect.as_mut() {
+            Some(r) => {
+                r.next_try = now;
+                r.backoff = BACKOFF_MIN;
+            }
+            None => {
+                self.reconnect = Some(Reconnect {
+                    initial: false,
+                    kind: Kind::Resume,
+                    deadline: now + self.cfg.reconnect_window,
+                    next_try: now,
+                    backoff: BACKOFF_MIN,
+                    attempt: 1,
+                });
+            }
+        }
+        self.resume_waits_rebind = false;
+        // And the transport on the new network, in parallel.
+        if let Some(o) = self.rebinding.take() {
+            o.abort();
+        }
+        let gather = if self.relay_only {
+            Gather::RelayOnly
+        } else {
+            Gather::All
+        };
+        let (cfg, tls, servers) = (self.cfg.clone(), self.tls.clone(), self.ice_servers.clone());
+        self.rebinding = Some(tokio::spawn(async move {
+            Transport::open(&cfg, &tls, &servers, gather).await
+        }));
+        self.start_attempt(Kind::Resume);
+        self.update_state();
+    }
+
+    /// A network change's transport opened: swap it into the PC, then restart ICE once the
+    /// session has resumed.
+    fn on_rebound(
+        &mut self,
+        now: Instant,
+        r: Result<Result<Transport, TransportError>, tokio::task::JoinError>,
+    ) {
+        let t = match r {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                tracing::info!(target: "sew_call_client", error = %e, "no transport on the new network; full reconnect");
+                self.resume_waits_rebind = false;
+                self.signal_lost(true);
+                return;
+            }
+            Err(_) => {
+                self.resume_waits_rebind = false;
+                self.signal_lost(true);
+                return;
+            }
+        };
+        let Some(pc) = self.pc.as_mut() else {
+            // A full reconnect replaced the PC meanwhile: it opens its own transport.
+            self.resume_waits_rebind = false;
+            return;
+        };
+        if t.relay_via().is_some() {
+            self.counters.turn_allocations += 1;
+        }
+        pc.replace_local_candidates(t.local_candidates());
+        // The old transport goes (its TURN allocation is released when it can be).
+        self.transport = Some(t);
+        self.restart_deadline = Some(now + RESTART_GRACE);
+        if std::mem::take(&mut self.resume_waits_rebind) {
+            self.restart_ice();
+        }
+        self.snapshot_update();
     }
 
     fn negotiate(&mut self) {
@@ -2226,9 +2693,16 @@ impl Engine {
                 self.update_state();
             }
             PcEvent::Ice(IceState::Disconnected) => {
-                self.pc_down_since.get_or_insert(now);
+                // During a network change the old path going down is expected
+                // (`restart_deadline` takes over after the swap).
+                if !self.changing_network() {
+                    self.pc_down_since.get_or_insert(now);
+                }
             }
-            PcEvent::Ice(IceState::Connected) => self.pc_down_since = None,
+            PcEvent::Ice(IceState::Connected) => {
+                self.pc_down_since = None;
+                self.restart_deadline = None;
+            }
             PcEvent::Ice(IceState::Checking) => {}
             PcEvent::Rtp(r) => self.on_rtp(now, r),
             PcEvent::Peer { local, rtt } => {
@@ -2264,11 +2738,12 @@ impl Engine {
             self.counters.frames_not_sent += 1;
             return;
         }
+        let seq = self.send_seq;
         self.send_seq += 1;
         match pc.write_audio(
             &send.mid,
             send.pt,
-            self.send_seq,
+            seq,
             f.ts48k,
             now,
             out,
@@ -2399,8 +2874,16 @@ impl Engine {
                         }));
                     }
                     Ok(()) => {}
-                    Err(_) => {
-                        self.counters.decrypt_failures += 1;
+                    Err(e) => {
+                        use crate::e2ee::CryptoError as E;
+                        match e {
+                            // Crossed a join or a key switch: the key is not installed yet.
+                            E::KeyPending => self.counters.frames_before_key += 1,
+                            // The sender is no longer a verified publisher: refused, as before
+                            // the subscription.
+                            E::NoKey => self.counters.refused_frames += 1,
+                            _ => self.counters.decrypt_failures += 1,
+                        }
                         if slot.announced {
                             self.counters.lost_marks += 1;
                             items.push(RecvItem::Lost {
@@ -2629,5 +3112,32 @@ mod tests {
     #[test]
     fn the_end_waits_one_and_a_half_seconds_for_sew() {
         assert_eq!(END_REASON_GRACE, Duration::from_millis(1_500));
+    }
+
+    #[test]
+    fn the_old_links_leave_ends_only_for_a_removal_or_a_closed_room() {
+        use sew_lkproto::livekit::LeaveRequest;
+        let leave = |reason: i32, action: leave_request::Action| SignalResponse {
+            message: Some(signal_response::Message::Leave(LeaveRequest {
+                reason,
+                action: action as i32,
+                ..LeaveRequest::default()
+            })),
+        };
+        let d = leave_request::Action::Disconnect;
+        assert_eq!(parting_end(&leave(4, d)), Some(EndReason::Kicked));
+        assert_eq!(parting_end(&leave(5, d)), Some(EndReason::RoomClosed));
+        assert_eq!(parting_end(&leave(10, d)), Some(EndReason::RoomClosed));
+        // This engine's own reconnect taking the participant over.
+        assert_eq!(parting_end(&leave(2, d)), None);
+        assert_eq!(
+            parting_end(&leave(4, leave_request::Action::Reconnect)),
+            None
+        );
+        assert_eq!(parting_end(&leave(4, leave_request::Action::Resume)), None);
+        assert_eq!(parting_end(&leave(1, d)), None);
+        assert_eq!(parting_end(&SignalResponse { message: None }), None);
+        // The current link's mapping keeps the duplicate as `kicked`.
+        assert_eq!(engine_end_reason(2), Some(EndReason::Kicked));
     }
 }
