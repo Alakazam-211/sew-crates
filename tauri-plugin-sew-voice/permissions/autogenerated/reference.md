@@ -82,6 +82,32 @@ Denies the devices command without any pre-configured scope.
 <tr>
 <td>
 
+`sew-voice:allow-forget-server`
+
+</td>
+<td>
+
+Enables the forget_server command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-forget-server`
+
+</td>
+<td>
+
+Denies the forget_server command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `sew-voice:allow-join`
 
 </td>
@@ -101,6 +127,32 @@ Enables the join command without any pre-configured scope.
 <td>
 
 Denies the join command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:allow-known-device-keys`
+
+</td>
+<td>
+
+Enables the known_device_keys command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-known-device-keys`
+
+</td>
+<td>
+
+Denies the known_device_keys command without any pre-configured scope.
 
 </td>
 </tr>
@@ -231,6 +283,24 @@ Enables the withdraw_consent command without any pre-configured scope.
 <td>
 
 Denies the withdraw_consent command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:device-keys`
+
+</td>
+<td>
+
+The device-key commands, for a window that signs the person out: `forget_server` (deletes the
+devices of one Sew install, the hardware keys included, and answers the removed keys) and
+`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant
+it, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the
+window that needs it.
+
 
 </td>
 </tr>

@@ -33,7 +33,7 @@ workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-mls-crypto = "0.8.0"
+sew-mls-crypto = "0.8.1"
 openmls = "=0.9.0"
 
 [patch.crates-io]

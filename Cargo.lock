@@ -2630,17 +2630,33 @@ dependencies = [
 [[package]]
 name = "kessel-audio"
 version = "0.1.0"
-source = "git+https://github.com/Alakazam-211/k2?rev=bc78b69a6640a533d11edf1be2feaa615416cda8#bc78b69a6640a533d11edf1be2feaa615416cda8"
+source = "git+https://github.com/Alakazam-211/k2?rev=aad16f76b8768ae090d3060033d473e87c736be4#aad16f76b8768ae090d3060033d473e87c736be4"
 dependencies = [
  "block2",
  "bytes",
+ "coreaudio-rs",
  "cpal",
  "crossbeam-queue",
+ "ndk",
  "objc2",
+ "objc2-audio-toolbox",
+ "objc2-avf-audio",
  "ropus",
  "rtrb",
  "rubato",
  "sonora",
+]
+
+[[package]]
+name = "kessel-video"
+version = "0.1.0"
+source = "git+https://github.com/Alakazam-211/k2?rev=e95bb55673ccafef7003780b0b25b5ab5f39648d#e95bb55673ccafef7003780b0b25b5ab5f39648d"
+dependencies = [
+ "block2",
+ "bytes",
+ "crossbeam-queue",
+ "objc2",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4735,7 +4751,7 @@ dependencies = [
 
 [[package]]
 name = "sew-call-client"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4748,6 +4764,7 @@ dependencies = [
  "http",
  "jni 0.21.1",
  "kessel-audio",
+ "kessel-video",
  "keyring",
  "prost",
  "rand 0.8.8",
@@ -4775,7 +4792,7 @@ dependencies = [
 
 [[package]]
 name = "sew-e2ee"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",
@@ -4801,7 +4818,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lk-compat"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",
@@ -4821,7 +4838,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lkproto"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -4831,7 +4848,7 @@ dependencies = [
 
 [[package]]
 name = "sew-mls-crypto"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -4852,7 +4869,7 @@ dependencies = [
 
 [[package]]
 name = "sew-proto"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5429,7 +5446,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-voice"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cpal",
  "serde",

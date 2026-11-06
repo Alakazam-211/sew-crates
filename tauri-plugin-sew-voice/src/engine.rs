@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use sew_call_client::device::DeviceKeyId;
 use tokio::sync::broadcast;
 
 use crate::wire::{
@@ -255,5 +256,20 @@ pub trait VoiceEngine: Send + Sync + 'static {
     /// does nothing (a desktop engine).
     fn audio_session(&self, event: AudioSessionEvent) {
         let _ = event;
+    }
+    /// A sign-out from one Sew install: delete every device of `install_id` the engine's device
+    /// store holds (a hardware key through `HardwareDeviceKey::delete`) and its pins; answer the
+    /// removed keys. The service refuses it while a call is live. The default holds no devices
+    /// and answers none.
+    fn forget_server(
+        &self,
+        install_id: u64,
+    ) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
+        let _ = install_id;
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+    /// Every device key the engine's device store holds, sorted. The default holds none.
+    fn known_device_keys(&self) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
     }
 }

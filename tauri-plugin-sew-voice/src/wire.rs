@@ -303,6 +303,61 @@ pub mod code {
     pub const RECORDING_CONSENT_REQUIRED: &str = "recording_consent_required";
     /// The host's provider sends no consent (its `JoinProvider::consent` is the default).
     pub const CONSENT_UNSUPPORTED: &str = "consent_unsupported";
+    /// `forget_server` while a call is connecting, held, connected or reconnecting: leave first.
+    pub const IN_CALL: &str = "in_call";
+    /// `forget_server` or `known_device_keys`: the device store failed (`detail`: what failed).
+    /// A hardware key that can't be deleted stops `forget_server` with this, and a retry finds
+    /// that device again.
+    pub const DEVICE_STORE: &str = "device_store";
+}
+
+/// One device key the plugin's device store holds (`known_device_keys`, `forget_server`):
+/// `{install_id, member_id, device_scope, account}`. Ids only, never key material. With a
+/// hardware key, `account` is the Keychain tag / Keystore alias the host's `HardwareDeviceKey`
+/// was given.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceKeyInfo {
+    /// Sew's install id (a decimal string).
+    pub install_id: String,
+    /// The member the device is enrolled for (a decimal string).
+    pub member_id: String,
+    /// The login lineage the device belongs to.
+    pub device_scope: String,
+    /// `<install_id>:<member_id>:<device_scope>` (`DeviceKeyId::account`).
+    pub account: String,
+}
+
+impl From<&sew_call_client::device::DeviceKeyId> for DeviceKeyInfo {
+    fn from(id: &sew_call_client::device::DeviceKeyId) -> DeviceKeyInfo {
+        DeviceKeyInfo {
+            install_id: id.install_id.to_string(),
+            member_id: id.member_id.to_string(),
+            device_scope: id.device_scope.clone(),
+            account: id.account(),
+        }
+    }
+}
+
+/// `forget_server`'s arguments: `{install_id}`, Sew's install id as a decimal string (the
+/// `install_id` of a `known_device_keys` entry).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgetServerArgs {
+    /// Sew's install id (a decimal string).
+    pub install_id: String,
+}
+
+impl ForgetServerArgs {
+    /// The install id, or `invalid_args`.
+    pub fn install(&self) -> Result<u64, ErrorInfo> {
+        self.install_id.parse::<u64>().map_err(|_| {
+            ErrorInfo::with_detail(
+                code::INVALID_ARGS,
+                "forget_server needs install_id, a decimal string",
+            )
+        })
+    }
 }
 
 /// `join`'s arguments: `{target, room, muted?, deafened?}`. `target` and `room` are opaque to

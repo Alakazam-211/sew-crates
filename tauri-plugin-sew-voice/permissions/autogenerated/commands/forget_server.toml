@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-forget-server"
+description = "Enables the forget_server command without any pre-configured scope."
+commands.allow = ["forget_server"]
+
+[[permission]]
+identifier = "deny-forget-server"
+description = "Denies the forget_server command without any pre-configured scope."
+commands.deny = ["forget_server"]

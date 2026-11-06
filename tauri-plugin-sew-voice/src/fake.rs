@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::json;
+use sew_call_client::device::DeviceKeyId;
 use tokio::sync::{Semaphore, broadcast};
 
 use crate::engine::{
@@ -56,6 +57,12 @@ struct EngineState {
     auto_connect: bool,
     /// Every audio-session event, in order ([`VoiceEngine::audio_session`]).
     audio_sessions: Vec<AudioSessionEvent>,
+    /// The device store: the keys it holds ([`FakeEngine::set_device_keys`]).
+    device_keys: Vec<DeviceKeyId>,
+    /// Every `forget_server` install id, in order.
+    forgets: Vec<u64>,
+    /// The next `forget_server` fails with this.
+    next_forget_error: Option<EngineError>,
 }
 
 impl Default for FakeEngine {
@@ -76,6 +83,9 @@ impl FakeEngine {
                 next_join_error: None,
                 auto_connect: true,
                 audio_sessions: Vec::new(),
+                device_keys: Vec::new(),
+                forgets: Vec::new(),
+                next_forget_error: None,
             }),
             devices_tx,
         }
@@ -123,6 +133,24 @@ impl FakeEngine {
     /// Every audio-session event the plugin passed on (CallKit's or Telecom's), in order.
     pub fn audio_sessions(&self) -> Vec<AudioSessionEvent> {
         lock(&self.state).audio_sessions.clone()
+    }
+
+    /// The keys the fake device store holds (`known_device_keys`; `forget_server` removes an
+    /// install's).
+    pub fn set_device_keys(&self, mut keys: Vec<DeviceKeyId>) {
+        keys.sort();
+        lock(&self.state).device_keys = keys;
+    }
+
+    /// The next `forget_server` fails with this (a key that can't be deleted); nothing is
+    /// removed.
+    pub fn fail_next_forget(&self, e: EngineError) {
+        lock(&self.state).next_forget_error = Some(e);
+    }
+
+    /// Every `forget_server` the engine was given, in order.
+    pub fn forgets(&self) -> Vec<u64> {
+        lock(&self.state).forgets.clone()
     }
 }
 
@@ -226,6 +254,33 @@ impl VoiceEngine for FakeEngine {
 
     fn audio_session(&self, event: AudioSessionEvent) {
         lock(&self.state).audio_sessions.push(event);
+    }
+
+    fn forget_server(
+        &self,
+        install_id: u64,
+    ) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
+        let res = {
+            let mut s = lock(&self.state);
+            s.forgets.push(install_id);
+            match s.next_forget_error.take() {
+                Some(e) => Err(e),
+                None => {
+                    let (gone, kept): (Vec<DeviceKeyId>, Vec<DeviceKeyId>) =
+                        std::mem::take(&mut s.device_keys)
+                            .into_iter()
+                            .partition(|k| k.install_id == install_id);
+                    s.device_keys = kept;
+                    Ok(gone)
+                }
+            }
+        };
+        Box::pin(std::future::ready(res))
+    }
+
+    fn known_device_keys(&self) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
+        let keys = lock(&self.state).device_keys.clone();
+        Box::pin(std::future::ready(Ok(keys)))
     }
 }
 

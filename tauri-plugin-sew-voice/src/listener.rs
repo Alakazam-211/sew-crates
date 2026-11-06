@@ -11,6 +11,8 @@
 //! looper). A slow listener delays events; it never loses them. On wake, read
 //! [`VoiceControl::snapshot`] instead of replaying events.
 
+use sew_call_client::device::DeviceKeyId;
+
 use crate::engine::AudioSessionEvent;
 use crate::service::VoiceService;
 use crate::wire::{
@@ -175,5 +177,20 @@ impl VoiceControl {
     /// The OS route changed. Forwarded to kessel-audio unchanged.
     pub fn route_changed(&self) {
         self.service.audio_session(AudioSessionEvent::RouteChanged);
+    }
+
+    /// Sign-out from one Sew install: deletes every device of `install_id` in the plugin's
+    /// device store, calling the host's `HardwareDeviceKey::delete` for each hardware key, and
+    /// the install's pins; answers the removed keys. Refused with `in_call` while a call is
+    /// live: leave first. A key that can't be deleted fails with `device_store` and stays
+    /// listed, so a retry finds it.
+    pub async fn forget_server(&self, install_id: u64) -> Result<Vec<DeviceKeyId>, ErrorInfo> {
+        self.service.forget_server(install_id).await
+    }
+
+    /// Every device key the plugin's device store holds, sorted (with a hardware key, one
+    /// Keychain item or Keystore alias each: `DeviceKeyId::account`).
+    pub async fn known_device_keys(&self) -> Result<Vec<DeviceKeyId>, ErrorInfo> {
+        self.service.known_device_keys().await
     }
 }

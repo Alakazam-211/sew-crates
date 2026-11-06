@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-known-device-keys"
+description = "Enables the known_device_keys command without any pre-configured scope."
+commands.allow = ["known_device_keys"]
+
+[[permission]]
+identifier = "deny-known-device-keys"
+description = "Denies the known_device_keys command without any pre-configured scope."
+commands.deny = ["known_device_keys"]

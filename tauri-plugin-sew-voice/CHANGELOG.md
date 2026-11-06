@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.1 (2026-11-06, Sew 0.8.1)
+
+Additive. Needs sew-call-client 0.4.1 and sew-proto 0.8.1.
+
+- `Builder::crypto_provider(Arc<CryptoProvider>)`: the rustls crypto provider of the engine's
+  TLS. Without it, the process default (`CryptoProvider::install_default`), else ring through
+  the new default feature `builtin-ring-provider` (sew-call-client's); with that feature off
+  and neither, a join fails with `engine_stopped`, its detail naming `no_crypto_provider`.
+- The phone audio backend. On iOS and Android (`sew-call-client/mobile`, with `audio`) a
+  call's audio is kessel-audio's OS voice processing (VoiceProcessingIO; AAudio's
+  voice-communication preset) with the OS's echo cancellation and noise suppression on;
+  desktop keeps cpal. `real::system_audio()` is sew-call-client's `platform_audio_config`.
+  kessel-audio's `[patch.crates-io]` row moves to K2 rev
+  aad16f76b8768ae090d3060033d473e87c736be4.
+- `VoiceControl`'s `session_activated`, `session_deactivated`, `suspend`, `resume` and
+  `route_changed` now reach kessel-audio (they did nothing before): the real engine keeps one
+  `AudioSession` for the app, so an event before the call applies when its audio starts, and
+  on iOS the microphone and speaker open only after `session_activated`. The plugin still never
+  configures `AVAudioSession` or the Android audio mode.
+- Device keys on sign-out. `VoiceControl::forget_server(install_id)` deletes the devices of one
+  Sew install (a hardware key through the host's `HardwareDeviceKey::delete`) and its pins,
+  answering the removed `DeviceKeyId`s; refused with `in_call` during a call, `device_store`
+  when the store fails. `VoiceControl::known_device_keys()` lists every key the store holds.
+  The same as `VoiceService` methods, `VoiceEngine::forget_server` / `known_device_keys`
+  (defaults: no devices), and two webview commands, `forget_server {install_id}` and
+  `known_device_keys`, answering `[{install_id, member_id, device_scope, account}]`
+  (`DeviceKeyInfo`, `ForgetServerArgs`). They are not in `sew-voice:default`: allow them with
+  `sew-voice:device-keys` or `sew-voice:allow-forget-server` / `allow-known-device-keys`.
+  `DEVICE_KEY_COMMANDS` lists them; `COMMANDS` stays the eight. New error codes `in_call` and
+  `device_store`. The fake engine has `set_device_keys`, `fail_next_forget` and `forgets`.
+
 ## 0.4.0 (2026-11-05, Sew 0.8.0)
 
 - Needs sew-call-client 0.4 and sew-proto 0.8. The plugin re-exports sew-proto's

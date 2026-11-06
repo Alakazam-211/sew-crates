@@ -347,7 +347,10 @@ mod tests {
     #[test]
     fn a_bad_door_is_refused() {
         let b = SharedBearer::new(Bearer::new("sewcc_x.y"));
-        let tls = crate::config::platform_tls().unwrap();
+        // ring passed in, so this runs without the built-in provider too (`--no-default-features`).
+        let cfg = crate::ClientConfig::new("t", std::env::temp_dir())
+            .with_crypto_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()));
+        let tls = crate::config::tls_config(&cfg).unwrap();
         assert_eq!(
             KeyTransport::new(&Url::parse("ftp://x/").unwrap(), b, &tls).err(),
             Some(TransportError::BadBase)

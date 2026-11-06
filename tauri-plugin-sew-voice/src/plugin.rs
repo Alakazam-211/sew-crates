@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use sew_call_client::rustls::crypto::CryptoProvider;
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -34,6 +35,7 @@ pub struct Builder {
     device_keys: Option<Arc<dyn DeviceKeyStore>>,
     listener: Option<Arc<dyn VoiceListener>>,
     device: DeviceOptions,
+    crypto_provider: Option<Arc<CryptoProvider>>,
 }
 
 /// Row 11: the device key in hardware and the enrolment platform.
@@ -53,6 +55,7 @@ impl std::fmt::Debug for Builder {
             .field("listener", &self.listener.is_some())
             .field("hardware_device_key", &self.device.hardware_key.is_some())
             .field("device_platform", &self.device.platform)
+            .field("crypto_provider", &self.crypto_provider.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -73,6 +76,7 @@ impl Builder {
             device_keys: None,
             listener: None,
             device: DeviceOptions::default(),
+            crypto_provider: None,
         }
     }
 
@@ -131,6 +135,16 @@ impl Builder {
         self
     }
 
+    /// The rustls crypto provider of the engine's TLS connections (signalling, TURN-TLS, Sew's
+    /// API): `sew_call_client::ClientConfig::with_crypto_provider`. Default: the process
+    /// default (`CryptoProvider::install_default`), else the built-in ring provider (feature
+    /// `builtin-ring-provider`, on by default); with neither, a join fails (`engine_stopped`,
+    /// the detail naming `no_crypto_provider`).
+    pub fn crypto_provider(mut self, provider: Arc<CryptoProvider>) -> Builder {
+        self.crypto_provider = Some(provider);
+        self
+    }
+
     /// The Tauri plugin (`sew-voice`).
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
         let Builder {
@@ -141,6 +155,7 @@ impl Builder {
             device_keys,
             listener,
             device,
+            crypto_provider,
         } = self;
         PluginBuilder::new(crate::PLUGIN_NAME)
             .invoke_handler(tauri::generate_handler![
@@ -152,11 +167,15 @@ impl Builder {
                 crate::commands::state,
                 crate::commands::consent,
                 crate::commands::withdraw_consent,
+                crate::commands::forget_server,
+                crate::commands::known_device_keys,
             ])
             .setup(move |app, _api| {
                 let engine = match engine {
                     Some(engine) => engine,
-                    None => default_engine(app, data_dir, app_id, device_keys, device)?,
+                    None => {
+                        default_engine(app, data_dir, app_id, device_keys, device, crypto_provider)?
+                    }
                 };
                 let sink = Arc::new(TauriSink { app: app.clone() });
                 let spawn: Spawn = Arc::new(|fut| {
@@ -184,6 +203,7 @@ fn default_engine<R: Runtime>(
     app_id: Option<String>,
     device_keys: Option<Arc<dyn DeviceKeyStore>>,
     device: DeviceOptions,
+    crypto_provider: Option<Arc<CryptoProvider>>,
 ) -> Result<Arc<dyn VoiceEngine>, Box<dyn std::error::Error>> {
     let dir = match data_dir {
         Some(dir) => dir,
@@ -202,6 +222,9 @@ fn default_engine<R: Runtime>(
     if let Some(platform) = device.platform {
         cfg = cfg.with_device_platform(platform);
     }
+    if let Some(provider) = crypto_provider {
+        cfg = cfg.with_crypto_provider(provider);
+    }
     Ok(Arc::new(crate::real::CallClientEngine::with_mls(cfg)))
 }
 
@@ -213,6 +236,7 @@ fn default_engine<R: Runtime>(
     _app_id: Option<String>,
     _device_keys: Option<Arc<dyn DeviceKeyStore>>,
     _device: DeviceOptions,
+    _crypto_provider: Option<Arc<CryptoProvider>>,
 ) -> Result<Arc<dyn VoiceEngine>, Box<dyn std::error::Error>> {
     Err(
         "tauri-plugin-sew-voice: built without the `audio` feature, so Builder::engine is required"

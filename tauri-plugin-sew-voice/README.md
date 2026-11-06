@@ -20,12 +20,22 @@ Not affiliated with or endorsed by LiveKit.
 - `tauri` (default): the Tauri glue (`Builder`, the commands, the event emitter, the permission
   files). Needs Tauri's Linux system libraries (webkit2gtk-4.1, gtk3, libsoup3).
 - `audio` (default): the real engine on the system's audio devices (Linux builds need ALSA's
-  development files).
+  development files). On iOS and Android, with `sew-call-client/mobile` (which a phone build
+  needs anyway), the audio is the OS's own voice processing instead (VoiceProcessingIO;
+  AAudio's voice-communication preset), with its echo cancellation and noise suppression on.
+  The app reports the OS's audio session through `VoiceControl` (`session_activated`,
+  `session_deactivated`, `suspend`, `resume`, `route_changed`); on iOS the microphone opens
+  only after `session_activated`. The plugin never configures the session itself
+  (docs/native-voice-sdk.md §3b).
 - `audio-core`: the real engine on `kessel-audio`'s null device only, with no system libraries.
 - `keyring-store` (off by default): the device key in the OS credential store. Without it, or
   your own store (`Builder::device_key_store`), the key is a 0600 file under the app's data
   directory. On phones, `Builder::hardware_device_key` keeps it in the Secure Enclave or
   StrongBox/TEE instead (docs/native-voice-sdk.md §6).
+- `builtin-ring-provider` (default): the engine's TLS falls back to ring when you pass no
+  rustls crypto provider (`Builder::crypto_provider`) and your app installs no process default
+  (`CryptoProvider::install_default`). Without it, that case fails the join (`engine_stopped`,
+  the detail naming `no_crypto_provider`; docs/native-voice-sdk.md §1).
 - `sim-software-key` (off; iOS simulator and x86 Android emulator builds only, refused
   elsewhere): `SimSoftwareKey`, a software stand-in for the hardware key.
 - With no features: the plugin's core (`VoiceService`, the JSON shapes in `wire`, the engine
@@ -46,7 +56,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.4.0"
+tauri-plugin-sew-voice = "0.4.1"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -74,7 +84,8 @@ fn main() {
 ```
 
 Allow the plugin in your window's capability (`sew-voice:default` allows all eight commands; one
-permission per command exists too), then from the web view (`window.__TAURI__` needs
+permission per command exists too; the two device-key commands, `forget_server` and
+`known_device_keys`, are only in `sew-voice:device-keys` or their own `allow-*`), then from the web view (`window.__TAURI__` needs
 `app.withGlobalTauri: true` in `tauri.conf.json`; with a bundler, import `invoke` and `listen`
 from `@tauri-apps/api` instead). `target` is opaque to the plugin: it is handed to your
 `JoinProvider` to say which Sew server (here its host):
@@ -119,6 +130,25 @@ On macOS the app needs `NSMicrophoneUsageDescription` in its `Info.plist`, and t
 **Known advisory (RUSTSEC-2026-0387, P-256).** Through `sew-e2ee`, every join signs with a P-256
 device key via `p256` 0.13, whatever the call's MLS suite; see `sew-e2ee`'s README for what that
 means and our assessment.
+
+### Content Security Policy
+
+The page's CSP must allow Tauri's IPC origin in `connect-src`: `ipc://localhost` on macOS, iOS
+and Linux, `http://ipc.localhost` on Windows and Android (`https://ipc.localhost` with Tauri's
+`useHttpsScheme`). The examples use `connect-src ipc: http://ipc.localhost`. A remote page the
+shell loads (a live site, not bundled assets) needs that in its own CSP header, plus a Tauri
+capability whose `remote.urls` names the site's origin, with the plugin's permissions in it
+(docs/native-voice-sdk.md §1 and §4).
+
+### Signing out (0.4.1)
+
+`VoiceControl::forget_server(install_id)` deletes the devices of one Sew install from the
+plugin's device store (a hardware key through your `HardwareDeviceKey::delete`) and its pins,
+and answers the removed `DeviceKeyId`s; `VoiceControl::known_device_keys()` lists every key the
+store holds. `forget_server` is refused with `in_call` during a call. It works per Sew install,
+not per login: every login on the same Sew shares the install id, so call it only once no
+account in your app still uses that install. The same two are webview
+commands behind `sew-voice:device-keys` (docs/native-voice-sdk.md §6).
 
 ## Licence
 

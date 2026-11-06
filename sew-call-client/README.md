@@ -37,18 +37,44 @@ Not affiliated with or endorsed by LiveKit.
 - `rust-crypto`: the call's DTLS/SRTP in pure Rust (dimpl's RustCrypto backend and RustCrypto
   ciphers) and the E2EE frame cipher on RustCrypto, instead of aws-lc-rs; `CRYPTO_BACKEND` says
   which one a build has.
-- `mobile`: what an iOS or Android build needs (today `rust-crypto`; aws-lc-rs is never built
-  for phones, and the crate refuses to compile there without it). On Android call
+- `mobile`: what an iOS or Android build needs: `rust-crypto` (aws-lc-rs is never built for
+  phones, and the crate refuses to compile there without it) and, with `audio` or
+  `audio-core`, `kessel-audio`'s phone backend. With `audio` on a phone,
+  `platform_audio_config` is the OS's own voice processing (iOS's VoiceProcessingIO unit,
+  Android's AAudio with the voice-communication preset) with the OS's echo cancellation and
+  noise suppression on; desktop keeps cpal (`AUDIO_BACKEND` says which). On Android call
   `sew_call_client::android_init(env, context)` before the first join (the platform TLS
   verifier needs the JVM), and add rustls-platform-verifier's Kotlin component to the app.
-- `testing`: test-only helpers. Never in a release build.
+- `video-core` and `video` (off by default, not yet wired into calls): `kessel-video`, K2's
+  cameras, screen capture and video codecs, without (`video-core`) or with (`video`) the
+  system's devices and OS codecs. A build without them has no video at all.
+- `builtin-ring-provider` (default): TLS falls back to rustls's ring provider when you pass
+  no provider and install no process default (see "TLS crypto provider" below). Without it,
+  that case is refused with `no_crypto_provider`.
+- `testing`: test-only helpers. Never in a release build. With `video-core` as well,
+  `FixtureBackend` replays pre-encoded VP8 and H.264 simulcast streams.
+
+## TLS crypto provider
+
+Every TLS connection the engine makes (signalling, TURN over TLS, Sew's API and the key routes)
+uses one rustls crypto provider, chosen in this order:
+
+1. yours, from `ClientConfig::with_crypto_provider(Arc<rustls::crypto::CryptoProvider>)`
+   (`sew_call_client::rustls` is the rustls the engine uses);
+2. else the process default, if your app installed one with `CryptoProvider::install_default`;
+3. else ring, the built-in (feature `builtin-ring-provider`, on by default). With that feature
+   off and neither of the above, TLS setup fails with `no_crypto_provider` (a join answers
+   `CallError::Setup` naming it); the engine never picks whatever crypto happens to be linked.
+
+The choice is logged at info, once per change: `tls provider: <name> (caller | process default |
+built-in)`. It covers TLS only; the call's DTLS and SRTP keep their own backend.
 
 ## Usage
 
 The crate is not published on crates.io yet, because some of its dependencies are not:
 `sew-e2ee` and `sew-mls-crypto` (held back for the P-256 advisory below), `kessel-audio` (K2's
-audio pipeline, which you supply) and Alakazam Labs' forks of `str0m` and `dimpl`. Until they
-are, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates)
+audio pipeline, which you supply; `kessel-video` too with the video features) and Alakazam
+Labs' forks of `str0m` and `dimpl`. Until they are, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates)
 repository, which holds it with the Sew crates it depends on: clone it into your project (for
 example as `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists
 into your workspace's root `Cargo.toml`. It needs a Sew server to join calls on (see the same
@@ -56,7 +82,7 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.4.0"
+sew-call-client = "0.4.1"
 ```
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
@@ -183,6 +209,28 @@ Call `call.network_changed()` from your path monitor (`NWPathMonitor` on iOS,
 resumes at once on a fresh TURN allocation over the new network and restarts ICE, instead of
 waiting for the old connections to time out; the state is `reconnecting` until it's done. It
 is cheap and safe to repeat.
+
+### The phone's audio session
+
+Keep one `AudioSession` for the app, start each call's audio with
+`AudioBridge::start_with_session(&call, platform_audio_config(input, output), &session)`, and
+report the OS's audio session to it with `session.event(SessionEvent::…)`: `Activated` and
+`Deactivated` (CallKit's `didActivate` / `didDeactivate`), `Suspend` and `Resume` (an
+interruption), `RouteChanged`. On iOS the audio starts deferred: the microphone and the speaker
+open only once the session is active. Deactivated and Suspend pause I/O without ending the
+call; Resume restarts it; RouteChanged re-reads the device. What the app said before a call
+(an early `Activated`, a `Suspend`) applies when its audio starts. The engine never configures
+or activates `AVAudioSession` or the Android audio mode: that stays the app's job. On desktop
+the events change nothing.
+
+### Signing out
+
+`client.forget_server(install_id)` deletes the devices of one Sew install that the data
+directory holds (each key from its store, a hardware key through `HardwareDeviceKey::delete`,
+then the record and the pins) and answers the removed `DeviceKeyId`s; it is refused with
+`DeviceError::InCall` during a call. `client.known_device_keys()` lists every key the data
+directory holds a record of (`device::forget_install` and `device::known_device_keys` take a
+`VaultConfig` or a directory directly).
 
 For a Tauri 2 app, `tauri-plugin-sew-voice` wraps this engine in eight commands and six events.
 

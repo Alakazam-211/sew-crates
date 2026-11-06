@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "tauri-plugin-sew-voice"
-version = "0.4.0"
+version = "0.4.1"
 build = "build.rs"
 links = "tauri-plugin-sew-voice"
 include = [
@@ -45,9 +45,11 @@ audio = [
     "dep:cpal",
 ]
 audio-core = ["sew-call-client/audio-core"]
+builtin-ring-provider = ["sew-call-client/builtin-ring-provider"]
 default = [
     "tauri",
     "audio",
+    "builtin-ring-provider",
 ]
 keyring-store = ["sew-call-client/keyring-store"]
 sim-software-key = ["sew-call-client/sim-software-key"]
@@ -85,11 +87,11 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-call-client]
-version = "0.4.0"
+version = "0.4.1"
 default-features = false
 
 [dependencies.sew-proto]
-version = "0.8.0"
+version = "0.8.1"
 
 [dependencies.tauri]
 version = "2"

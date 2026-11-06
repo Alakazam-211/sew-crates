@@ -483,7 +483,8 @@ pub enum CallError {
     /// The call has ended.
     #[error("the call has ended")]
     Ended,
-    /// The engine could not set itself up (TLS roots, HTTP client).
+    /// The engine could not set itself up (TLS roots or crypto provider, e.g.
+    /// `no_crypto_provider`; HTTP client).
     #[error("setup: {0}")]
     Setup(String),
     /// No recording is active (or held) to answer.
@@ -541,6 +542,41 @@ impl CallClient {
         let keys =
             crate::e2ee::MlsKeys::new(cfg.device_store.clone()).with_platform(cfg.device_platform);
         CallClient::new(cfg, Arc::new(keys))
+    }
+
+    /// Every device key this engine's data directory holds a record of
+    /// ([`crate::device::known_device_keys`]), sorted: with a hardware key, one Keychain item
+    /// or Keystore alias each ([`crate::device::DeviceKeyId::account`]). A host store's
+    /// ([`ClientConfig::with_device_key_store`]) devices are the host's and not listed.
+    /// Blocking (it reads the directory).
+    pub fn known_device_keys(
+        &self,
+    ) -> Result<Vec<crate::device::DeviceKeyId>, crate::device::DeviceError> {
+        crate::device::known_device_keys(&self.cfg.data_dir)
+    }
+
+    /// The host's sign-out from one Sew install ([`crate::device::forget_install`] with
+    /// `cfg.device_store`): every device of `install_id` is reset (its key deleted, a hardware
+    /// key through `HardwareDeviceKey::delete`; the device and the pins cleared) and its files
+    /// removed. Answers the ids it removed. Refused with
+    /// [`crate::device::DeviceError::InCall`] while a call is live or joining; a join while it
+    /// runs is refused with [`CallError::AlreadyInCall`].
+    pub async fn forget_server(
+        &self,
+        install_id: u64,
+    ) -> Result<Vec<crate::device::DeviceKeyId>, crate::device::DeviceError> {
+        if self.busy.swap(true, Ordering::AcqRel) {
+            return Err(crate::device::DeviceError::InCall);
+        }
+        let _busy = BusyGuard(self.busy.clone());
+        let vault = crate::device::VaultConfig {
+            data_dir: self.cfg.data_dir.clone(),
+            app_id: self.cfg.app_id.clone(),
+            store: self.cfg.device_store.clone(),
+            label: String::new(),
+            platform: self.cfg.device_platform,
+        };
+        crate::device::forget_install(&vault, install_id).await
     }
 
     /// Joins through `provider` and starts the call.

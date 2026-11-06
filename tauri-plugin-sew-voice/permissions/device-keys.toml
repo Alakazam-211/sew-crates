@@ -1,0 +1,12 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "device-keys"
+description = """
+The device-key commands, for a window that signs the person out: `forget_server` (deletes the
+devices of one Sew install, the hardware keys included, and answers the removed keys) and
+`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant
+it, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the
+window that needs it.
+"""
+permissions = ["allow-forget-server", "allow-known-device-keys"]

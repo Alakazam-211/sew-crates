@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the devices command without any pre-configured scope."
         },
         {
+          "description": "Enables the forget_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-forget-server",
+          "markdownDescription": "Enables the forget_server command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the forget_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-forget-server",
+          "markdownDescription": "Denies the forget_server command without any pre-configured scope."
+        },
+        {
           "description": "Enables the join command without any pre-configured scope.",
           "type": "string",
           "const": "allow-join",
@@ -329,6 +341,18 @@
           "type": "string",
           "const": "deny-join",
           "markdownDescription": "Denies the join command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the known_device_keys command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-known-device-keys",
+          "markdownDescription": "Enables the known_device_keys command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the known_device_keys command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-known-device-keys",
+          "markdownDescription": "Denies the known_device_keys command without any pre-configured scope."
         },
         {
           "description": "Enables the leave command without any pre-configured scope.",
@@ -395,6 +419,12 @@
           "type": "string",
           "const": "default",
           "markdownDescription": "Everything a call UI needs: join, leave, mute, list devices, switch devices, read the call\nstate and answer a recording's notice (`sew-voice:allow-join`, `allow-leave`, `allow-mute`,\n`allow-devices`, `allow-set-device`, `allow-state`, `allow-consent`,\n`allow-withdraw-consent`). Every window gets every event (`sew-voice://state`, `participants`,\n`speaking`, `errors`, `devices`, `recording`). A window that should only watch a call can list\n`sew-voice:allow-state` and `sew-voice:allow-devices` alone instead of this set.\n\n#### This default permission set includes:\n\n- `allow-join`\n- `allow-leave`\n- `allow-mute`\n- `allow-devices`\n- `allow-set-device`\n- `allow-state`\n- `allow-consent`\n- `allow-withdraw-consent`"
+        },
+        {
+          "description": "The device-key commands, for a window that signs the person out: `forget_server` (deletes the\ndevices of one Sew install, the hardware keys included, and answers the removed keys) and\n`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant\nit, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the\nwindow that needs it.\n\n#### This permission set includes:\n\n- `allow-forget-server`\n- `allow-known-device-keys`",
+          "type": "string",
+          "const": "device-keys",
+          "markdownDescription": "The device-key commands, for a window that signs the person out: `forget_server` (deletes the\ndevices of one Sew install, the hardware keys included, and answers the removed keys) and\n`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant\nit, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the\nwindow that needs it.\n\n#### This permission set includes:\n\n- `allow-forget-server`\n- `allow-known-device-keys`"
         }
       ]
     }

@@ -676,7 +676,9 @@ mod tests {
 
     #[tokio::test]
     async fn relay_only_without_turns_refuses() {
-        let cfg = ClientConfig::new("t", std::env::temp_dir());
+        // ring passed in, so this runs without the built-in provider too (`--no-default-features`).
+        let cfg = ClientConfig::new("t", std::env::temp_dir())
+            .with_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()));
         let tls = crate::config::tls_config(&cfg).unwrap();
         let s = [server(&[
             "turn:127.0.0.1:3478?transport=udp",

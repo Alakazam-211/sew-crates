@@ -1170,3 +1170,107 @@ async fn recording_end_reasons_reach_the_webview_unchanged() {
         assert_eq!(states(&w.sink).last(), Some(&c["payload"]), "{reason}");
     }
 }
+
+fn key(install_id: u64, member: u64, scope: &str) -> tauri_plugin_sew_voice::DeviceKeyId {
+    tauri_plugin_sew_voice::DeviceKeyId {
+        install_id,
+        member_id: sew_proto::id::Id::new(member).expect("id"),
+        device_scope: scope.to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn known_device_keys_and_forget_server_between_calls() {
+    let w = world();
+    assert_eq!(w.svc.known_device_keys().await.expect("known"), vec![]);
+    w.engine
+        .set_device_keys(vec![key(78, 6, "aa"), key(77, 5, "bb"), key(77, 5, "aa")]);
+    assert_eq!(
+        w.svc.known_device_keys().await.expect("known"),
+        vec![key(77, 5, "aa"), key(77, 5, "bb"), key(78, 6, "aa")]
+    );
+    let gone = w.svc.forget_server(77).await.expect("forget");
+    assert_eq!(gone, vec![key(77, 5, "aa"), key(77, 5, "bb")]);
+    assert_eq!(w.engine.forgets(), vec![77]);
+    assert_eq!(
+        w.svc.known_device_keys().await.expect("known"),
+        vec![key(78, 6, "aa")]
+    );
+    // Nothing left there: an empty answer, not an error.
+    assert_eq!(w.svc.forget_server(77).await.expect("again"), vec![]);
+    // No event: a sign-out is not a call change.
+    assert!(w.sink.of("errors").is_empty());
+}
+
+#[tokio::test]
+async fn forget_server_is_refused_in_a_call_and_runs_after_it() {
+    let w = joined().await;
+    w.engine.set_device_keys(vec![key(77, 5, "aa")]);
+    let e = w.svc.forget_server(77).await.expect_err("in a call");
+    assert_eq!(e.code, "in_call");
+    assert!(w.engine.forgets().is_empty(), "the engine was never asked");
+    // Listing is fine in a call.
+    assert_eq!(
+        w.svc.known_device_keys().await.expect("known"),
+        vec![key(77, 5, "aa")]
+    );
+    w.svc.leave().await.expect("leave");
+    assert_eq!(
+        w.svc.forget_server(77).await.expect("after leave"),
+        vec![key(77, 5, "aa")]
+    );
+}
+
+#[tokio::test]
+async fn a_failed_forget_keeps_the_keys_and_passes_the_error() {
+    let w = world();
+    w.engine.set_device_keys(vec![key(77, 5, "aa")]);
+    w.engine
+        .fail_next_forget(EngineError::Failed(ErrorInfo::with_detail(
+            "device_store",
+            "hardware key unavailable: errSecInteractionNotAllowed",
+        )));
+    let e = w.svc.forget_server(77).await.expect_err("fails");
+    assert_eq!(e.code, "device_store");
+    assert_eq!(
+        w.svc.known_device_keys().await.expect("known"),
+        vec![key(77, 5, "aa")],
+        "a retry finds it again"
+    );
+    assert_eq!(
+        w.svc.forget_server(77).await.expect("retry"),
+        vec![key(77, 5, "aa")]
+    );
+}
+
+#[test]
+fn device_key_wire_shapes() {
+    use tauri_plugin_sew_voice::{DeviceKeyInfo, ForgetServerArgs};
+    let k = key(48831765147549700, 48831765147549699, "3f9a0c47");
+    let info = DeviceKeyInfo::from(&k);
+    assert_eq!(
+        serde_json::to_value(&info).expect("json"),
+        json!({
+            "install_id": "48831765147549700",
+            "member_id": "48831765147549699",
+            "device_scope": "3f9a0c47",
+            "account": "48831765147549700:48831765147549699:3f9a0c47",
+        })
+    );
+    assert_eq!(info.account, k.account());
+    let a: ForgetServerArgs =
+        serde_json::from_value(json!({"install_id": "48831765147549700"})).expect("args");
+    assert_eq!(a.install().expect("install"), 48831765147549700);
+    for bad in [json!({"install_id": "x"}), json!({"install_id": "-1"})] {
+        let a: ForgetServerArgs = serde_json::from_value(bad).expect("parses");
+        assert_eq!(a.install().expect_err("refused").code, "invalid_args");
+    }
+    assert!(
+        serde_json::from_value::<ForgetServerArgs>(json!({"install_id": 77})).is_err(),
+        "a number is refused: ids are decimal strings"
+    );
+    assert!(
+        serde_json::from_value::<ForgetServerArgs>(json!({"install_id": "77", "all": true}))
+            .is_err()
+    );
+}

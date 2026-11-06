@@ -47,9 +47,14 @@ mod rust_crypto;
 mod signal;
 pub mod stats;
 mod transport;
+mod video;
 
+#[cfg(feature = "audio")]
+pub use audio::platform_audio_config;
 #[cfg(feature = "audio-core")]
-pub use audio::{AudioBridge, AudioBridgeError, BridgeLevels};
+pub use audio::{
+    AUDIO_BACKEND, AudioBridge, AudioBridgeError, AudioSession, BridgeLevels, SessionEvent,
+};
 pub use call::{
     Call, CallClient, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallRecording,
     CallSnapshot, CallState, EndReason, FrameSender, FrameStream, OpusFrame, Participant,
@@ -61,16 +66,25 @@ pub use config::TestingOverrides;
 /// kessel-audio, re-exported for hosts that configure the audio engine.
 #[cfg(feature = "audio-core")]
 pub use kessel_audio;
+/// kessel-video, re-exported for hosts that pick or configure the video backend.
+#[cfg(feature = "video-core")]
+pub use kessel_video;
 pub use provider::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
     JoinAnswer, JoinProvider, JoinRequest, ProviderError, RejoinReason,
 };
+/// rustls, re-exported for hosts that pass their own crypto provider
+/// ([`ClientConfig::with_crypto_provider`]).
+pub use rustls;
 /// Sew's recording types the engine's recording API carries (from `sew-proto`).
 pub use sew_proto::recording::{ConsentPrompt, Recording, RecordingNotice, RecordingRef};
 pub use stats::{
     BeaconOutcome, BeforeFirstWindow, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals,
     StatsWindow,
 };
+/// A kessel-video backend replaying pre-encoded VP8 and H.264 simulcast streams (test only).
+#[cfg(all(feature = "testing", feature = "video-core"))]
+pub use video::{FixtureBackend, FixtureError};
 
 // aws-lc-rs is never built for the phones; their DTLS/SRTP is the pure-Rust provider.
 #[cfg(all(

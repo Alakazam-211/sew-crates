@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.1 (2026-11-06, Sew 0.8.1)
+
+Additive.
+
+- Needs sew-proto, sew-e2ee, sew-lkproto and sew-lk-compat 0.8.1 (no API change there).
+- The TLS crypto provider is the host's. Every TLS connection (signalling, TURN over TLS, the
+  client API, the key routes) uses one rustls provider: the one passed with the new
+  `ClientConfig::with_crypto_provider` (field `crypto_provider`), else the process default
+  (`CryptoProvider::get_default`), else ring behind the new default feature
+  `builtin-ring-provider`. Without that feature and with neither, TLS setup is refused with
+  `no_crypto_provider` (`CallError::Setup`) instead of picking a provider. A build with
+  `default-features = false` that relied on ring and installs no provider adds
+  `builtin-ring-provider`. The choice is logged at info once per change: `tls provider: <name>
+  (caller | process default | built-in)`. `sew_call_client::rustls` re-exports rustls. ring
+  stays a rustls feature; DTLS and SRTP are unchanged.
+- The phone audio backend. kessel-audio moves to K2's public repository at
+  aad16f76b8768ae090d3060033d473e87c736be4 (its phone backends); repeat the new
+  `[patch.crates-io]` row. Feature `mobile` now also turns on kessel-audio's `os-voice` when an
+  audio feature is on. `platform_audio_config(input, output)` (feature `audio`) is the call's
+  kessel-audio config for this platform: on iOS and Android with `mobile`,
+  `Backend::OsVoiceProcessing` (iOS's VoiceProcessingIO unit, Android's AAudio with the
+  voice-communication preset) with the OS's echo cancellation, noise suppression and gain
+  control on; on desktop the system devices through cpal, as before. `AUDIO_BACKEND` says which
+  (`"os-voice"` or `"system"`).
+- The phone's audio session. `AudioSession` (one per app) and `SessionEvent` (`Activated`,
+  `Deactivated`, `Suspend`, `Resume`, `RouteChanged`): `AudioBridge::start_with_session` hands
+  the app's reports to the call's kessel-audio (`session_activated` / `session_deactivated`,
+  `suspend` / `resume`, `route_changed`). On iOS the bridge starts kessel-audio deferred
+  (`start_when_session_active`): nothing opens until the session is active. An early
+  `Activated` or `Suspend` applies when a call's audio starts; a repeated event is passed on
+  once; a call's interruption ends with its bridge. The engine never configures the OS's audio
+  session. On desktop the events change nothing. `AudioBridge::start` is unchanged (a session
+  of its own, `AudioBridge::session`).
+- Device keys on sign-out. `CallClient::forget_server(install_id)` resets every device of one
+  Sew install that the data directory holds a record of (the key deleted from its store, a
+  hardware key through `HardwareDeviceKey::delete`; the record and the pins cleared) and
+  removes the install's files; it answers the removed `DeviceKeyId`s, and is refused with the
+  new `DeviceError::InCall` while a call is live or joining. `CallClient::known_device_keys()`
+  lists every key the data directory holds a record of. Also as `device::forget_install` and
+  `device::known_device_keys`.
+- New features `video-core` and `video`, off by default: `kessel-video` (K2's cameras, screen
+  capture and video codecs, re-exported as `sew_call_client::kessel_video`), supplied with
+  `[patch.crates-io]` from K2's repository like `kessel-audio`. Calls don't use them yet; with
+  both off, the crate builds and behaves as before.
+- With `testing` and `video-core`: `FixtureBackend`, a kessel-video backend whose encoders
+  replay pre-encoded VP8 (three temporal layers) and H.264 simulcast streams.
+- Internally, the VP8 (RFC 7741) and H.264 (RFC 6184 packetization mode 1) packetisers and
+  depacketisers, the H.264 access-unit normaliser and the Dependency Descriptor writer the
+  video path will use.
+
 ## 0.4.0 (2026-11-05, Sew 0.8.0)
 
 - Needs sew-proto 0.8 (and sew-e2ee, sew-lkproto and sew-lk-compat 0.8). The crate re-exports

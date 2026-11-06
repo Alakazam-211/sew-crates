@@ -212,7 +212,7 @@ struct Parts {
 
 /// Starts the call's task.
 pub(crate) fn spawn(s: Start) -> Result<(), String> {
-    let tls = crate::config::tls_config(&s.cfg).map_err(|e| format!("TLS roots: {e}"))?;
+    let tls = crate::config::tls_config(&s.cfg).map_err(|e| format!("TLS: {e}"))?;
     let http = api::http_client(&tls)?;
     let parts = Parts {
         cfg: s.cfg,

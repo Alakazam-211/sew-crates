@@ -20,17 +20,25 @@
 //!   `consent`). The `recording` event is the engine's recording with `recorder_present` from
 //!   its roster (the recorder is never a `participants` entry: it is no member). `consent` and
 //!   `withdraw_consent` are the engine's, through the host's provider.
+//! - **The phone's audio session.** The engine keeps one `AudioSession` for the app: every
+//!   [`AudioSessionEvent`] goes to it, with or without a call, and each call's kessel-audio
+//!   starts from what it says (on iOS, deferred until the session is active). On phones the
+//!   audio is kessel-audio's OS voice processing (`sew_call_client::platform_audio_config`).
+//! - **Device keys.** `forget_server` and `known_device_keys` are `CallClient`'s, over the
+//!   device store of the engine's `ClientConfig`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use sew_call_client::device::{DeviceError, DeviceKeyId};
 use sew_call_client::kessel_audio::{
     self, AudioError, DeviceChoice, DeviceSelection, EngineConfig, ErrorCode, Event as AudioEvent,
 };
 use sew_call_client::{
-    AudioBridge, BridgeLevels, Call, CallClient, CallError, CallRecording, EndReason,
+    AudioBridge, AudioSession, BridgeLevels, Call, CallClient, CallError, CallRecording, EndReason,
+    SessionEvent,
 };
 use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
@@ -41,7 +49,7 @@ use crate::engine::{
 };
 use crate::wire::{
     CallState, Device, DeviceChoice as Choice, DeviceList, ErrorInfo, Participant, RecordingInfo,
-    Speaking, reason,
+    Speaking, code, reason,
 };
 
 /// How often the `speaking` levels are sampled (at most 10 a second).
@@ -90,6 +98,8 @@ struct EngineInner {
     listing: AtomicBool,
     devices_tx: broadcast::Sender<DeviceList>,
     state: Mutex<DevState>,
+    /// The phone's audio session, for every call's kessel-audio.
+    session: AudioSession,
 }
 
 #[derive(Default)]
@@ -136,6 +146,7 @@ impl CallClientEngine {
                 listing: AtomicBool::new(false),
                 devices_tx,
                 state: Mutex::new(DevState::default()),
+                session: AudioSession::new(),
             }),
         }
     }
@@ -263,7 +274,7 @@ impl EngineInner {
             (st.input.clone(), st.output.clone())
         };
         let cfg = (self.audio)(choice(input), choice(output));
-        AudioBridge::start(call, cfg)
+        AudioBridge::start_with_session(call, cfg, &self.session)
             .map_err(|e| ErrorInfo::with_detail("mic_unavailable", e.to_string()))
     }
 
@@ -275,13 +286,12 @@ impl EngineInner {
     }
 }
 
-/// The audio for a call on the system's devices (kessel-audio's defaults otherwise).
+/// The audio for a call on this platform (`sew_call_client::platform_audio_config`): the
+/// system's devices through cpal on desktop; on iOS and Android (sew-call-client's `mobile`)
+/// the OS's voice processing, with its echo cancellation and noise suppression on.
 #[cfg(feature = "audio")]
 pub fn system_audio() -> AudioConfig {
-    Arc::new(|input, output| EngineConfig {
-        backend: kessel_audio::Backend::System { input, output },
-        ..EngineConfig::default()
-    })
+    Arc::new(sew_call_client::platform_audio_config)
 }
 
 /// The system's device list through cpal, with kessel-audio's ids and names (desktop only: on
@@ -452,14 +462,56 @@ impl VoiceEngine for CallClientEngine {
         rx
     }
 
-    /// Does nothing yet, on purpose. kessel-audio's phone session hooks
-    /// (`start_when_session_active`, `session_activated` / `session_deactivated`, `suspend` /
-    /// `resume`, `route_changed`) are not in the kessel-audio this crate pins (K2 rev bc78b69a,
-    /// and not on K2 main as of 2026-11-04). Once they land, this forwards each event to the
-    /// live call's bridge unchanged (and keeps an early `Activated` for the next call). The
-    /// plugin never configures `AVAudioSession` or the Android audio mode itself.
+    /// To the engine's `AudioSession`: the live call's kessel-audio gets it now (on phones:
+    /// `session_activated` / `session_deactivated`, `suspend` / `resume`, `route_changed`), and
+    /// an early `Activated` or `Suspend` is kept for the next call. On desktop it changes
+    /// nothing. The plugin never configures `AVAudioSession` or the Android audio mode itself.
     fn audio_session(&self, event: AudioSessionEvent) {
-        let _ = event;
+        self.inner.session.event(session_event(event));
+    }
+
+    fn forget_server(
+        &self,
+        install_id: u64,
+    ) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
+        Box::pin(async move {
+            self.inner
+                .client
+                .forget_server(install_id)
+                .await
+                .map_err(device_error)
+        })
+    }
+
+    fn known_device_keys(&self) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
+        Box::pin(async move {
+            let inner = self.inner.clone();
+            tokio::task::spawn_blocking(move || inner.client.known_device_keys())
+                .await
+                .map_err(|e| {
+                    EngineError::Failed(ErrorInfo::with_detail(code::DEVICE_STORE, e.to_string()))
+                })?
+                .map_err(device_error)
+        })
+    }
+}
+
+/// The plugin's audio-session event as sew-call-client's.
+fn session_event(event: AudioSessionEvent) -> SessionEvent {
+    match event {
+        AudioSessionEvent::Activated => SessionEvent::Activated,
+        AudioSessionEvent::Deactivated => SessionEvent::Deactivated,
+        AudioSessionEvent::Suspend => SessionEvent::Suspend,
+        AudioSessionEvent::Resume => SessionEvent::Resume,
+        AudioSessionEvent::RouteChanged => SessionEvent::RouteChanged,
+    }
+}
+
+/// A device store failure as the plugin's error: `in_call`, else `device_store`.
+fn device_error(e: DeviceError) -> EngineError {
+    match e {
+        DeviceError::InCall => EngineError::failed(code::IN_CALL),
+        e => EngineError::Failed(ErrorInfo::with_detail(code::DEVICE_STORE, e.to_string())),
     }
 }
 
@@ -1276,6 +1328,72 @@ mod tests {
             stopped,
             "the poll stops with the subscriber"
         );
+    }
+
+    /// The phone's audio session goes to the engine's `AudioSession` with or without a call
+    /// (kept for the next call), mapped one to one.
+    #[test]
+    fn audio_session_events_reach_the_engines_session() {
+        let (engine, _) = counted();
+        assert_eq!(engine.inner.session.is_active(), None);
+        engine.audio_session(AudioSessionEvent::Activated);
+        engine.audio_session(AudioSessionEvent::Suspend);
+        assert_eq!(engine.inner.session.is_active(), Some(true));
+        assert!(engine.inner.session.is_suspended());
+        engine.audio_session(AudioSessionEvent::Resume);
+        engine.audio_session(AudioSessionEvent::RouteChanged);
+        engine.audio_session(AudioSessionEvent::Deactivated);
+        assert_eq!(engine.inner.session.is_active(), Some(false));
+        assert!(!engine.inner.session.is_suspended());
+        for (a, b) in [
+            (AudioSessionEvent::Activated, SessionEvent::Activated),
+            (AudioSessionEvent::Deactivated, SessionEvent::Deactivated),
+            (AudioSessionEvent::Suspend, SessionEvent::Suspend),
+            (AudioSessionEvent::Resume, SessionEvent::Resume),
+            (AudioSessionEvent::RouteChanged, SessionEvent::RouteChanged),
+        ] {
+            assert_eq!(session_event(a), b);
+        }
+    }
+
+    /// The device-key calls are the client's, over its data directory; a live call is
+    /// `in_call`, any other store failure `device_store`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn device_keys_are_the_clients() {
+        let dir = std::env::temp_dir().join(format!(
+            "sew-voice-real-keys-{}-{}",
+            std::process::id(),
+            rand_suffix()
+        ));
+        let client =
+            CallClient::with_mls(sew_call_client::ClientConfig::new("sew.test", dir.clone()));
+        let audio: AudioConfig = Arc::new(|_, _| EngineConfig::default());
+        let engine = CallClientEngine::new(client, audio);
+        assert_eq!(engine.known_device_keys().await.unwrap(), vec![]);
+        assert_eq!(engine.forget_server(77).await.unwrap(), vec![]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            device_error(DeviceError::InCall).to_info().code,
+            code::IN_CALL
+        );
+        let e = device_error(DeviceError::Unavailable(
+            "errSecInteractionNotAllowed".into(),
+        ))
+        .to_info();
+        assert_eq!(e.code, code::DEVICE_STORE);
+        assert!(
+            e.detail
+                .as_str()
+                .unwrap()
+                .contains("errSecInteractionNotAllowed")
+        );
+    }
+
+    fn rand_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
     }
 
     /// Subscribing to the device events is a first use too, and so is `set_device`.

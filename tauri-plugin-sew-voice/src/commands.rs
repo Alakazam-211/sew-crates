@@ -1,4 +1,5 @@
-//! The eight Tauri commands. Each one is a thin call into [`VoiceService`]; the argument
+//! The ten Tauri commands (the eight of `sew-voice:default`, and the two device-key commands
+//! behind their own permissions). Each one is a thin call into [`VoiceService`]; the argument
 //! names are the JSON keys the webview sends (`invoke('plugin:sew-voice|join', {target, room,
 //! muted, deafened})`, `invoke('plugin:sew-voice|consent', {granted, notice_version})`: snake_case,
 //! as every other key on the wire).
@@ -7,8 +8,8 @@ use tauri::State;
 
 use crate::service::VoiceService;
 use crate::wire::{
-    ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinResult, MuteArgs, SetDeviceArgs,
-    StateSnapshot,
+    ConsentArgs, DeviceKeyInfo, DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs, JoinResult,
+    MuteArgs, SetDeviceArgs, StateSnapshot,
 };
 
 #[tauri::command]
@@ -79,4 +80,24 @@ pub(crate) async fn set_device(
 #[tauri::command]
 pub(crate) async fn state(service: State<'_, VoiceService>) -> Result<StateSnapshot, ErrorInfo> {
     service.state().await
+}
+
+/// Behind `sew-voice:allow-forget-server` (not in `sew-voice:default`).
+#[tauri::command(rename_all = "snake_case")]
+pub(crate) async fn forget_server(
+    service: State<'_, VoiceService>,
+    install_id: String,
+) -> Result<Vec<DeviceKeyInfo>, ErrorInfo> {
+    let install = ForgetServerArgs { install_id }.install()?;
+    let removed = service.forget_server(install).await?;
+    Ok(removed.iter().map(DeviceKeyInfo::from).collect())
+}
+
+/// Behind `sew-voice:allow-known-device-keys` (not in `sew-voice:default`).
+#[tauri::command]
+pub(crate) async fn known_device_keys(
+    service: State<'_, VoiceService>,
+) -> Result<Vec<DeviceKeyInfo>, ErrorInfo> {
+    let keys = service.known_device_keys().await?;
+    Ok(keys.iter().map(DeviceKeyInfo::from).collect())
 }

@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use sew_call_client::device::DeviceKeyId;
 use tokio::sync::{Notify, broadcast};
 use tokio::time::Instant;
 
@@ -412,6 +413,33 @@ impl VoiceService {
     /// or without a call.
     pub fn audio_session(&self, event: AudioSessionEvent) {
         self.inner.engine.audio_session(event);
+    }
+
+    /// The host's sign-out from one Sew install (also the `forget_server {install_id}`
+    /// command, behind its own permission): the engine deletes every device of `install_id`
+    /// its device store holds (a hardware key through `HardwareDeviceKey::delete`) and the
+    /// install's pins, and answers the removed keys. The next join there enrols a new device.
+    /// Refused with `in_call` while a call is live (connecting, held, connected or
+    /// reconnecting); a store failure is `device_store`.
+    pub async fn forget_server(&self, install_id: u64) -> Result<Vec<DeviceKeyId>, ErrorInfo> {
+        if self.lock().state.is_live() {
+            return Err(ErrorInfo::new(code::IN_CALL));
+        }
+        self.inner
+            .engine
+            .forget_server(install_id)
+            .await
+            .map_err(|e| e.to_info())
+    }
+
+    /// Every device key the engine's device store holds, sorted (also the
+    /// `known_device_keys` command, behind its own permission).
+    pub async fn known_device_keys(&self) -> Result<Vec<DeviceKeyId>, ErrorInfo> {
+        self.inner
+            .engine
+            .known_device_keys()
+            .await
+            .map_err(|e| e.to_info())
     }
 
     /// The state now (what the `state` command answers).

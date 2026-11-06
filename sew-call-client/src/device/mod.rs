@@ -145,6 +145,9 @@ pub enum DeviceError {
     /// not verify). The call's key setup fails (`e2ee_refused`); there is no software fallback.
     #[error("hardware key unavailable: {0}")]
     Unavailable(String),
+    /// A call is live (or joining): the device store can't be forgotten under it. Leave first.
+    #[error("a call is live")]
+    InCall,
 }
 
 /// Which device a [`DeviceKeyStore`] entry belongs to: one install of Sew, one member, one login
@@ -1097,6 +1100,121 @@ fn auto_store(app_id: &str, dir: &Path, warnings: &mut Vec<DeviceWarning>) -> Ar
     let _ = app_id;
     warnings.push(DeviceWarning::KeyStorageFile);
     Arc::new(FileSecretStore::new(dir.to_path_buf()))
+}
+
+/// Every device the data directory `data_dir` holds a record of (the built-in stores' and a
+/// hardware key's public records, `<data_dir>/sew-voice/<install_id>/device-<scope>.json`),
+/// sorted. With a host store ([`StoreChoice::Host`]) the records are the host's, so they are not
+/// listed here. Blocking (it reads the directory).
+pub fn known_device_keys(data_dir: &Path) -> Result<Vec<DeviceKeyId>, DeviceError> {
+    let root = data_dir.join("sew-voice");
+    let installs = match std::fs::read_dir(&root) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(DeviceError::Store(format!("read dir: {}", e.kind()))),
+    };
+    let mut out = Vec::new();
+    for entry in installs {
+        let entry = entry.map_err(|e| DeviceError::Store(format!("read dir: {}", e.kind())))?;
+        let Some(install_id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        out.extend(
+            install_files(&entry.path(), install_id)?
+                .into_iter()
+                .filter_map(|(_, id)| id),
+        );
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// One install's device files: each file's path and, when it holds a device, the device's id.
+fn install_files(
+    dir: &Path,
+    install_id: u64,
+) -> Result<Vec<(PathBuf, Option<DeviceKeyId>)>, DeviceError> {
+    let io = |e: std::io::Error| DeviceError::Store(format!("read: {}", e.kind()));
+    let entries = match std::fs::read_dir(dir) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io(e)),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io)?;
+        let name = entry.file_name();
+        let Some(scope) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("device-"))
+            .and_then(|n| n.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        // Only names the vault writes (a sanitized scope).
+        if scope.is_empty() || sanitize(scope) != scope {
+            continue;
+        }
+        let path = entry.path();
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(io(e)),
+        };
+        // A damaged file is no device (as the vault reads it), but still the install's file.
+        let id = serde_json::from_slice::<FileData>(&bytes)
+            .ok()
+            .and_then(|d| d.device)
+            .map(|d| DeviceKeyId {
+                install_id,
+                member_id: d.member_id,
+                device_scope: scope.to_owned(),
+            });
+        out.push((path, id));
+    }
+    Ok(out)
+}
+
+/// A sign-out from one Sew install: every device of `install_id` that the data directory holds
+/// a record of is reset ([`DeviceVault::reset`]: its key is deleted from the store `cfg.store`
+/// names, a hardware key through [`HardwareDeviceKey::delete`], and the device and the pins are
+/// cleared), and the install's device files are removed (the pins of a device without a record
+/// too). Answers the ids it reset, sorted. The next call to that install enrols a new device
+/// and pins again on first sight.
+///
+/// A key that can't be deleted stops it with that error and leaves that device's record, so a
+/// retry finds it again. With a host store ([`StoreChoice::Host`]) the devices are the host's
+/// to clear; only the pins go here.
+pub async fn forget_install(
+    cfg: &VaultConfig,
+    install_id: u64,
+) -> Result<Vec<DeviceKeyId>, DeviceError> {
+    let dir = cfg.data_dir.join("sew-voice").join(install_id.to_string());
+    let listed = dir.clone();
+    let files = blocking(move || install_files(&listed, install_id)).await?;
+    let mut removed = Vec::new();
+    for (path, id) in files {
+        if let Some(id) = id {
+            let mut vault =
+                DeviceVault::open_async(cfg, install_id, id.member_id, &id.device_scope).await?;
+            vault.reset().await?;
+            removed.push(id);
+        }
+        blocking(move || match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(DeviceError::Store(format!("remove: {}", e.kind()))),
+        })
+        .await?;
+    }
+    // The directory goes too once it is empty (anything else in it is left alone).
+    let _ = std::fs::remove_dir(&dir);
+    removed.sort();
+    Ok(removed)
 }
 
 /// Whether a key or device route refused the device itself (revoked, or its certificate

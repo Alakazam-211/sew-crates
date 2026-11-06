@@ -67,9 +67,10 @@ pub use sew_call_client::device::{DevicePlatform, HardwareDeviceKey};
 /// `choices_en`), from `sew-proto`.
 pub use sew_proto::recording::{ConsentAsk, ConsentChoice};
 pub use wire::{
-    CallState, ConsentArgs, ConsentPrompt, DEFAULT_DEVICE, Device, DeviceChoice, DeviceList,
-    ErrorInfo, JoinArgs, JoinResult, MuteArgs, Participant, PluginEvent, RecordingInfo,
-    RecordingParticipant, SelfMute, SetDeviceArgs, Speaking, StateEvent, StateSnapshot,
+    CallState, ConsentArgs, ConsentPrompt, DEFAULT_DEVICE, Device, DeviceChoice, DeviceKeyInfo,
+    DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs, JoinResult, MuteArgs, Participant,
+    PluginEvent, RecordingInfo, RecordingParticipant, SelfMute, SetDeviceArgs, Speaking,
+    StateEvent, StateSnapshot,
 };
 
 // On phones the device key is the host's (Builder::device_key_store, or a hardware key):
@@ -97,3 +98,10 @@ pub const COMMANDS: [&str; 8] = [
     "consent",
     "withdraw_consent",
 ];
+
+/// The device-key commands (0.4.1), outside `sew-voice:default`: a window gets them only with
+/// an explicit permission (`sew-voice:allow-forget-server`, `sew-voice:allow-known-device-keys`,
+/// or the set `sew-voice:device-keys`). `forget_server {install_id}` deletes the devices of one
+/// Sew install (a sign-out) and answers the removed keys; `known_device_keys` lists the keys
+/// the plugin's device store holds.
+pub const DEVICE_KEY_COMMANDS: [&str; 2] = ["forget_server", "known_device_keys"];
