@@ -805,12 +805,15 @@ impl Validate for ComplianceChannelsQuery {
 unit_enum! {
     /// Why content vanished.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum VanishReason {
         /// A retention policy's cutoff.
         Retention = "retention",
         /// A ban's recent-message wipe: a moderator delete, one batch of up
         /// to 1,000 messages of one channel.
         Moderation = "moderation",
+        /// An account erase: the author's messages, one batch of one channel.
+        Erased = "erased",
     }
 }
 

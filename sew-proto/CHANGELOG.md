@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.8.2 (2026-11-06)
+
+**0.8.2 is mirror-only; it breaks 0.8.1 (crates.io stays at 0.8.1); the next crates.io release is
+0.9.0.**
+
+### Breaking
+
+- New variants on enums that were exhaustive: `Action` (`MemberErase`, `MemberEraseComplete`,
+  `MemberErasePreview`, `MemberEraseReplayed`), `ExternalId::Erased`, `DeleteKind::Erased`,
+  `RemoveKind::Erased`, `VanishReason::Erased` and `StatusAlarm::EraseStuck`. A `match` written
+  for 0.8.1 no longer compiles.
+- `Action`'s new variants sit before older ones, so the implicit discriminants of the later
+  variants move: code that casts an `Action` to an integer gets other numbers. The wire is
+  unchanged (the string names, with the `Unknown` fallback).
+- New public fields on structs (`Member.erased`, `Message.deleted_reason`,
+  `MemberRecord.erased_at` and `erase_mode`, `Status.erasures`): a struct literal written for
+  0.8.1 no longer compiles. The JSON is additive (each new field is omitted when unset).
+- `Action`, `ExternalId`, `DeleteKind`, `RemoveKind`, `VanishReason` and `StatusAlarm` are now
+  `#[non_exhaustive]`, so later variants are not breaking: a `match` outside the crate needs a
+  `_` arm. The JSON and the schemas are unchanged.
+
+### Added
+
+- Account erase (flag `principal_erase`, `FEATURE_PRINCIPAL_ERASE`): `MgmtEraseRequest`,
+  `MgmtEraseResult`, `MgmtEraseAccepted`, `MgmtErasuresQuery`, `MgmtErasurePage`,
+  `MgmtEraseCounts`, `MgmtEraseKept`, `EraseMode` (with `EraseMode::default_for`),
+  `EraseState`, `EraseKeptKind` and `EraseKeptReason` (`POST /mgmt/v1/principals/erase`,
+  `GET /mgmt/v1/principals/erase/{job_id}`, `GET /mgmt/v1/principals/erasures`;
+  `routes::MGMT_PRINCIPALS_ERASE`, `MGMT_PRINCIPALS_ERASE_JOB`, `MGMT_PRINCIPALS_ERASURES`,
+  `MGMT_ERASURES_LIMIT_DEFAULT` and `MGMT_ERASURES_LIMIT_MAX`).
+- `ExternalId::Erased` (`erased:<member_id>`, the tombstone id of an erased member), refused
+  by provision, passes and every mgmt input.
+- Client API: `Member.erased` and `Message.deleted_reason` (`DeletedReason::Erased`), both
+  omitted otherwise; `VanishReason::Erased` on `content_vanished`.
+- Reason `erase_mode_downgrade` (`mgmt::reasons`); `service_member` is reused.
+- Audit actions `member.erase`, `member.erase_complete`, `member.erase_preview` and
+  `member.erase_replayed`.
+- `status.erasures` (`StatusErasures`) and the alarm `erase_stuck` (`StatusAlarm::EraseStuck`).
+- Export format minor 11 (`EXPORT_FORMAT_MINOR`): `MemberRecord.erased_at` and `erase_mode`,
+  `DeleteKind::Erased` and `RemoveKind::Erased`.
+
 ## 0.8.1 (2026-11-06)
 
 - The version follows Sew 0.8.1. No API or behaviour change.

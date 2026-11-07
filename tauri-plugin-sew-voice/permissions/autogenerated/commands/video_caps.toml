@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-video-caps"
+description = "Enables the video_caps command without any pre-configured scope."
+commands.allow = ["video_caps"]
+
+[[permission]]
+identifier = "deny-video-caps"
+description = "Denies the video_caps command without any pre-configured scope."
+commands.deny = ["video_caps"]

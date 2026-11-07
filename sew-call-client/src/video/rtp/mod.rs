@@ -7,20 +7,23 @@
 //! frame (its codec headers stay in the clear).
 
 // The engine's video path takes these up; until then only the tests call them.
-#![cfg_attr(not(all(test, feature = "testing")), allow(dead_code))]
+#![cfg_attr(not(all(test, feature = "testing", sew_fixtures)), allow(dead_code))]
 
 pub(crate) mod dd;
 pub(crate) mod h264;
 pub(crate) mod normalise;
 pub(crate) mod vp8;
 
-// The round trips need Sew's tree (the fixture bitstreams in crates/sew-media-testclient) and
-// dev-dependencies the published package drops (sha2, str0m's `unversioned`), so they run only
-// with `testing`, as scripts/test-call-client.sh does; the package's own `cargo test` skips them.
-// Two attributes, not cfg(all(..)): clippy treats only a plain `#[cfg(test)]` module as test code
-// (allow-expect-in-tests).
+// The round trips need Sew's source tree (the fixture bitstreams of its media test client, not
+// in the published package) and dev-dependencies the package drops (sha2, str0m's
+// `unversioned`), so they run only with `testing` in Sew's tree (`sew_fixtures`, build.rs), as
+// Sew's own test runs do; the package's own `cargo test` skips them, also when another crate of
+// its workspace turns `testing` on.
+// Separate attributes, not cfg(all(..)): clippy treats only a plain `#[cfg(test)]` module as test
+// code (allow-expect-in-tests).
 #[cfg(test)]
 #[cfg(feature = "testing")]
+#[cfg(sew_fixtures)]
 mod tests;
 
 /// The largest RTP payload Sew sends; the RTP header, its extensions and SRTP's tag fit

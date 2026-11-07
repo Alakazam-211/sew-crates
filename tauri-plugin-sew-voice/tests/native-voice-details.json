@@ -1,0 +1,51 @@
+{
+  "about": "tauri-plugin-sew-voice 0.4.1: the call-detail events (sew-voice://security, roster, quality, incoming) and the call_details, ring and ring_ended commands, beside the frozen events of native-voice-contract.json. tests/contract.rs pins every payload to the wire types; tests/details.rs drives the fake engine and checks the plugin emits these. Member ids, rooms and target are the tests'.",
+  "commands": ["call_details", "ring", "ring_ended"],
+  "events": ["security", "roster", "quality", "incoming"],
+  "permission_set": "call-details",
+  "security": {
+    "event": "sew-voice://security",
+    "active": { "state": "active", "epoch": 4, "since_ms": 1730851200000, "code": "01234 56789 01234 56789 01234 56789" },
+    "hidden_by_policy": { "state": "active", "epoch": 4, "since_ms": 1730851200000 },
+    "securing": { "state": "securing", "since_ms": 1730851200000, "show_after_ms": 1500 },
+    "recovering": { "state": "recovering", "since_ms": 1730851200000, "reason": "readd" },
+    "no_call": null
+  },
+  "roster": {
+    "event": "sew-voice://roster",
+    "payload": [
+      { "identity": "p_aaaaaaaaaaaaaaaaaaaaaaaaaa", "member_id": "48831765147549699", "is_self": true, "label": "member" },
+      { "identity": "p_bbbbbbbbbbbbbbbbbbbbbbbbbb", "member_id": "48831765147549700", "is_self": false, "label": "member" },
+      { "identity": "p_cccccccccccccccccccccccccc", "is_self": false, "label": "not_in_session" },
+      { "identity": "p_dddddddddddddddddddddddddd", "is_self": false, "label": "recorder" }
+    ]
+  },
+  "quality": {
+    "event": "sew-voice://quality",
+    "excellent": { "quality": "excellent", "packet_loss": 0.0, "concealed": 0.0, "jitter_ms": 4, "rtt_ms": 40 },
+    "good": { "quality": "good", "packet_loss": 0.03, "concealed": 0.01, "jitter_ms": 12, "rtt_ms": 90 },
+    "poor": { "quality": "poor", "packet_loss": 0.12, "concealed": 0.15, "jitter_ms": 45, "rtt_ms": 120 },
+    "reconnecting": { "quality": "lost" },
+    "unmeasured": { "quality": "unknown" }
+  },
+  "incoming": {
+    "event": "sew-voice://incoming",
+    "ring_args": { "call_id": "48831765147549710", "target": "dm", "room": "48831765147549702", "started_by": "48831765147549700", "silent": false },
+    "ringing": { "call_id": "48831765147549710", "target": "dm", "room": "48831765147549702", "started_by": "48831765147549700", "silent": false },
+    "ended_args": { "call_id": "48831765147549710" },
+    "stopped": null
+  },
+  "call_details": {
+    "command": "call_details",
+    "idle": { "security": null, "quality": { "quality": "unknown" }, "roster": [], "incoming": null },
+    "in_call": {
+      "security": { "state": "active", "epoch": 4, "since_ms": 1730851200000, "code": "01234 56789 01234 56789 01234 56789" },
+      "quality": { "quality": "good", "packet_loss": 0.03, "concealed": 0.01, "jitter_ms": 12, "rtt_ms": 90 },
+      "roster": [
+        { "identity": "p_aaaaaaaaaaaaaaaaaaaaaaaaaa", "member_id": "48831765147549699", "is_self": true, "label": "member" },
+        { "identity": "p_dddddddddddddddddddddddddd", "is_self": false, "label": "recorder" }
+      ],
+      "incoming": null
+    }
+  }
+}

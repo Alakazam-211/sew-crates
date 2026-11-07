@@ -17,25 +17,50 @@
 //! again through the provider with the answer as `recording_notice`. In a call, `consent` and
 //! `withdraw_consent` are recorded ([`FakeCall::consents`]) and the test says what Sew answered
 //! with [`FakeCall::set_recording`].
+//!
+//! Video: off until [`FakeEngine::enable_video`] (then the demo cameras and capabilities). A
+//! call's frame channel is fed with [`FakeCall::push_video`]; its tracks, camera and policy are
+//! set with [`FakeCall::set_video_tracks`], [`FakeCall::set_local_video`] and
+//! [`FakeCall::set_policy`]; what the plugin asked of the engine is in
+//! [`FakeCall::video_settings`], [`FakeCall::keyframe_requests`] and
+//! [`FakeCall::camera_requests`]. [`RecordingFrameChannel`] stands in for a webview's sink
+//! channel.
+//!
+//! The decoded fallback: [`FakeEngine::enable_fake_decoder`] gives the engine
+//! [`FakeDecoders`] (VP8 and H.264; each output is the input's first byte at the fitted size,
+//! with failures and held outputs on demand), and [`FakeEngine::set_video_decoder`] any other
+//! decoder (kessel-video's, in the `video-core` tests).
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::json;
 use sew_call_client::device::DeviceKeyId;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::{Semaphore, broadcast, mpsc};
 
+use crate::details::{IncomingCall, QualityInfo, RosterEntry, SecurityInfo};
 use crate::engine::{
-    AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, ConsentRequired,
-    EngineError, JoinAnswer, JoinProvider, JoinRequest, ProviderError, VoiceEngine,
+    AppScene, AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, ConsentRequired,
+    EngineError, JoinAnswer, JoinProvider, JoinRequest, ProviderError, VideoSnapshot, VoiceEngine,
 };
 use crate::listener::VoiceListener;
 use crate::service::EventSink;
-use crate::wire::{
-    CallState, Device, DeviceChoice, DeviceList, ErrorInfo, Participant, PluginEvent,
-    RecordingInfo, SelfMute, StateEvent,
+use crate::sink::FrameChannel;
+use crate::video::{
+    CameraRequest, DecodeFailure, DecodedFormat, DecodedFrame, DecoderSpec, DecoderWake,
+    EncodedVideoFrame, FrameDecoder, FrameHeader, HEADER_LEN, PreviewRequest, ScreenRequest,
+    TrackSettings, VideoCodec, VideoFrames, VideoRecvItem,
 };
+use crate::wire::{
+    CallState, Camera, Device, DeviceChoice, DeviceList, ErrorInfo, Facing, LocalVideo,
+    LocalVideoState, Participant, PermissionState, PluginEvent, RecordingInfo, ScreenCaps,
+    ScreenSource, SelfMute, SinkStats, StateEvent, VideoCaps, VideoDevices, VideoPermissions,
+    VideoTrack, video_code,
+};
+
+/// How many items a fake frame channel holds before `push_video` drops.
+const FAKE_FRAME_QUEUE: usize = 256;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -46,6 +71,61 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct FakeEngine {
     state: Mutex<EngineState>,
     devices_tx: broadcast::Sender<DeviceList>,
+    video: Mutex<FakeVideoEngine>,
+    video_devices_tx: broadcast::Sender<VideoDevices>,
+    /// The video backend's background signal ([`FakeEngine::backend_background`]).
+    background_tx: broadcast::Sender<bool>,
+    /// The video backend the native sinks use ([`FakeEngine::set_native_video_backend`]).
+    #[cfg(feature = "video-core")]
+    native_backend: Mutex<Option<NativeBackend>>,
+}
+
+#[cfg(feature = "video-core")]
+struct NativeBackend(Arc<dyn sew_call_client::kessel_video::VideoBackend>);
+
+#[cfg(feature = "video-core")]
+impl std::fmt::Debug for NativeBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeBackend")
+    }
+}
+
+/// The fake's engine-wide video.
+#[derive(Debug, Default)]
+struct FakeVideoEngine {
+    enabled: bool,
+    caps: VideoCaps,
+    devices: VideoDevices,
+    screen_sources: Vec<ScreenSource>,
+    choices: Vec<DeviceChoice>,
+    previews: Vec<PreviewRequest>,
+    preview_tx: Option<mpsc::Sender<VideoRecvItem>>,
+    preview_keyframes: usize,
+    /// The camera permission (`unsupported` until [`FakeEngine::set_camera_permission`]).
+    camera_permission: PermissionState,
+    /// What `request_camera_permission` turns a `prompt` into.
+    prompt_answer: PermissionState,
+    /// How many times the camera permission was requested.
+    permission_requests: usize,
+    /// Every `app_scene`, in order.
+    scenes: Vec<AppScene>,
+    /// Every `device_orientation`, in order.
+    orientations: Vec<u32>,
+    /// The decoded fallback's decoders ([`FakeEngine::set_video_decoder`]).
+    decoder: Option<Opener>,
+}
+
+/// Opens a decoder for the fake engine's `video_decoder` (the decoded fallback).
+pub type FakeDecoderOpener = Arc<
+    dyn Fn(DecoderSpec, DecoderWake) -> Result<Box<dyn FrameDecoder>, EngineError> + Send + Sync,
+>;
+
+struct Opener(FakeDecoderOpener);
+
+impl std::fmt::Debug for Opener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Opener")
+    }
 }
 
 #[derive(Debug)]
@@ -88,7 +168,124 @@ impl FakeEngine {
                 next_forget_error: None,
             }),
             devices_tx,
+            video: Mutex::new(FakeVideoEngine::default()),
+            video_devices_tx: broadcast::channel(16).0,
+            background_tx: broadcast::channel(16).0,
+            #[cfg(feature = "video-core")]
+            native_backend: Mutex::new(None),
         }
+    }
+
+    /// The camera permission `camera_permission` answers, and what a `request_camera_permission`
+    /// turns `prompt` into (the person's answer to the OS prompt).
+    pub fn set_camera_permission(&self, now: PermissionState, prompt_answer: PermissionState) {
+        let mut v = lock(&self.video);
+        v.camera_permission = now;
+        v.prompt_answer = prompt_answer;
+    }
+
+    /// How many times the camera permission was requested.
+    pub fn permission_requests(&self) -> usize {
+        lock(&self.video).permission_requests
+    }
+
+    /// Every [`VoiceEngine::app_scene`], in order.
+    pub fn app_scenes(&self) -> Vec<AppScene> {
+        lock(&self.video).scenes.clone()
+    }
+
+    /// Every [`VoiceEngine::device_orientation`], in order.
+    pub fn device_orientations(&self) -> Vec<u32> {
+        lock(&self.video).orientations.clone()
+    }
+
+    /// The video backend says the app went to the background (`true`) or came back
+    /// (kessel-video's `BackendEvent::Background`).
+    pub fn backend_background(&self, background: bool) {
+        let _ = self.background_tx.send(background);
+    }
+
+    /// How many receivers of [`VoiceEngine::video_background_events`] are alive.
+    pub fn background_subscribers(&self) -> usize {
+        self.background_tx.receiver_count()
+    }
+
+    /// The video backend native sinks decode VP8 with (kessel-video's fake backend in tests).
+    #[cfg(feature = "video-core")]
+    pub fn set_native_video_backend(
+        &self,
+        backend: Arc<dyn sew_call_client::kessel_video::VideoBackend>,
+    ) {
+        *lock(&self.native_backend) = Some(NativeBackend(backend));
+    }
+
+    /// Turns video on: the demo capabilities ([`demo_video_caps`]) and cameras
+    /// ([`demo_cameras`]); calls joined from now on have a frame channel.
+    pub fn enable_video(&self) {
+        let mut v = lock(&self.video);
+        v.enabled = true;
+        v.caps = demo_video_caps();
+        v.devices = demo_cameras();
+    }
+
+    /// The decoded fallback decodes `codecs` (`video_caps.decode_codecs`) with `open`.
+    pub fn set_video_decoder(&self, codecs: Vec<VideoCodec>, open: FakeDecoderOpener) {
+        let mut v = lock(&self.video);
+        v.caps.decode_codecs = codecs;
+        v.decoder = Some(Opener(open));
+    }
+
+    /// The decoded fallback with the fake's own decoders (VP8 and H.264); the answer drives
+    /// and records them.
+    pub fn enable_fake_decoder(&self) -> Arc<FakeDecoders> {
+        let decoders = Arc::new(FakeDecoders::default());
+        let d = Arc::clone(&decoders);
+        self.set_video_decoder(
+            vec![VideoCodec::Vp8, VideoCodec::H264],
+            Arc::new(move |spec, wake| d.open(spec, wake)),
+        );
+        decoders
+    }
+
+    /// Replace the video capabilities.
+    pub fn set_video_caps(&self, caps: VideoCaps) {
+        lock(&self.video).caps = caps;
+    }
+
+    /// Replace the camera list (a hot-plug): sends a `video_devices` change.
+    pub fn set_video_devices(&self, devices: VideoDevices) {
+        lock(&self.video).devices = devices.clone();
+        let _ = self.video_devices_tx.send(devices);
+    }
+
+    /// The displays and windows `screen_sources` answers.
+    pub fn set_screen_sources(&self, sources: Vec<ScreenSource>) {
+        lock(&self.video).screen_sources = sources;
+    }
+
+    /// Every `set_video_device`, in order.
+    pub fn video_device_choices(&self) -> Vec<DeviceChoice> {
+        lock(&self.video).choices.clone()
+    }
+
+    /// How many receivers of [`VoiceEngine::video_device_events`] are alive.
+    pub fn video_device_subscribers(&self) -> usize {
+        self.video_devices_tx.receiver_count()
+    }
+
+    /// Every `preview` request, in order.
+    pub fn previews(&self) -> Vec<PreviewRequest> {
+        lock(&self.video).previews.clone()
+    }
+
+    /// The running preview's frame channel (`None` when it is off).
+    pub fn preview_sender(&self) -> Option<mpsc::Sender<VideoRecvItem>> {
+        lock(&self.video).preview_tx.clone()
+    }
+
+    /// How many keyframes the plugin asked of the preview.
+    pub fn preview_keyframes(&self) -> usize {
+        lock(&self.video).preview_keyframes
     }
 
     /// Two inputs and two outputs, for the example.
@@ -154,6 +351,56 @@ impl FakeEngine {
     }
 }
 
+/// The fake's video capabilities: a camera, screen capture with a picker and a list, VP8 and
+/// H.264 publish, VP8 decode, receive, backend `fake`.
+pub fn demo_video_caps() -> VideoCaps {
+    VideoCaps {
+        camera: true,
+        screen: ScreenCaps {
+            supported: true,
+            system_picker: true,
+            list: true,
+            windows: true,
+        },
+        publish_codecs: vec![VideoCodec::Vp8, VideoCodec::H264],
+        decode_codecs: vec![VideoCodec::Vp8],
+        receive: true,
+        // The fake engine feeds `local:camera` only from its preview channel.
+        self_view: false,
+        live_switch: false,
+        backend: "fake".into(),
+    }
+}
+
+/// The fake's cameras: a built-in front camera (the default) and a USB one.
+pub fn demo_cameras() -> VideoDevices {
+    VideoDevices {
+        cameras: vec![
+            Camera {
+                id: "cam:builtin".into(),
+                name: "Built-in camera".into(),
+                facing: Facing::Front,
+                default: true,
+            },
+            Camera {
+                id: "cam:usb".into(),
+                name: "USB camera".into(),
+                facing: Facing::External,
+                default: false,
+            },
+        ],
+        camera: None,
+        permission: VideoPermissions {
+            camera: PermissionState::Granted,
+            screen: PermissionState::Prompt,
+        },
+    }
+}
+
+fn no_video() -> EngineError {
+    EngineError::failed(video_code::VIDEO_UNSUPPORTED)
+}
+
 /// The example's devices.
 pub fn demo_devices() -> DeviceList {
     let dev = |id: &str, name: &str, default: bool| Device {
@@ -190,11 +437,12 @@ impl VoiceEngine for FakeEngine {
             if let Some(e) = fail {
                 return Err(e);
             }
+            let video = lock(&self.video).enabled;
             let call = match provider.join(req.clone()).await {
-                Ok(answer) => Arc::new(FakeCall::new(&answer, &req, auto_connect)),
+                Ok(answer) => Arc::new(FakeCall::new(&answer, &req, auto_connect, video)),
                 // Sew holds the join for the recording notice: the call waits for `consent`.
                 Err(ProviderError::ConsentRequired(c)) => {
-                    Arc::new(FakeCall::held(&c, provider, req, auto_connect))
+                    Arc::new(FakeCall::held(&c, provider, req, auto_connect, video))
                 }
                 Err(e) => return Err(EngineError::Provider(e)),
             };
@@ -282,6 +530,348 @@ impl VoiceEngine for FakeEngine {
         let keys = lock(&self.state).device_keys.clone();
         Box::pin(std::future::ready(Ok(keys)))
     }
+
+    fn video_caps(&self) -> VideoCaps {
+        let v = lock(&self.video);
+        if v.enabled {
+            v.caps.clone()
+        } else {
+            VideoCaps::default()
+        }
+    }
+
+    fn video_devices(&self) -> Result<VideoDevices, EngineError> {
+        let v = lock(&self.video);
+        if v.enabled {
+            Ok(v.devices.clone())
+        } else {
+            Err(no_video())
+        }
+    }
+
+    fn set_video_device(&self, camera: DeviceChoice) -> Result<(), EngineError> {
+        let list = {
+            let mut v = lock(&self.video);
+            if !v.enabled {
+                return Err(no_video());
+            }
+            v.choices.push(camera.clone());
+            match camera {
+                DeviceChoice::Default => v.devices.camera = None,
+                DeviceChoice::Id(id) => {
+                    if !v.devices.cameras.iter().any(|c| c.id == id) {
+                        return Err(EngineError::Failed(ErrorInfo::with_detail(
+                            video_code::CAMERA_NOT_FOUND,
+                            json!({ "camera": id }),
+                        )));
+                    }
+                    v.devices.camera = Some(id);
+                }
+            }
+            v.devices.clone()
+        };
+        let _ = self.video_devices_tx.send(list);
+        Ok(())
+    }
+
+    fn video_device_events(&self) -> Option<broadcast::Receiver<VideoDevices>> {
+        lock(&self.video)
+            .enabled
+            .then(|| self.video_devices_tx.subscribe())
+    }
+
+    fn screen_sources(&self) -> BoxFuture<'_, Result<Vec<ScreenSource>, EngineError>> {
+        let v = lock(&self.video);
+        let r = if v.enabled {
+            Ok(v.screen_sources.clone())
+        } else {
+            Err(no_video())
+        };
+        Box::pin(std::future::ready(r))
+    }
+
+    fn preview(
+        &self,
+        req: PreviewRequest,
+    ) -> BoxFuture<'_, Result<Option<VideoFrames>, EngineError>> {
+        let r = {
+            let mut v = lock(&self.video);
+            if v.enabled {
+                v.previews.push(req.clone());
+                if req.on {
+                    let (tx, rx) = mpsc::channel(FAKE_FRAME_QUEUE);
+                    v.preview_tx = Some(tx);
+                    Ok(Some(rx))
+                } else {
+                    v.preview_tx = None;
+                    Ok(None)
+                }
+            } else {
+                Err(no_video())
+            }
+        };
+        Box::pin(std::future::ready(r))
+    }
+
+    fn preview_keyframe(&self) {
+        lock(&self.video).preview_keyframes += 1;
+    }
+
+    fn camera_permission(&self) -> PermissionState {
+        lock(&self.video).camera_permission
+    }
+
+    fn request_camera_permission(&self) -> BoxFuture<'_, PermissionState> {
+        let mut v = lock(&self.video);
+        v.permission_requests += 1;
+        if v.camera_permission == PermissionState::Prompt {
+            v.camera_permission = v.prompt_answer;
+        }
+        Box::pin(std::future::ready(v.camera_permission))
+    }
+
+    fn app_scene(&self, scene: AppScene) {
+        lock(&self.video).scenes.push(scene);
+    }
+
+    fn device_orientation(&self, degrees: u32) {
+        lock(&self.video).orientations.push(degrees);
+    }
+
+    fn video_background_events(&self) -> Option<broadcast::Receiver<bool>> {
+        Some(self.background_tx.subscribe())
+    }
+
+    #[cfg(feature = "video-core")]
+    fn native_video_backend(&self) -> Option<Arc<dyn sew_call_client::kessel_video::VideoBackend>> {
+        lock(&self.native_backend)
+            .as_ref()
+            .map(|b| Arc::clone(&b.0))
+    }
+
+    fn video_decoder(
+        &self,
+        spec: DecoderSpec,
+        wake: DecoderWake,
+    ) -> Result<Box<dyn FrameDecoder>, EngineError> {
+        let open = lock(&self.video).decoder.as_ref().map(|o| Arc::clone(&o.0));
+        match open {
+            Some(open) => open(spec, wake),
+            None => Err(EngineError::Failed(ErrorInfo::with_detail(
+                video_code::DECODED_UNSUPPORTED,
+                json!({ "codec": spec.codec }),
+            ))),
+        }
+    }
+}
+
+// ───────────────────────────── the fake decoders ─────────────────────────────
+
+/// The fake engine's decoders ([`FakeEngine::enable_fake_decoder`]): every decoder it opened
+/// shares this. A decoder answers each accepted input with one frame: the input's coded size
+/// (a keyframe's `width` x `height`, kept for the deltas) fitted into the decoder's box
+/// (keeping the aspect ratio, even sizes, never larger), every byte the input's first byte,
+/// the input's `arrival_us` as its timestamp. A delta before the first keyframe (or after a
+/// reset) is `NeedKeyframe`.
+#[derive(Debug, Default)]
+pub struct FakeDecoders {
+    state: Arc<Mutex<FakeDecoderState>>,
+}
+
+#[derive(Debug, Default)]
+struct FakeDecoderState {
+    opened: Vec<DecoderSpec>,
+    submitted: Vec<(u8, bool)>,
+    resets: usize,
+    fits: Vec<(u32, u32)>,
+    fail_submit: Option<DecodeFailure>,
+    fail_output: Option<DecodeFailure>,
+    hold: bool,
+    /// Outputs held back ([`FakeDecoders::hold`]), with the wakes to call on release.
+    held: Vec<(usize, Result<DecodedFrame, DecodeFailure>)>,
+    wakes: Vec<WakeEntry>,
+    /// Released outputs by decoder.
+    ready: Vec<(usize, Result<DecodedFrame, DecodeFailure>)>,
+}
+
+struct WakeEntry(DecoderWake);
+
+impl std::fmt::Debug for WakeEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Wake")
+    }
+}
+
+impl FakeDecoders {
+    /// Every decoder opened, in order.
+    pub fn opened(&self) -> Vec<DecoderSpec> {
+        lock(&self.state).opened.clone()
+    }
+
+    /// Every input accepted or refused: its first byte and whether it was a keyframe.
+    pub fn submitted(&self) -> Vec<(u8, bool)> {
+        lock(&self.state).submitted.clone()
+    }
+
+    /// How many resets the decoders had.
+    pub fn resets(&self) -> usize {
+        lock(&self.state).resets
+    }
+
+    /// Every `set_fit`, in order.
+    pub fn fits(&self) -> Vec<(u32, u32)> {
+        lock(&self.state).fits.clone()
+    }
+
+    /// The next input is refused with `e`.
+    pub fn fail_next_submit(&self, e: DecodeFailure) {
+        lock(&self.state).fail_submit = Some(e);
+    }
+
+    /// The next input's output is `e` instead of a frame.
+    pub fn fail_next_output(&self, e: DecodeFailure) {
+        lock(&self.state).fail_output = Some(e);
+    }
+
+    /// Hold outputs back (as a threaded decoder does) until [`FakeDecoders::release`].
+    pub fn hold(&self) {
+        lock(&self.state).hold = true;
+    }
+
+    /// Hand over the held outputs and call their decoders' wakes (from this thread, as a
+    /// decoder thread would); outputs are no longer held.
+    pub fn release(&self) {
+        let wakes: Vec<DecoderWake> = {
+            let mut st = lock(&self.state);
+            st.hold = false;
+            let held = std::mem::take(&mut st.held);
+            let mut ids: Vec<usize> = held.iter().map(|(i, _)| *i).collect();
+            ids.dedup();
+            st.ready.extend(held);
+            ids.iter()
+                .filter_map(|i| st.wakes.get(*i).map(|w| Arc::clone(&w.0)))
+                .collect()
+        };
+        for w in wakes {
+            w();
+        }
+    }
+
+    fn open(
+        &self,
+        spec: DecoderSpec,
+        wake: DecoderWake,
+    ) -> Result<Box<dyn FrameDecoder>, EngineError> {
+        let mut st = lock(&self.state);
+        st.opened.push(spec);
+        st.wakes.push(WakeEntry(wake));
+        let id = st.wakes.len() - 1;
+        Ok(Box::new(FakeFrameDecoder {
+            id,
+            fit: spec.fit,
+            format: spec.format,
+            coded: None,
+            keyed: false,
+            state: Arc::clone(&self.state),
+        }))
+    }
+}
+
+/// One fake decoder.
+struct FakeFrameDecoder {
+    id: usize,
+    fit: (u32, u32),
+    format: DecodedFormat,
+    /// The coded size (the last keyframe's).
+    coded: Option<(u32, u32)>,
+    /// A keyframe since the last reset.
+    keyed: bool,
+    state: Arc<Mutex<FakeDecoderState>>,
+}
+
+/// `width` x `height` inside `bw` x `bh`, keeping the aspect ratio, even, never larger.
+fn fit_within(width: u32, height: u32, bw: u32, bh: u32) -> (u32, u32) {
+    if width <= bw && height <= bh {
+        return (width, height);
+    }
+    let even = |v: u64| u32::try_from((v / 2) * 2).unwrap_or(u32::MAX).max(2);
+    // Scale by the tighter side, in integers.
+    let (w, h, bw, bh) = (
+        u64::from(width),
+        u64::from(height),
+        u64::from(bw),
+        u64::from(bh),
+    );
+    if w * bh <= h * bw {
+        (even(w * bh / h), even(bh))
+    } else {
+        (even(bw), even(h * bw / w))
+    }
+}
+
+impl FrameDecoder for FakeFrameDecoder {
+    fn submit(&mut self, frame: &EncodedVideoFrame) -> Result<(), DecodeFailure> {
+        let mut st = lock(&self.state);
+        let first = frame.data.first().copied().unwrap_or(0);
+        st.submitted.push((first, frame.keyframe));
+        if let Some(e) = st.fail_submit.take() {
+            return Err(e);
+        }
+        if frame.keyframe {
+            self.keyed = true;
+            if frame.width > 0 && frame.height > 0 {
+                self.coded = Some((frame.width, frame.height));
+            }
+        } else if !self.keyed {
+            return Err(DecodeFailure::NeedKeyframe);
+        }
+        let out = match st.fail_output.take() {
+            Some(e) => Err(e),
+            None => {
+                let (cw, ch) = self.coded.unwrap_or((320, 180));
+                let (w, h) = fit_within(cw, ch, self.fit.0, self.fit.1);
+                Ok(DecodedFrame {
+                    format: self.format,
+                    width: w,
+                    height: h,
+                    timestamp_us: frame.arrival_us,
+                    data: vec![first; self.format.frame_len(w, h)],
+                })
+            }
+        };
+        let wake = if st.hold {
+            st.held.push((self.id, out));
+            None
+        } else {
+            st.ready.push((self.id, out));
+            st.wakes.get(self.id).map(|w| Arc::clone(&w.0))
+        };
+        drop(st);
+        if let Some(w) = wake {
+            w();
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Option<Result<DecodedFrame, DecodeFailure>> {
+        let mut st = lock(&self.state);
+        let i = st.ready.iter().position(|(id, _)| *id == self.id)?;
+        Some(st.ready.remove(i).1)
+    }
+
+    fn reset(&mut self) {
+        self.keyed = false;
+        let id = self.id;
+        let mut st = lock(&self.state);
+        st.resets += 1;
+        st.ready.retain(|(i, _)| *i != id);
+        st.held.retain(|(i, _)| *i != id);
+    }
+
+    fn set_fit(&mut self, fit: (u32, u32)) {
+        self.fit = fit;
+        lock(&self.state).fits.push(fit);
+    }
 }
 
 /// One fake call. Tests drive it with [`FakeCall::emit`] and its shortcuts.
@@ -294,6 +884,39 @@ pub struct FakeCall {
     held: Mutex<Option<Held>>,
     /// How many times [`CallHandle::network_changed`] was called.
     network_changes: AtomicUsize,
+    video: Mutex<FakeVideoCall>,
+}
+
+/// One fake call's video.
+#[derive(Debug, Default)]
+struct FakeVideoCall {
+    enabled: bool,
+    tx: Option<mpsc::Sender<VideoRecvItem>>,
+    rx: Option<VideoFrames>,
+    snapshot: VideoSnapshot,
+    settings: Vec<(String, TrackSettings)>,
+    keyframes: Vec<String>,
+    stats: Vec<(String, SinkStats)>,
+    cameras: Vec<CameraRequest>,
+    screens: Vec<ScreenRequest>,
+    next_camera_error: Option<EngineError>,
+    next_screen_error: Option<EngineError>,
+    scenes: Vec<AppScene>,
+}
+
+impl FakeVideoCall {
+    fn new(enabled: bool) -> FakeVideoCall {
+        let mut v = FakeVideoCall {
+            enabled,
+            ..FakeVideoCall::default()
+        };
+        if enabled {
+            let (tx, rx) = mpsc::channel(FAKE_FRAME_QUEUE);
+            v.tx = Some(tx);
+            v.rx = Some(rx);
+        }
+        v
+    }
 }
 
 struct Held {
@@ -328,6 +951,11 @@ struct CallFake {
     /// Every `consent` (`Some(version)`) and `withdraw_consent` (`None`), in order.
     consents: Vec<(bool, Option<u32>)>,
     next_consent_error: Option<EngineError>,
+    /// Call details (0.4.1): what [`FakeCall::set_security`], [`FakeCall::set_roster`] and
+    /// [`FakeCall::set_quality`] last said.
+    security: Option<SecurityInfo>,
+    roster: Vec<RosterEntry>,
+    quality: QualityInfo,
 }
 
 fn me_of(answer: &JoinAnswer, req: &JoinRequest) -> Participant {
@@ -383,9 +1011,11 @@ impl FakeCall {
         provider: Arc<dyn JoinProvider>,
         req: JoinRequest,
         auto_connect: bool,
+        video: bool,
     ) -> FakeCall {
         let (tx, _) = broadcast::channel(64);
         FakeCall {
+            video: Mutex::new(FakeVideoCall::new(video)),
             call_id: Mutex::new(String::new()),
             self_member: Mutex::new(String::new()),
             tx,
@@ -407,6 +1037,9 @@ impl FakeCall {
                 next_leave_error: None,
                 consents: Vec::new(),
                 next_consent_error: None,
+                security: None,
+                roster: Vec::new(),
+                quality: QualityInfo::unknown(),
             }),
             held: Mutex::new(Some(Held {
                 provider,
@@ -418,7 +1051,7 @@ impl FakeCall {
         }
     }
 
-    fn new(answer: &JoinAnswer, req: &JoinRequest, auto_connect: bool) -> FakeCall {
+    fn new(answer: &JoinAnswer, req: &JoinRequest, auto_connect: bool, video: bool) -> FakeCall {
         let (tx, _) = broadcast::channel(64);
         let self_member = answer.join.state.member_id.to_string();
         let speak_denied = answer.join.state.speak_denied;
@@ -428,6 +1061,7 @@ impl FakeCall {
             speak_saved.insert(self_member.clone(), req.muted || req.deafened);
         }
         FakeCall {
+            video: Mutex::new(FakeVideoCall::new(video)),
             call_id: Mutex::new(answer.join.room.as_str().to_owned()),
             self_member: Mutex::new(self_member),
             tx,
@@ -452,7 +1086,131 @@ impl FakeCall {
                 next_leave_error: None,
                 consents: Vec::new(),
                 next_consent_error: None,
+                security: None,
+                roster: Vec::new(),
+                quality: QualityInfo::unknown(),
             }),
+        }
+    }
+
+    /// Puts one item on the call's frame channel (as the engine would); false when the
+    /// channel is full, closed or the call has no video.
+    pub fn push_video(&self, item: VideoRecvItem) -> bool {
+        let tx = lock(&self.video).tx.clone();
+        tx.is_some_and(|tx| tx.try_send(item).is_ok())
+    }
+
+    /// Closes the call's frame channel (the engine stopped its video).
+    pub fn close_video(&self) {
+        lock(&self.video).tx = None;
+    }
+
+    /// The call's video tracks changed: the snapshot and a [`CallEvent::Video`].
+    pub fn set_video_tracks(&self, tracks: Vec<VideoTrack>) {
+        lock(&self.video).snapshot.tracks.clone_from(&tracks);
+        let _ = self.tx.send(CallEvent::Video(tracks));
+    }
+
+    /// This device's camera or screen changed: the snapshot and a [`CallEvent::LocalVideo`].
+    pub fn set_local_video(&self, local: LocalVideo) {
+        lock(&self.video).snapshot.local = local.clone();
+        let _ = self.tx.send(CallEvent::LocalVideo(local));
+    }
+
+    /// The room's media policy changed: the snapshot and a [`CallEvent::Policy`].
+    pub fn set_policy(&self, policy: serde_json::Value) {
+        lock(&self.video).snapshot.policy = Some(policy.clone());
+        let _ = self.tx.send(CallEvent::Policy(policy));
+    }
+
+    /// Replace the video snapshot without an event (a missed event).
+    pub fn set_video_snapshot_silently(&self, snap: VideoSnapshot) {
+        lock(&self.video).snapshot = snap;
+    }
+
+    /// Every track setting the plugin handed the engine, in order.
+    pub fn video_settings(&self) -> Vec<(String, TrackSettings)> {
+        lock(&self.video).settings.clone()
+    }
+
+    /// Every [`CallHandle::app_scene`] the plugin passed (the combined signal), in order.
+    pub fn app_scenes(&self) -> Vec<AppScene> {
+        lock(&self.video).scenes.clone()
+    }
+
+    /// Every keyframe request, in order (by track).
+    pub fn keyframe_requests(&self) -> Vec<String> {
+        lock(&self.video).keyframes.clone()
+    }
+
+    /// Every sink-stats report, in order.
+    pub fn video_stats(&self) -> Vec<(String, SinkStats)> {
+        lock(&self.video).stats.clone()
+    }
+
+    /// Every `camera` request, in order.
+    pub fn camera_requests(&self) -> Vec<CameraRequest> {
+        lock(&self.video).cameras.clone()
+    }
+
+    /// Every `screen` request, in order.
+    pub fn screen_requests(&self) -> Vec<ScreenRequest> {
+        lock(&self.video).screens.clone()
+    }
+
+    /// The next `camera` fails with this (the camera stays off, `local_video` says why).
+    pub fn fail_next_camera(&self, e: EngineError) {
+        lock(&self.video).next_camera_error = Some(e);
+    }
+
+    /// The next `screen` fails with this.
+    pub fn fail_next_screen(&self, e: EngineError) {
+        lock(&self.video).next_screen_error = Some(e);
+    }
+
+    /// `camera` or `screen`: asking, then on (or off), as `local_video` events.
+    fn local_source(&self, camera: bool, on: bool) -> Result<(), EngineError> {
+        let (err, enabled) = {
+            let mut v = lock(&self.video);
+            let err = if camera {
+                v.next_camera_error.take()
+            } else {
+                v.next_screen_error.take()
+            };
+            (err, v.enabled)
+        };
+        if !enabled {
+            return Err(no_video());
+        }
+        let set = |state: LocalVideoState, reason: Option<String>| {
+            let mut local = lock(&self.video).snapshot.local.clone();
+            if camera {
+                local.camera = state;
+            } else {
+                local.screen = state;
+            }
+            local.reason = reason;
+            self.set_local_video(local);
+        };
+        if on {
+            set(LocalVideoState::Asking, None);
+        }
+        match err {
+            Some(e) => {
+                set(LocalVideoState::Off, Some(e.to_info().code));
+                Err(e)
+            }
+            None => {
+                set(
+                    if on {
+                        LocalVideoState::On
+                    } else {
+                        LocalVideoState::Off
+                    },
+                    None,
+                );
+                Ok(())
+            }
         }
     }
 
@@ -554,6 +1312,26 @@ impl FakeCall {
             }
         }
         let _ = self.tx.send(ev);
+    }
+
+    /// The key state and security code, as the real engine reports them (0.4.1): kept for
+    /// [`CallHandle::security`] and sent as a `Security` event.
+    pub fn set_security(&self, security: Option<SecurityInfo>) {
+        lock(&self.state).security.clone_from(&security);
+        let _ = self.tx.send(CallEvent::Security(security));
+    }
+
+    /// The media roster (engine identities and labels; 0.4.1): kept and sent as a `Roster`
+    /// event.
+    pub fn set_roster(&self, roster: Vec<RosterEntry>) {
+        lock(&self.state).roster.clone_from(&roster);
+        let _ = self.tx.send(CallEvent::Roster(roster));
+    }
+
+    /// A stats window's quality (0.4.1): kept and sent as a `Quality` event.
+    pub fn set_quality(&self, quality: QualityInfo) {
+        lock(&self.state).quality = quality.clone();
+        let _ = self.tx.send(CallEvent::Quality(quality));
     }
 
     /// `connected`.
@@ -724,8 +1502,58 @@ impl CallHandle for FakeCall {
         lock(&self.state).moved_room.clone()
     }
 
+    fn security(&self) -> Option<SecurityInfo> {
+        lock(&self.state).security.clone()
+    }
+
+    fn roster(&self) -> Vec<RosterEntry> {
+        lock(&self.state).roster.clone()
+    }
+
+    fn quality(&self) -> QualityInfo {
+        lock(&self.state).quality.clone()
+    }
+
     fn network_changed(&self) {
         self.network_changes.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn video_frames(&self) -> Option<VideoFrames> {
+        lock(&self.video).rx.take()
+    }
+
+    fn video_snapshot(&self) -> VideoSnapshot {
+        lock(&self.video).snapshot.clone()
+    }
+
+    fn set_video_settings(&self, track: &str, settings: TrackSettings) {
+        lock(&self.video)
+            .settings
+            .push((track.to_owned(), settings));
+    }
+
+    fn request_keyframe(&self, track: &str) {
+        lock(&self.video).keyframes.push(track.to_owned());
+    }
+
+    fn video_sink_stats(&self, track: &str, stats: SinkStats) {
+        lock(&self.video).stats.push((track.to_owned(), stats));
+    }
+
+    fn app_scene(&self, scene: AppScene) {
+        lock(&self.video).scenes.push(scene);
+    }
+
+    fn camera(&self, req: CameraRequest) -> BoxFuture<'_, Result<(), EngineError>> {
+        let on = req.on;
+        lock(&self.video).cameras.push(req);
+        Box::pin(std::future::ready(self.local_source(true, on)))
+    }
+
+    fn screen(&self, req: ScreenRequest) -> BoxFuture<'_, Result<(), EngineError>> {
+        let on = req.on;
+        lock(&self.video).screens.push(req);
+        Box::pin(std::future::ready(self.local_source(false, on)))
     }
 
     fn mute(
@@ -1003,5 +1831,69 @@ impl VoiceListener for RecordingListener {
 
     fn on_devices(&self, devices: &DeviceList) {
         self.push("on_devices", to_json(devices));
+    }
+
+    fn on_incoming(&self, incoming: Option<&IncomingCall>) {
+        self.push("on_incoming", to_json(&incoming));
+    }
+
+    fn video_changed(&self, has_video: bool) {
+        self.push("video_changed", serde_json::Value::Bool(has_video));
+    }
+
+    fn screen_share_changed(&self, active: bool) {
+        self.push("screen_share_changed", serde_json::Value::Bool(active));
+    }
+}
+
+/// A webview sink's channel in memory: records every message; [`RecordingFrameChannel::close`]
+/// makes the next send fail (the webview went away).
+#[derive(Debug, Default)]
+pub struct RecordingFrameChannel {
+    messages: Mutex<Vec<Vec<u8>>>,
+    closed: AtomicBool,
+}
+
+impl RecordingFrameChannel {
+    /// An open channel.
+    pub fn new() -> RecordingFrameChannel {
+        RecordingFrameChannel::default()
+    }
+
+    /// Every message sent, in order.
+    pub fn messages(&self) -> Vec<Vec<u8>> {
+        lock(&self.messages).clone()
+    }
+
+    /// Every message's header and payload, in order (a message that doesn't parse panics:
+    /// the framing is wrong).
+    pub fn frames(&self) -> Vec<(FrameHeader, Vec<u8>)> {
+        self.messages()
+            .iter()
+            .map(|m| match FrameHeader::parse(m) {
+                Some(h) => (h, m[HEADER_LEN..].to_vec()),
+                None => panic!("a sink message that doesn't parse: {} bytes", m.len()),
+            })
+            .collect()
+    }
+
+    /// Forget the messages so far.
+    pub fn clear(&self) {
+        lock(&self.messages).clear();
+    }
+
+    /// The webview is gone: sends fail from now on.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+}
+
+impl FrameChannel for RecordingFrameChannel {
+    fn send(&self, message: Vec<u8>) -> bool {
+        if self.closed.load(Ordering::Acquire) {
+            return false;
+        }
+        lock(&self.messages).push(message);
+        true
     }
 }

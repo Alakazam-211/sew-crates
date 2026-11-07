@@ -50,7 +50,8 @@ use tokio::task::JoinHandle;
 use crate::api;
 use crate::call::{
     BusyGuard, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallRecording,
-    CallSnapshot, CallState, Cmd, EndReason, OpusFrame, Participant, RecvItem, RecvOpus, Speaking,
+    CallSecurity, CallSnapshot, CallState, Cmd, EndReason, OpusFrame, Participant, RecvItem,
+    RecvOpus, Speaking,
 };
 use crate::config::ClientConfig;
 use crate::e2ee::{
@@ -65,6 +66,9 @@ use crate::provider::{
 use crate::signal::{self, ConnectError, SignalIn, SignalLink};
 use crate::stats::{BeaconOutcome, CallStatsReport, Meter, PlayoutStats, StatsWindow};
 use crate::transport::{Gather, LocalKind, Transport, TransportError, TransportEvent};
+use crate::video::VideoRecvItem;
+use crate::video::publish::{Ctx as VideoCtx, LeaseApi, Publisher, VideoStep};
+use crate::video::subscribe::{Out as VideoOut, Subscriptions};
 use sew_proto::e2ee::ConsentState;
 use sew_proto::id::Id;
 use sew_proto::recording::{Recording, RecordingNotice, RecordingRef};
@@ -133,6 +137,23 @@ fn parting_end(r: &SignalResponse) -> Option<EndReason> {
 /// kept reading until it closes or [`END_REASON_GRACE`] passes: an engine that removes this
 /// participant or closes the room drops the TURN allocation and sends the `Disconnect` leave
 /// at the same moment, so the leave may come after the media's loss.
+/// The video publisher's view of the engine for one call (split field borrows).
+macro_rules! video_cx {
+    ($s:ident, $now:expr) => {{
+        let joined = $s.session.joined();
+        VideoCtx {
+            pc: $s.pc.as_mut(),
+            session: &mut $s.session,
+            keys: $s.keys.as_ref(),
+            stream: $s.sid.as_deref().unwrap_or(""),
+            media_up: $s.media_up,
+            joined,
+            now: $now,
+            events: &$s.shared.events,
+        }
+    }};
+}
+
 struct Parting {
     id: u64,
     _link: SignalLink,
@@ -152,6 +173,10 @@ pub(crate) struct Shared {
     pub(crate) playout: Mutex<Option<Arc<dyn PlayoutStats>>>,
     /// Sew refused a sample with `call_stats_off`: no more samples this call.
     pub(crate) beacon_stopped: AtomicBool,
+    /// The join's media policy with the latest hints ([`crate::Call::media_policy`]).
+    pub(crate) policy: Mutex<Option<sew_proto::voice::MediaPolicy>>,
+    /// The send-side video counters ([`crate::Call::video_stats`]).
+    pub(crate) video_stats: Arc<Mutex<crate::video::VideoSendStats>>,
 }
 
 impl Shared {
@@ -182,6 +207,7 @@ pub(crate) struct Start {
     pub(crate) cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     pub(crate) push_rx: mpsc::Receiver<OpusFrame>,
     pub(crate) frames_tx: mpsc::Sender<RecvItem>,
+    pub(crate) video_tx: mpsc::Sender<VideoRecvItem>,
     pub(crate) busy: BusyGuard,
 }
 
@@ -206,14 +232,19 @@ struct Parts {
     cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     push_rx: mpsc::Receiver<OpusFrame>,
     frames_tx: mpsc::Sender<RecvItem>,
+    video_tx: mpsc::Sender<VideoRecvItem>,
+    /// The video receive side (its sinks outlive a hold).
+    video: Subscriptions,
     busy: BusyGuard,
     counters: CallCounters,
+    vpub: Publisher,
 }
 
 /// Starts the call's task.
 pub(crate) fn spawn(s: Start) -> Result<(), String> {
     let tls = crate::config::tls_config(&s.cfg).map_err(|e| format!("TLS: {e}"))?;
     let http = api::http_client(&tls)?;
+    let vpub = Publisher::new(s.shared.video_stats.clone());
     let parts = Parts {
         cfg: s.cfg,
         tls,
@@ -225,8 +256,11 @@ pub(crate) fn spawn(s: Start) -> Result<(), String> {
         cmd_rx: s.cmd_rx,
         push_rx: s.push_rx,
         frames_tx: s.frames_tx,
+        video_tx: s.video_tx,
+        video: Subscriptions::new(Instant::now()),
         busy: s.busy,
         counters: CallCounters::default(),
+        vpub,
     };
     tokio::spawn(supervise(parts, s.first));
     Ok(())
@@ -292,6 +326,13 @@ async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
                     // of that moment.
                     p.counters.network_changes += 1;
                 }
+                Some(Cmd::Video(c)) => {
+                    // Held: no tracks; the sinks are kept for the join.
+                    let mut out = VideoOut::default();
+                    p.video.sink(Instant::now(), c, &mut out);
+                }
+                // Held: no media, so no video.
+                Some(Cmd::Publish(v)) => v.refuse(),
                 Some(Cmd::Mute {
                     muted,
                     deafened,
@@ -467,6 +508,11 @@ impl Engine {
             r.terms = terms;
         }
         let req = p.req;
+        let mut vpub = p.vpub;
+        vpub.joined_with(answer.join.media.as_ref());
+        if let Ok(mut m) = p.shared.policy.lock() {
+            m.clone_from(&answer.join.media);
+        }
         let mut e = Engine {
             cfg: p.cfg,
             tls: p.tls,
@@ -479,6 +525,9 @@ impl Engine {
             cmd_rx: p.cmd_rx,
             push_rx: p.push_rx,
             frames_tx: p.frames_tx,
+            video_tx: p.video_tx,
+            video: p.video,
+            video_refused: std::collections::HashSet::new(),
             _busy: p.busy,
             held: None,
             recording: None,
@@ -549,6 +598,7 @@ impl Engine {
             ended: None,
             meter: Meter::new(now, terms.as_ref()),
             terms,
+            vpub,
         };
         e.connect_deadline = now + e.cfg.connect_timeout;
         e
@@ -567,12 +617,16 @@ impl Engine {
             cmd_rx,
             push_rx,
             frames_tx,
+            video_tx,
+            video,
             _busy: busy,
             counters,
             held,
+            mut vpub,
             ..
         } = self;
         let held = held?;
+        vpub.close("held");
         Some((
             Parts {
                 cfg,
@@ -585,8 +639,11 @@ impl Engine {
                 cmd_rx,
                 push_rx,
                 frames_tx,
+                video_tx,
+                video,
                 busy,
                 counters,
+                vpub,
             },
             held,
         ))
@@ -660,6 +717,11 @@ struct Engine {
     cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     push_rx: mpsc::Receiver<OpusFrame>,
     frames_tx: mpsc::Sender<RecvItem>,
+    video_tx: mpsc::Sender<VideoRecvItem>,
+    /// The remote video tracks, their sinks and pipelines (`video-core` builds receive).
+    video: Subscriptions,
+    /// Video tracks the keys refused (unsubscribed once).
+    video_refused: std::collections::HashSet<String>,
     _busy: BusyGuard,
     /// A re-join was refused for the recording notice: the loop stops and the call holds.
     held: Option<Box<ConsentRequired>>,
@@ -761,6 +823,8 @@ struct Engine {
     meter: Meter,
     /// The beacon's terms of the current join (`None`: off).
     terms: Option<sew_proto::voice::CallStatsBeacon>,
+    /// The camera and screen-share publications.
+    vpub: Publisher,
 }
 
 async fn opt_join<T>(h: &mut Option<JoinHandle<T>>) -> Result<T, tokio::task::JoinError> {
@@ -815,6 +879,7 @@ enum Step {
     Rebound(Result<Result<Transport, TransportError>, tokio::task::JoinError>),
     Renewed(Result<Result<api::Renewed, api::ApiError>, tokio::task::JoinError>),
     Consented(Option<Consented>),
+    Publish(VideoStep),
     Timeout,
 }
 
@@ -884,6 +949,7 @@ impl Engine {
                 r = opt_join(&mut self.renewing) => Step::Renewed(r),
                 d = self.consent_rx.recv() => Step::Consented(d),
                 p = self.push_rx.recv() => Step::Push(p),
+                v = self.vpub.recv() => Step::Publish(v),
                 () = sleep => Step::Timeout,
             };
             let now = Instant::now();
@@ -905,6 +971,32 @@ impl Engine {
                     let _ = reply.send(());
                 }
                 Step::Cmd(Some(Cmd::NetworkChanged)) => self.network_changed(now),
+                Step::Cmd(Some(Cmd::Video(c))) => {
+                    let mut out = VideoOut::default();
+                    self.video.sink(now, c, &mut out);
+                    self.video_out(out);
+                }
+                Step::Cmd(Some(Cmd::Publish(cmd))) => {
+                    let api = self.lease_api();
+                    let mut cx = video_cx!(self, now);
+                    self.vpub.command(&mut cx, api, cmd);
+                    self.negotiate();
+                }
+                Step::Publish(VideoStep::Frame(f)) => {
+                    let mut cx = video_cx!(self, now);
+                    self.vpub.on_frame(&mut cx, f);
+                }
+                Step::Publish(VideoStep::End(e)) => {
+                    let api = self.lease_api();
+                    let mut cx = video_cx!(self, now);
+                    self.vpub.on_producer_end(&mut cx, api, e);
+                    self.negotiate();
+                }
+                Step::Publish(VideoStep::Lease(d)) => {
+                    let mut cx = video_cx!(self, now);
+                    self.vpub.on_lease(&mut cx, d);
+                    self.negotiate();
+                }
                 Step::Cmd(Some(Cmd::Consent {
                     granted,
                     notice_version,
@@ -969,6 +1061,9 @@ impl Engine {
                             );
                         }
                         self.keys = Some(k);
+                        let mut cx = video_cx!(self, now);
+                        self.vpub.on_keys(&mut cx);
+                        self.negotiate();
                         self.send_roster();
                         self.feed_recording();
                     }
@@ -987,6 +1082,11 @@ impl Engine {
                 Step::Rebound(r) => self.on_rebound(now, r),
                 Step::Renewed(r) => self.on_renewed(now, r).await,
                 Step::Timeout => self.on_timeout(now).await,
+            }
+            if self.video.deadline().is_some_and(|d| d <= now) {
+                // A busy socket can keep the timer from winning the select: video's keyframe
+                // requests and reorder waits are due whatever woke the loop.
+                self.video_tick(now);
             }
             self.stats_tick(now);
             if now >= self.next_snapshot {
@@ -1032,10 +1132,16 @@ impl Engine {
         if let Some(m) = self.meter.deadline() {
             t = t.min(m);
         }
+        if let Some(v) = self.vpub.deadline() {
+            t = t.min(v);
+        }
         for s in self.tracks.values() {
             if let Some((_, at)) = s.gaps.front() {
                 t = t.min(*at);
             }
+        }
+        if let Some(v) = self.video.deadline() {
+            t = t.min(v);
         }
         if self.media_up {
             t = t.min(self.next_speaking);
@@ -1168,10 +1274,13 @@ impl Engine {
                 server_deafened: f.server_deaf,
                 speak_denied: self.speak_denied(),
                 recorder: false,
+                camera: None,
+                screen: None,
             });
         }
         for p in self.session.remotes().values() {
             let (member, f) = flags(&p.identity);
+            let (camera, screen) = self.video.views(&p.identity);
             let track_muted =
                 !p.tracks.is_empty() && p.tracks.iter().filter(|t| t.r#type == 0).all(|t| t.muted);
             out.push(Participant {
@@ -1188,6 +1297,8 @@ impl Engine {
                 server_deafened: f.server_deaf,
                 speak_denied: f.speak_denied,
                 recorder: p.kind == sew_lkproto::livekit::participant_info::Kind::Egress as i32,
+                camera,
+                screen,
             });
         }
         out
@@ -1532,7 +1643,8 @@ impl Engine {
                 self.answer.join.expires_at = u.expires_at;
                 if let Some(m) = u.media {
                     self.relay_only = m.relay_only;
-                    self.answer.join.media = Some(m);
+                    self.answer.join.media = Some(m.clone());
+                    self.policy_updated(m);
                 }
                 self.moving = true;
                 // A move re-binds the same credential: its renewal stays as scheduled.
@@ -1578,7 +1690,51 @@ impl Engine {
                 self.keys_removed(Instant::now(), &reason);
             }
             E2eeEvent::Recording(r) => self.apply_recording(r.map(|b| *b)),
+            E2eeEvent::Security(sec) => self.apply_security(sec),
+            E2eeEvent::MediaPolicy(m) => self.policy_updated(*m),
         }
+    }
+
+    /// A new media policy (`media_policy_updated`, a move): the join's `camera_allowed` and
+    /// `screen_allowed` stay; the publications follow the new hints.
+    fn policy_updated(&mut self, m: sew_proto::voice::MediaPolicy) {
+        if let Ok(mut p) = self.shared.policy.lock() {
+            let mut next = m.clone();
+            if let Some(old) = p.as_ref() {
+                next.camera_allowed = old.camera_allowed;
+                next.screen_allowed = old.screen_allowed;
+            }
+            *p = Some(next.clone());
+            let _ = self
+                .shared
+                .events
+                .send(CallEvent::MediaPolicy(Box::new(next)));
+        }
+        let api = self.lease_api();
+        let mut cx = video_cx!(self, Instant::now());
+        self.vpub.on_policy(&mut cx, &api, m);
+        self.negotiate();
+    }
+
+    /// The lease route's client and credential now.
+    fn lease_api(&self) -> LeaseApi {
+        LeaseApi {
+            http: self.http.clone(),
+            base: self.answer.api_base.clone(),
+            token: self.cred_tx.borrow().clone().map(|c| c.token),
+        }
+    }
+
+    /// The keys' state and security code: [`crate::Call::snapshot`]'s `security` and a
+    /// [`CallEvent::Security`] when it changed.
+    fn apply_security(&self, sec: CallSecurity) {
+        if let Ok(mut s) = self.shared.snapshot.lock() {
+            if s.security.as_ref() == Some(&sec) {
+                return;
+            }
+            s.security = Some(sec.clone());
+        }
+        let _ = self.shared.events.send(CallEvent::Security(sec));
     }
 
     /// A message on the link given up on: the engine's `Disconnect` leave ends the call as on
@@ -1658,6 +1814,7 @@ impl Engine {
     fn ended_soon(&mut self, reason: EndReason) {
         if self.ended.is_none() {
             self.teardown_media();
+            self.vpub.close("ended");
             self.link = None;
             self.recording = None;
             self.sync_recording_view();
@@ -1674,6 +1831,7 @@ impl Engine {
             return;
         }
         self.teardown_media();
+        self.vpub.close("ended");
         if let Some(l) = self.link.take() {
             l.close().await;
         }
@@ -2120,6 +2278,7 @@ impl Engine {
         self.publishing = false;
         self.cid_on_pc = false;
         self.pc_down_since = None;
+        self.vpub.on_teardown();
         let slots: Vec<(u64, bool)> = self
             .tracks
             .drain()
@@ -2131,6 +2290,9 @@ impl Engine {
                 self.frames_item(RecvItem::Removed { participant: id });
             }
         }
+        let mut out = VideoOut::default();
+        self.video.media_reset(&mut out);
+        self.video_out(out);
     }
 
     fn reconnected(&mut self, kind: Kind) {
@@ -2151,6 +2313,11 @@ impl Engine {
             }
         }
         self.moving = false;
+        // The server's subscription state may be new (a full reconnect is a new participant):
+        // every track's settings again.
+        let mut out = VideoOut::default();
+        self.video.resend_settings(&mut out);
+        self.video_out(out);
         tracing::info!(target: "sew_call_client", ?kind, "reconnected");
         self.ensure_renew_scheduled(Instant::now());
         self.update_state();
@@ -2216,6 +2383,11 @@ impl Engine {
                 self.channel = answer.join.state.channel_id;
                 let rec = answer.join.recording.clone();
                 self.answer = answer;
+                if let Ok(mut m) = self.shared.policy.lock() {
+                    m.clone_from(&self.answer.join.media);
+                }
+                let api = self.lease_api();
+                self.vpub.on_rejoined(self.answer.join.media.as_ref(), &api);
                 self.apply_recording(rec);
                 self.schedule_renew(now);
                 if let Some(k) = self.keys.take() {
@@ -2317,9 +2489,15 @@ impl Engine {
             }
         }
         self.expire_gaps(now);
+        self.video_tick(now);
         if self.media_up && now >= self.next_speaking {
             self.next_speaking = now + SPEAKING_EVERY;
             self.emit_speaking();
+        }
+        if self.vpub.deadline().is_some_and(|d| now >= d) {
+            let mut cx = video_cx!(self, now);
+            self.vpub.on_timeout(&mut cx);
+            self.negotiate();
         }
     }
 
@@ -2378,10 +2556,10 @@ impl Engine {
             SessionEvent::MediaSections { audios, videos } => {
                 if let Some(pc) = self.pc.as_mut() {
                     pc.add_recv_audio(audios);
-                    if audios == 0 {
+                    pc.add_recv_video(videos);
+                    if audios == 0 && (videos == 0 || !crate::pc::VIDEO) {
                         pc.renegotiate();
                     }
-                    let _ = videos;
                 }
                 self.negotiate();
             }
@@ -2407,10 +2585,24 @@ impl Engine {
                         self.send_mute_signal();
                     }
                     self.negotiate();
+                } else if cid != self.cid {
+                    let mut cx = video_cx!(self, now);
+                    self.vpub.on_track_published(&mut cx, &cid, &track);
+                    self.negotiate();
                 }
+            }
+            SessionEvent::SubscribedQuality(u) => {
+                let mut cx = video_cx!(self, now);
+                self.vpub.on_subscribed_quality(&mut cx, &u);
+            }
+            SessionEvent::TrackUnpublished { sid } => {
+                let mut cx = video_cx!(self, now);
+                self.vpub.on_track_unpublished(&mut cx, &sid);
+                self.negotiate();
             }
             SessionEvent::Participants => {
                 self.roster_changed();
+                self.video_roster(now);
                 self.send_roster();
                 self.emit_participants();
                 self.local_permission_changed();
@@ -2423,6 +2615,15 @@ impl Engine {
                         self.engine_levels.remove(&sp.sid);
                     }
                 }
+                let speaking = self.engine_levels.keys().cloned().collect();
+                let mut out = VideoOut::default();
+                self.video.speakers(now, speaking, &mut out);
+                self.video_out(out);
+            }
+            SessionEvent::StreamStates(states) => {
+                let mut out = VideoOut::default();
+                self.video.stream_states(&states, &mut out);
+                self.video_out(out);
             }
             SessionEvent::Muted { sid, muted } => {
                 if self.track_sid.as_deref() == Some(sid.as_str()) {
@@ -2435,6 +2636,9 @@ impl Engine {
                 if let Some(pc) = self.pc.as_mut() {
                     pc.forget_pending_offer();
                 }
+                let mut out = VideoOut::default();
+                self.video.resumed(&mut out);
+                self.video_out(out);
                 if self.rebinding.is_some() {
                     // A network change: the restart runs once the new transport is in.
                     self.resume_waits_rebind = true;
@@ -2483,7 +2687,12 @@ impl Engine {
                 if t.relay_via().is_some() {
                     self.counters.turn_allocations += 1;
                 }
-                let mut pc = Pc::new(t.local_candidates(), now);
+                let mut pc = Pc::new_with(
+                    t.local_candidates(),
+                    now,
+                    self.vpub.may_send(),
+                    self.cfg.video_h264,
+                );
                 pc.handle_timeout(now);
                 self.transport = Some(t);
                 self.pc = Some(pc);
@@ -2494,6 +2703,8 @@ impl Engine {
                 self.cid_on_pc = false;
                 // Without SPEAK nothing is published until the engine allows the microphone.
                 self.maybe_publish();
+                let mut cx = video_cx!(self, now);
+                self.vpub.on_new_pc(&mut cx);
                 self.negotiate();
                 self.speak_changed();
                 self.snapshot_update();
@@ -2671,7 +2882,9 @@ impl Engine {
         {
             self.send = Some(SendPath { mid, pt, ssrc });
         }
-        if pc.needs_negotiation() {
+        let mut cx = video_cx!(self, Instant::now());
+        self.vpub.on_answer(&mut cx);
+        if self.pc.as_ref().is_some_and(Pc::needs_negotiation) {
             self.negotiate();
         }
     }
@@ -2706,7 +2919,17 @@ impl Engine {
             }
             PcEvent::Ice(IceState::Checking) => {}
             PcEvent::Rtp(r) => self.on_rtp(now, r),
+            PcEvent::KeyframeRequest { mid, rid } => {
+                self.vpub.on_keyframe_request(now, &mid, rid.as_deref());
+            }
+            PcEvent::Bwe(bps) => {
+                let mut cx = video_cx!(self, now);
+                self.vpub.on_estimate(&mut cx, bps);
+            }
             PcEvent::Peer { local, rtt } => {
+                if let Some(r) = rtt {
+                    self.video.set_rtt(r);
+                }
                 let path = local.and_then(|a| self.path_of(a));
                 self.meter.on_peer(path, rtt);
             }
@@ -2788,6 +3011,10 @@ impl Engine {
     }
 
     fn on_rtp(&mut self, now: Instant, r: crate::pc::RtpRx) {
+        if let Some(codec) = r.video {
+            self.on_video_rtp(now, r, codec);
+            return;
+        }
         let Some((track_sid, identity)) = self.sender_of(&r.mid) else {
             self.counters.refused_frames += 1;
             return;
@@ -2910,6 +3137,144 @@ impl Engine {
             if let Some(l) = &self.link {
                 l.send(req);
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ video (receive)
+
+    /// One video RTP packet: to its track's pipeline, if the keys allow the track.
+    fn on_video_rtp(&mut self, now: Instant, r: crate::pc::RtpRx, codec: crate::video::VideoCodec) {
+        if crate::config::drop_video_packet(&self.cfg) {
+            // A lane's lost burst (feature `testing` only).
+            return;
+        }
+        let Some((track_sid, identity)) = self.sender_of(&r.mid) else {
+            self.counters.video_packets_unwanted += 1;
+            return;
+        };
+        let Some(keys) = self.keys.clone() else {
+            self.counters.refused_frames += 1;
+            return;
+        };
+        let verdict = match self.remote_track(&track_sid) {
+            Some(t) => keys.may_subscribe(&identity, &t),
+            None => Subscribe::NotYet,
+        };
+        match verdict {
+            Subscribe::Yes => {}
+            Subscribe::NotYet => {
+                self.counters.refused_frames += 1;
+                return;
+            }
+            Subscribe::No { reason } => {
+                self.counters.refused_frames += 1;
+                if self.video_refused.insert(track_sid.clone()) {
+                    tracing::warn!(target: "sew_call_client", track = %track_sid, %reason, "refusing a remote video track");
+                    let req = SignalRequest {
+                        message: Some(signal_request::Message::Subscription(UpdateSubscription {
+                            track_sids: vec![track_sid],
+                            subscribe: false,
+                            ..UpdateSubscription::default()
+                        })),
+                    };
+                    if let Some(l) = &self.link {
+                        l.send(req);
+                    }
+                }
+                return;
+            }
+        }
+        let mut out = VideoOut::default();
+        self.video.on_rtp(
+            now,
+            &track_sid,
+            &identity,
+            &r,
+            codec,
+            keys.as_ref(),
+            &mut self.counters,
+            &mut out,
+        );
+        self.video_out(out);
+    }
+
+    /// The roster changed: the video tracks follow it.
+    fn video_roster(&mut self, now: Instant) {
+        if !crate::pc::VIDEO {
+            // A build without video sends and announces nothing for video tracks: its calls
+            // signal as voice-only calls always did.
+            return;
+        }
+        let mut out = VideoOut::default();
+        let remotes = self.session.remotes().clone();
+        self.video.roster(now, &remotes, &self.members, &mut out);
+        let live: std::collections::HashSet<&String> = remotes
+            .values()
+            .flat_map(|p| p.tracks.iter().map(|t| &t.sid))
+            .collect();
+        self.video_refused.retain(|s| live.contains(s));
+        self.video_out(out);
+    }
+
+    /// Time passed for the video pipelines.
+    fn video_tick(&mut self, now: Instant) {
+        let mut out = VideoOut::default();
+        let keys = self.keys.clone();
+        self.video
+            .tick(now, keys.as_deref(), &mut self.counters, &mut out);
+        self.video_out(out);
+    }
+
+    /// Carries out what the video side asked for.
+    fn video_out(&mut self, out: VideoOut) {
+        for r in out.requests {
+            if let Some(l) = &self.link {
+                l.send(r);
+            }
+        }
+        if let Some(pc) = self.pc.as_mut() {
+            for (ssrc, fir) in out.keyframes {
+                let sent = pc.request_keyframe(ssrc, fir);
+                tracing::debug!(target: "sew_call_client", ssrc, fir, sent, "video keyframe request");
+            }
+        }
+        if !out.events.is_empty() {
+            // The snapshot first: a host that reads it on the event sees the change.
+            self.snapshot_update();
+        }
+        for e in out.events {
+            let _ = self.shared.events.send(e);
+        }
+        for sid in out.stalled {
+            self.error(
+                "video_stalled",
+                &format!("no keyframe on video track {sid} 5 s after a FIR"),
+            );
+        }
+        let mut undelivered = Vec::new();
+        for it in out.items {
+            let track = match &it {
+                VideoRecvItem::Frame(f) => Some(f.track),
+                _ => None,
+            };
+            match self.video_tx.try_send(it) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    self.counters.video_recv_queue_drops += 1;
+                    if let Some(t) = track {
+                        undelivered.push(t);
+                    }
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        if !undelivered.is_empty() {
+            let mut out = VideoOut::default();
+            for t in undelivered {
+                self.video.frame_not_delivered(t, &mut out);
+            }
+            // Only control items, keyframe requests and no frames: no further recursion.
+            self.video_out(out);
         }
     }
 

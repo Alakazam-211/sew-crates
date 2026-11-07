@@ -1,0 +1,29 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "video"
+description = """
+The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,
+`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,
+`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and
+`request_camera_permission`. The frames reach only the window
+that opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call
+window, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs
+`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and
+`allow-request-keyframe`). The OS asks for the camera and screen recording itself.
+"""
+permissions = [
+  "allow-video-caps",
+  "allow-video-devices",
+  "allow-set-video-device",
+  "allow-camera",
+  "allow-screen-sources",
+  "allow-screen",
+  "allow-preview",
+  "allow-video-sink",
+  "allow-video-sink-update",
+  "allow-video-sink-close",
+  "allow-request-keyframe",
+  "allow-camera-permission",
+  "allow-request-camera-permission",
+]

@@ -30,7 +30,7 @@ in this repository or anywhere else public.
 | You are building | Use | It brings in |
 |---|---|---|
 | Voice calls in a Tauri 2 desktop app | `tauri-plugin-sew-voice` | `sew-call-client` and everything below it |
-| Voice calls in another native Rust app | `sew-call-client` | `sew-e2ee`, `sew-lk-compat`, `sew-lkproto`, `sew-proto`, `kessel-audio` |
+| Voice calls in another native Rust app | `sew-call-client` | `sew-e2ee`, `sew-lk-compat`, `sew-lkproto`, `sew-proto`, `kessel-audio`, `kessel-video` |
 | Your own end-to-end encrypted call client (keys only, no media) | `sew-e2ee` | `sew-mls-crypto`, `sew-proto` |
 | An OpenMLS crypto provider on permissive crates | `sew-mls-crypto` | nothing of Sew's |
 | Typed Sew API and gateway messages (HTTP bodies, ids, errors) | `sew-proto` | nothing of Sew's |
@@ -40,7 +40,7 @@ How they depend on each other:
 
 ```text
 tauri-plugin-sew-voice
-└── sew-call-client ── kessel-audio (you supply it, see below)
+└── sew-call-client ── kessel-audio, kessel-video (K2's, from crates.io)
     ├── sew-e2ee ── sew-mls-crypto
     │   └── sew-proto
     ├── sew-lk-compat ── sew-lkproto
@@ -54,13 +54,13 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.8.1 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.8.1 | Apache-2.0 |
-| `sew-mls-crypto` | 0.8.1 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.8.1 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.8.1 | Apache-2.0 |
-| `sew-call-client` | 0.4.1 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.4.1 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.8.2 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.8.2 | Apache-2.0 |
+| `sew-mls-crypto` | 0.8.2 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.8.2 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.8.2 | Apache-2.0 |
+| `sew-call-client` | 0.5.0 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.5.0 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
@@ -77,11 +77,11 @@ They depend on each other by version. `sew-proto`, `sew-lkproto` and `sew-lk-com
 published on crates.io as well, so on their own they need only a dependency line. The other four
 are not on crates.io yet: `sew-mls-crypto` and `sew-e2ee` wait for the dependency change
 their READMEs describe (RUSTSEC-2026-0387), and `sew-call-client` and
-`tauri-plugin-sew-voice` wait for those two, for kessel-audio and for the forks below. To use
+`tauri-plugin-sew-voice` wait for those two and for the forks below. To use
 them from this directory, in your workspace's root
 `Cargo.toml`, add this one `[patch.crates-io]` block (a `[patch]` applies only from the
 workspace root; if you already have one, add these rows to it, since a second block is a TOML
-error). It points each crate at its directory and adds the forked dependencies and kessel-audio:
+error). It points each crate at its directory and adds the forked dependencies:
 
 ```toml
 [patch.crates-io]
@@ -92,22 +92,19 @@ sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }
 sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }
 sew-call-client = { path = "third_party/sew-crates/sew-call-client" }
 tauri-plugin-sew-voice = { path = "third_party/sew-crates/tauri-plugin-sew-voice" }
-kessel-video    = { git = "https://github.com/Alakazam-211/k2", rev = "e95bb55673ccafef7003780b0b25b5ab5f39648d" }
-str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "f80c8fa09323778b181923a840a9fd36e1c8d951" }
-str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "f80c8fa09323778b181923a840a9fd36e1c8d951" }
-is              = { git = "https://github.com/Alakazam-211/str0m", rev = "f80c8fa09323778b181923a840a9fd36e1c8d951" }
-str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "f80c8fa09323778b181923a840a9fd36e1c8d951" }
+str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
+str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
+is              = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
+str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
 dimpl          = { git = "https://github.com/Alakazam-211/dimpl", rev = "a3481943e8e3fa270990e7c05a27d015cfbe4d77" }
-kessel-audio    = { git = "https://github.com/Alakazam-211/k2", rev = "aad16f76b8768ae090d3060033d473e87c736be4" }
 ```
 
 The `str0m`, `str0m-proto`, `is`, `str0m-aws-lc-rs` and `dimpl` rows are Alakazam Labs'
 public forks of `str0m` (the WebRTC stack; `is` is one of its crates) and `dimpl` (its
 DTLS), which the voice engine needs.
 
-**kessel-audio** (K2's audio pipeline, MIT OR Apache-2.0), the last row, is a dependency of
-`sew-call-client` (features `audio-core`, `audio`) that you supply, from K2's public
-repository at the revision this release was built against.
+**kessel-audio** and **kessel-video** (K2's audio and video pipelines, MIT OR Apache-2.0) come
+from crates.io and need no row.
 
 ## Building and testing this directory
 
@@ -120,3 +117,11 @@ on Linux, and the plugin's default `tauri` feature needs Tauri's (webkit2gtk-4.1
 libsoup3). `deny.toml` is the cargo-deny configuration this release was checked with, and
 `clippy.toml` the clippy configuration (`cargo clippy --workspace --all-targets -- -D warnings`
 passes with it).
+
+## Guides
+
+`docs/native-voice-sdk.md` is the guide to the native voice engine and the Tauri plugin (the
+webview API, video, device keys, testing an app without Sew), and `docs/tauri-app-sdk.md` the
+checklist for a Tauri App shell on a Sew server. The crates' READMEs cite them by those paths.
+They are written for Sew's own source tree as well, so some of the paths they name (Sew's
+scripts and examples) are not in this directory.

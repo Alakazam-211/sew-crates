@@ -113,6 +113,11 @@
       "type": "string"
     },
     {
+      "const": "erase_stuck",
+      "description": "A running account erasure made no progress for 10 minutes (its job is lost, overdue\nor has failed for that long; a wait for an active recording is not stuck).",
+      "type": "string"
+    },
+    {
       "const": "voice_media_down",
       "description": "Voice is enabled and the media engine has been unreachable for more than 60 s.",
       "type": "string"

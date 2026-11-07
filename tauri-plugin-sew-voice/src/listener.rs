@@ -13,11 +13,12 @@
 
 use sew_call_client::device::DeviceKeyId;
 
-use crate::engine::AudioSessionEvent;
+use crate::details::{CallDetails, IncomingCall, RingEndedArgs};
+use crate::engine::{AppScene, AudioSessionEvent};
 use crate::service::VoiceService;
 use crate::wire::{
-    ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinResult, MuteArgs, Participant, RecordingInfo,
-    SelfMute, StateEvent, StateSnapshot,
+    CameraArgs, ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinOptions, JoinResult, MuteArgs,
+    Participant, PermissionState, RecordingInfo, SelfMute, StateEvent, StateSnapshot,
 };
 
 /// A native observer of the plugin's call (`Builder::listener`, at most one). The plugin calls
@@ -69,6 +70,36 @@ pub trait VoiceListener: Send + Sync + 'static {
         let _ = devices;
     }
 
+    /// A DM call rings (`Some`: CallKit's `reportNewIncomingCall`, Telecom's
+    /// `addNewIncomingCall`), or stopped ringing (`None`: accepted by a `join` with its target
+    /// and room, ended, or declined), as the webview's `incoming` event (0.4.1). A newer ring
+    /// replaces the one before.
+    fn on_incoming(&self, incoming: Option<&IncomingCall>) {
+        let _ = incoming;
+    }
+
+    /// The call's video started or stopped: `true` from the moment this device sends its
+    /// camera or screen (on or paused) or a remote camera or screen is unmuted, `false` when
+    /// none is left (and when the call ends). Called right after the `video` or `local_video`
+    /// event that changed it, only on a change. Route the call's audio to the speaker while it
+    /// is `true` (iOS: `.defaultToSpeaker` or `overrideOutputAudioPort(.speaker)`; Android:
+    /// `setCommunicationDevice` with the built-in speaker, or `setSpeakerphoneOn`), unless the
+    /// person chose a route (a headset, Bluetooth); report `hasVideo` to CallKit's
+    /// `CXCallUpdate` (Telecom: `setVideoState`). The plugin never sets the route itself.
+    fn video_changed(&self, has_video: bool) {
+        let _ = has_video;
+    }
+
+    /// This device's screen share started (`true`: its track is published, on or paused) or
+    /// stopped (`false`, also when the call ends). Called right after the `local_video` event
+    /// that changed it, only on a change. On iOS it follows the broadcast extension
+    /// ([`VoiceControl::screen_share_ring`]): the share starts with its first frame and stops
+    /// when the extension finishes or goes away, both outside the app, so the app's UI follows
+    /// this instead of its own button.
+    fn screen_share_changed(&self, active: bool) {
+        let _ = active;
+    }
+
     // There is no on_speaking: levels arrive up to 10 a second and CallKit doesn't need them.
 }
 
@@ -94,6 +125,41 @@ impl VoiceControl {
     /// [`VoiceControl::leave`].
     pub async fn join(&self, args: JoinArgs) -> Result<JoinResult, ErrorInfo> {
         self.service.join(args).await
+    }
+
+    /// A video call's start or answer (`CXStartCallAction` with `isVideo`, a Telecom video
+    /// state): [`VoiceControl::join`] with [`JoinOptions`]. With `JoinOptions::with_camera()`
+    /// the camera turns on as soon as the call is connected and the app is in front (never
+    /// from the lock screen: answered there, it starts at the app's next
+    /// `app_scene(Foreground)`). The OS permission is never asked for here: without it, and
+    /// on any other refusal (`video_slots_full`, `video_not_allowed`, …), `local_video` says
+    /// `{camera: "off", reason: <code>}` and the call goes on without the camera.
+    pub async fn join_with(
+        &self,
+        args: JoinArgs,
+        options: JoinOptions,
+    ) -> Result<JoinResult, ErrorInfo> {
+        self.service.join_with(args, options).await
+    }
+
+    /// CallKit's or Telecom's video button (the call's video turned on or off from the
+    /// system UI; iOS brings the app forward first): the webview's `camera {on, device?}`.
+    /// `device` is a `video_devices` id or `"default"` (`None`: the chosen camera). Answers
+    /// once publishing (or off), with the same refusals, among them
+    /// `camera_permission_denied` and `camera_permission_not_determined`: the plugin never
+    /// prompts (call [`VoiceControl::request_camera_permission`] first). Then
+    /// [`VoiceListener::video_changed`] follows. An off here says `local_video`
+    /// `{camera: "off", reason: "system_ui"}` (the webview's own button says `unpublished`).
+    pub async fn set_camera(&self, on: bool, device: Option<&str>) -> Result<(), ErrorInfo> {
+        self.service
+            .camera_from(
+                CameraArgs {
+                    on,
+                    device: device.map(str::to_owned),
+                },
+                Some(crate::video::SYSTEM_UI),
+            )
+            .await
     }
 
     /// `CXEndCallAction`. Safe to repeat: idle or ended returns `Ok`.
@@ -179,6 +245,89 @@ impl VoiceControl {
         self.service.audio_session(AudioSessionEvent::RouteChanged);
     }
 
+    /// The app went to the background (iOS `sceneDidEnterBackground` /
+    /// `applicationDidEnterBackground`, Android `onPause`/`onStop`) or came back
+    /// (`sceneWillEnterForeground`, `onResume`). Not an audio interruption: `suspend` and
+    /// `resume` stay for those and never touch video. In the background every webview sink is
+    /// hidden (its track turned off at the media server) and only native sinks
+    /// (`VoiceControl::open_native_sink`, the picture in picture) stay enabled; back in front
+    /// the sinks start again at a keyframe. The video backend's own signal (kessel-video's
+    /// `BackendEvent::Background`) counts too: either one pauses, and both must say foreground
+    /// to resume. On Android it also tells kessel-video (`AndroidContext::set_background`).
+    /// Audio is untouched. Sync and cheap; any thread except inside a listener method.
+    pub fn app_scene(&self, scene: AppScene) {
+        self.service.app_scene(scene);
+    }
+
+    /// Android: the device turned, in degrees clockwise from its natural orientation
+    /// (`OrientationEventListener`; from `Display.getRotation()`, `(360 - 90 * rotation) %
+    /// 360`). Camera frames are turned upright from the next one. iOS and desktop ignore it.
+    pub fn device_orientation(&self, degrees: u32) {
+        self.service.device_orientation(degrees);
+    }
+
+    /// The camera permission now. Never prompts.
+    pub async fn camera_permission(&self) -> PermissionState {
+        self.service
+            .camera_permission()
+            .await
+            .unwrap_or(PermissionState::Unsupported)
+    }
+
+    /// Asks for the camera: iOS shows the OS prompt when the permission is `prompt`; Android
+    /// reports the state (ask for CAMERA yourself first: it needs an Activity callback).
+    pub async fn request_camera_permission(&self) -> PermissionState {
+        self.service
+            .request_camera_permission()
+            .await
+            .unwrap_or(PermissionState::Unsupported)
+    }
+
+    /// iPhone screen share: arm the broadcast upload extension's ring for the live call. The
+    /// app passes its App Group container (Swift: `FileManager.default.containerURL(
+    /// forSecurityApplicationGroupIdentifier: <the app's App Group id>)`, shared by the app and
+    /// the extension); the plugin makes the ring at `<container>/sew-screen.ring`, which the
+    /// extension attaches to. From then on the plugin reads the newest frame about every 10 ms
+    /// and publishes it as the call's screen (the same encoder, codec and layers as a desktop
+    /// screen; at most 720p). The share starts with the extension's first frame and ends when
+    /// it finishes, dies, stays quiet 2 s without having said it runs, or the ring is lost;
+    /// [`VoiceListener::screen_share_changed`] follows. `screen {on: false}` stops a share and
+    /// asks the extension to finish. The ring lasts until the call ends (it is then removed and
+    /// the extension asked to finish); arming again replaces it. Refused with `not_in_call`, or
+    /// `screen_unsupported` outside iOS or in a build without `ios-screen-ring` and
+    /// `video-core`; a container the ring can't be made in is `screen_unsupported` with the
+    /// reason in `detail`.
+    pub async fn screen_share_ring(
+        &self,
+        app_group_container: impl Into<std::path::PathBuf>,
+    ) -> Result<(), ErrorInfo> {
+        self.service
+            .screen_share_ring(app_group_container.into())
+            .await
+    }
+
+    /// Whether the call has video now (what [`VoiceListener::video_changed`] last said).
+    pub fn has_video(&self) -> bool {
+        self.service.has_video()
+    }
+
+    /// A native sink (feature `video-core`; [`crate::native`]): `target`'s frames in Rust for
+    /// `consumer`, at most `max_size` (device pixels; `(640, 360)` asks the media server for
+    /// its 360p layer). [`NativeSinkTarget::ActiveSpeaker`](crate::native::NativeSinkTarget)
+    /// follows whoever speaks and asks for a keyframe on each switch. It is the one sink that
+    /// stays enabled in the background. H.264 tracks come as access units, VP8 tracks decoded.
+    /// Refused with `not_in_call`, `unknown_track` or `decoded_unsupported` (a VP8 track
+    /// without a video backend). Drop the [`crate::native::NativeSink`] to close it.
+    #[cfg(feature = "video-core")]
+    pub fn open_native_sink(
+        &self,
+        target: crate::native::NativeSinkTarget,
+        max_size: (u32, u32),
+        consumer: std::sync::Arc<dyn crate::native::NativeVideoConsumer>,
+    ) -> Result<crate::native::NativeSink, ErrorInfo> {
+        self.service.open_native_sink(target, max_size, consumer)
+    }
+
     /// Sign-out from one Sew install: deletes every device of `install_id` in the plugin's
     /// device store, calling the host's `HardwareDeviceKey::delete` for each hardware key, and
     /// the install's pins; answers the removed keys. Refused with `in_call` while a call is
@@ -192,5 +341,30 @@ impl VoiceControl {
     /// Keychain item or Keystore alias each: `DeviceKeyId::account`).
     pub async fn known_device_keys(&self) -> Result<Vec<DeviceKeyId>, ErrorInfo> {
         self.service.known_device_keys().await
+    }
+
+    /// A push said a DM call rings (0.4.1): every window gets `incoming` and the listener
+    /// `on_incoming`. Answer it with [`VoiceControl::join`] on its `target` and `room` (that
+    /// clears it); a decline is your own request to Sew, then [`VoiceControl::ring_ended`].
+    pub fn ring(&self, ring: IncomingCall) -> Result<(), ErrorInfo> {
+        self.service.ring(ring)
+    }
+
+    /// The ring of `call_id` stopped (0.4.1). Another call's id changes nothing.
+    pub fn ring_ended(&self, call_id: &str) {
+        let _ = self.service.ring_ended(RingEndedArgs {
+            call_id: call_id.to_owned(),
+        });
+    }
+
+    /// The ring now, if a DM call rings (0.4.1).
+    pub fn incoming(&self) -> Option<IncomingCall> {
+        self.service.incoming()
+    }
+
+    /// The call's key state and security code, quality, media roster and ring now (0.4.1;
+    /// the `call_details` command).
+    pub fn details(&self) -> CallDetails {
+        self.service.details()
     }
 }

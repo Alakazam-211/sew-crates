@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "EraseState": {
+      "description": "Where an erasure stands.",
+      "oneOf": [
+        {
+          "const": "running",
+          "description": "The account is cut off; the job is still erasing.",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "The pass is done, but some kept rows are pending (a legal hold, backups).",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "Nothing is pending; any rows left are final.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Query of `GET /mgmt/v1/principals/erasures`.",
+  "properties": {
+    "after": {
+      "description": "Erasures with an id above this one (the previous page's `next`).",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "description": "Page size, 1–100 (default 50).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EraseState"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Only erasures in this state."
+    }
+  },
+  "title": "MgmtErasuresQuery",
+  "type": "object"
+}

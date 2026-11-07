@@ -1,0 +1,14 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "call-details"
+description = """
+The call-detail commands, for a call UI that shows more than `sew-voice:default` gives:
+`call_details` (the key state and security code, the quality, every media participant with
+its engine identity and label, and the ring, for a window opened mid-call), `ring` and
+`ring_ended` (an incoming DM call, set from Sew's ring and cleared when it stops). Their events
+(`sew-voice://security`, `roster`, `quality`, `incoming`) reach every window. Not in
+`sew-voice:default`: grant it next to it, or `sew-voice:allow-call-details`,
+`sew-voice:allow-ring` and `sew-voice:allow-ring-ended` one by one.
+"""
+permissions = ["allow-call-details", "allow-ring", "allow-ring-ended"]

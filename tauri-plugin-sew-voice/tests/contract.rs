@@ -10,10 +10,16 @@ use serde_json::{Value, json};
 use tauri_plugin_sew_voice::fake::fake_answer;
 use tauri_plugin_sew_voice::wire::{EVENT_NAMES, EVENT_PREFIX};
 use tauri_plugin_sew_voice::{
-    COMMANDS, CallState, ConsentArgs, DEFAULT_DEVICE, DEVICE_KEY_COMMANDS, Device, DeviceChoice,
-    DeviceList, EngineError, ErrorInfo, JoinArgs, JoinRequest, JoinResult, MuteArgs, PLUGIN_NAME,
-    Participant, PluginEvent, ProviderError, RecordingInfo, RejoinReason, SetDeviceArgs, Speaking,
-    StateEvent, StateSnapshot, app_server_answer,
+    COMMANDS, CallState, ConsentArgs, DEFAULT_DEVICE, DETAIL_COMMANDS, DETAIL_EVENTS,
+    DEVICE_KEY_COMMANDS, Device, DeviceChoice, DeviceList, EngineError, ErrorInfo, JoinArgs,
+    JoinRequest, JoinResult, MuteArgs, PLUGIN_NAME, Participant, PluginEvent, ProviderError,
+    RecordingInfo, RejoinReason, SetDeviceArgs, Speaking, StateEvent, StateSnapshot,
+    VIDEO_COMMANDS, app_server_answer,
+};
+use tauri_plugin_sew_voice::{
+    CameraArgs, FrameHeader, LocalVideo, LocalVideoState, PreviewArgs, ScreenKind, ScreenSource,
+    SetVideoDeviceArgs, SinkIdArgs, SinkMode, SinkStats, Tile, VideoCodec, VideoDevices,
+    VideoPaused, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoSource, VideoTrack,
 };
 
 /// `v` serializes to exactly `want` and `want` parses back to `v`.
@@ -324,29 +330,22 @@ fn command_arguments_and_answers() {
 
 #[test]
 fn state_snapshot_is_the_state_event_plus_roster() {
+    // Non-exhaustive since 0.5.0: built with `new`, then its public fields.
+    let mut reconnecting = StateSnapshot::new(CallState::Reconnecting { attempt: 1 });
+    reconnecting.target = Some("k2".into());
+    reconnecting.room = Some("123".into());
+    reconnecting.call_id = Some("r_x".into());
     exact(
-        &StateSnapshot {
-            state: CallState::Reconnecting { attempt: 1 },
-            target: Some("k2".into()),
-            room: Some("123".into()),
-            participants: vec![],
-            call_id: Some("r_x".into()),
-            recording: None,
-        },
+        &reconnecting,
         json!({
             "state": "reconnecting", "attempt": 1, "target": "k2", "room": "123",
             "participants": [], "call_id": "r_x"
         }),
     );
+    let idle = StateSnapshot::new(CallState::Idle);
+    assert_eq!(idle.local_video, LocalVideo::default());
     exact(
-        &StateSnapshot {
-            state: CallState::Idle,
-            target: None,
-            room: None,
-            participants: vec![],
-            call_id: None,
-            recording: None,
-        },
+        &idle,
         json!({"state": "idle", "participants": [], "call_id": null}),
     );
     // The fixture's snapshots (after SPEAK lost, after a move) parse.
@@ -445,7 +444,11 @@ fn event_names_are_frozen() {
             "speaking",
             "errors",
             "devices",
-            "recording"
+            "recording",
+            "video",
+            "local_video",
+            "video_devices",
+            "policy"
         ]
     );
     let events = [
@@ -455,10 +458,26 @@ fn event_names_are_frozen() {
         PluginEvent::Errors(ErrorInfo::new("x")),
         PluginEvent::Devices(DeviceList::default()),
         PluginEvent::Recording(None),
+        PluginEvent::Video(vec![]),
+        PluginEvent::LocalVideo(LocalVideo::default()),
+        PluginEvent::VideoDevices(VideoDevices::default()),
+        PluginEvent::Policy(json!({})),
     ];
     let names: Vec<&str> = events.iter().map(PluginEvent::name).collect();
     assert_eq!(names, EVENT_NAMES);
     assert_eq!(events[0].event_name(), "sew-voice://state");
+    // The call-detail events (0.4.1), beside the six of voice and the four of video.
+    assert_eq!(DETAIL_EVENTS, ["security", "roster", "quality", "incoming"]);
+    let details = [
+        PluginEvent::Security(None),
+        PluginEvent::Roster(vec![]),
+        PluginEvent::Quality(tauri_plugin_sew_voice::QualityInfo::unknown()),
+        PluginEvent::Incoming(None),
+    ];
+    let names: Vec<&str> = details.iter().map(PluginEvent::name).collect();
+    assert_eq!(names, DETAIL_EVENTS);
+    assert_eq!(details[2].payload(), json!({"quality": "unknown"}));
+    assert_eq!(details[3].event_name(), "sew-voice://incoming");
     assert_eq!(events[0].payload(), json!({"state": "idle"}));
     assert_eq!(events[1].payload(), json!([]));
 }
@@ -495,14 +514,35 @@ fn commands_build_script_and_permissions_agree() {
         .filter(|s| !s.is_empty())
         .collect();
     assert_eq!(DEVICE_KEY_COMMANDS, ["forget_server", "known_device_keys"]);
+    assert_eq!(DETAIL_COMMANDS, ["call_details", "ring", "ring_ended"]);
+    assert_eq!(
+        VIDEO_COMMANDS,
+        [
+            "video_caps",
+            "video_devices",
+            "set_video_device",
+            "camera",
+            "screen_sources",
+            "screen",
+            "preview",
+            "video_sink",
+            "video_sink_update",
+            "video_sink_close",
+            "request_keyframe",
+            "camera_permission",
+            "request_camera_permission"
+        ]
+    );
     let all: Vec<&str> = COMMANDS
         .iter()
         .chain(DEVICE_KEY_COMMANDS.iter())
+        .chain(DETAIL_COMMANDS.iter())
+        .chain(VIDEO_COMMANDS.iter())
         .copied()
         .collect();
     assert_eq!(
         listed, all,
-        "build.rs's COMMANDS: the eight, then the device-key commands"
+        "build.rs's COMMANDS: the eight, the device-key commands, the call-detail ones, then the video commands"
     );
     for c in all {
         let generated = manifest_file(&format!("permissions/autogenerated/commands/{c}.toml"));
@@ -519,12 +559,37 @@ fn commands_build_script_and_permissions_agree() {
         let perm = format!("\"allow-{}\"", c.replace('_', "-"));
         assert!(keys.contains(&perm), "sew-voice:device-keys lacks {perm}");
     }
+    // The video commands: the `video` set has all of them, the default set none.
+    let video = manifest_file("permissions/video.toml");
+    assert!(video.contains("identifier = \"video\""));
+    for c in VIDEO_COMMANDS {
+        let perm = format!("\"allow-{}\"", c.replace('_', "-"));
+        assert!(video.contains(&perm), "sew-voice:video lacks {perm}");
+    }
+    assert_eq!(video.matches("\"allow-").count(), VIDEO_COMMANDS.len());
     let default = manifest_file("permissions/default.toml");
-    for c in DEVICE_KEY_COMMANDS {
+    for c in VIDEO_COMMANDS {
         let perm = format!("allow-{}", c.replace('_', "-"));
         assert!(
             !default.contains(&perm),
             "sew-voice:default must not allow {c}"
+        );
+    }
+    for c in DEVICE_KEY_COMMANDS.iter().chain(DETAIL_COMMANDS.iter()) {
+        let perm = format!("allow-{}", c.replace('_', "-"));
+        assert!(
+            !default.contains(&perm),
+            "sew-voice:default must not allow {c}"
+        );
+    }
+    // The call-detail commands are the `call-details` set (0.4.1).
+    let details = manifest_file("permissions/call-details.toml");
+    assert!(details.contains("identifier = \"call-details\""));
+    for c in DETAIL_COMMANDS {
+        let perm = format!("\"allow-{}\"", c.replace('_', "-"));
+        assert!(
+            details.contains(&perm),
+            "sew-voice:call-details lacks {perm}"
         );
     }
     assert!(default.contains("[default]"));
@@ -636,4 +701,156 @@ fn provider_http_shapes() {
             other => panic!("{bad}: {other:?}"),
         }
     }
+}
+
+// ───────────────────────────── video ─────────────────────────────
+
+#[test]
+fn video_track_and_local_video_shapes() {
+    let t = VideoTrack {
+        member_id: "48831765147549700".into(),
+        is_self: false,
+        source: VideoSource::Screen,
+        track: "TR_VSabc".into(),
+        codec: VideoCodec::H264,
+        width: 1920,
+        height: 1080,
+        muted: false,
+        paused: Some(VideoPaused::Congestion),
+        unsupported: false,
+    };
+    exact(
+        &t,
+        json!({"member_id": "48831765147549700", "is_self": false, "source": "screen",
+               "track": "TR_VSabc", "codec": "h264", "width": 1920, "height": 1080,
+               "muted": false, "paused": "congestion"}),
+    );
+    exact(
+        &VideoTrack {
+            unsupported: true,
+            paused: None,
+            ..t
+        },
+        json!({"member_id": "48831765147549700", "is_self": false, "source": "screen",
+               "track": "TR_VSabc", "codec": "h264", "width": 1920, "height": 1080,
+               "muted": false, "paused": null, "unsupported": true}),
+    );
+    exact(
+        &LocalVideo {
+            camera: LocalVideoState::Asking,
+            screen: LocalVideoState::On,
+            reason: None,
+        },
+        json!({"camera": "asking", "screen": "on"}),
+    );
+    refused::<VideoTrack>(
+        json!({"member_id": "1", "is_self": false, "source": "camera",
+        "track": "t", "codec": "av1", "width": 1, "height": 1, "muted": false, "paused": null}),
+    );
+}
+
+#[test]
+fn video_command_arguments() {
+    let a: VideoSinkArgs = serde_json::from_value(json!({
+        "track": "local:camera", "width": 640, "height": 360, "visible": true, "tile": "large",
+        "decode": ["vp8", "h264"]
+    }))
+    .expect("sink args");
+    assert_eq!(a.tile, Tile::Large);
+    refused::<VideoSinkArgs>(
+        json!({"track": "t", "width": 1, "height": 1, "visible": true,
+        "tile": "huge", "decode": []}),
+    );
+    let u: VideoSinkUpdateArgs = serde_json::from_value(json!({
+        "sink_id": 7, "visible": false,
+        "stats": {"decoded": 30, "dropped": 2, "freezes": 1, "freeze_ms": 250}
+    }))
+    .expect("update");
+    assert_eq!(u.sink_id, 7);
+    assert_eq!(u.visible, Some(false));
+    assert_eq!(
+        u.stats,
+        Some(SinkStats {
+            decoded: 30,
+            dropped: 2,
+            freezes: 1,
+            freeze_ms: 250
+        })
+    );
+    refused::<VideoSinkUpdateArgs>(json!({"sink_id": 7, "colour": "red"}));
+    exact(&SinkIdArgs { sink_id: 3 }, json!({"sink_id": 3}));
+    exact(
+        &CameraArgs {
+            on: true,
+            device: None,
+        },
+        json!({"on": true, "device": null}),
+    );
+    let p: PreviewArgs = serde_json::from_value(json!({"on": false})).expect("preview");
+    assert!(!p.on && p.device.is_none());
+    exact(
+        &SetVideoDeviceArgs {
+            camera: "default".into(),
+        },
+        json!({"camera": "default"}),
+    );
+    exact(
+        &VideoSinkAnswer {
+            sink_id: 1,
+            codec: Some(VideoCodec::Vp8),
+            mode: SinkMode::Encoded,
+        },
+        json!({"sink_id": 1, "codec": "vp8", "mode": "encoded"}),
+    );
+    exact(
+        &ScreenSource {
+            id: "display:1".into(),
+            kind: ScreenKind::Display,
+            title: "Built-in display".into(),
+            app: None,
+            width: 3024,
+            height: 1964,
+            thumbnail_png: None,
+        },
+        json!({"id": "display:1", "kind": "display", "title": "Built-in display",
+               "width": 3024, "height": 1964}),
+    );
+}
+
+#[test]
+fn the_frame_header_is_32_little_endian_bytes() {
+    let h = FrameHeader {
+        kind: 1,
+        codec: 2,
+        flags: 0b011,
+        sink_id: 0x0102_0304,
+        timestamp_us: 0x1112_1314_1516_1718,
+        width: 1280,
+        height: 720,
+        seq: 9,
+        len: 0,
+    };
+    let msg = h.message(&[0xAA, 0xBB, 0xCC]);
+    assert_eq!(msg.len(), 35);
+    assert_eq!(
+        &msg[..32],
+        &[
+            1, 1, 2, 3, // version, kind, codec, flags
+            4, 3, 2, 1, // sink_id
+            0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, // timestamp_us
+            0x00, 0x05, // width 1280
+            0xD0, 0x02, // height 720
+            9, 0, 0, 0, // seq
+            3, 0, 0, 0, // payload length
+            0, 0, 0, 0, // reserved
+        ]
+    );
+    assert_eq!(&msg[32..], &[0xAA, 0xBB, 0xCC]);
+    assert_eq!(FrameHeader::parse(&msg), Some(FrameHeader { len: 3, ..h }));
+    // Short, another version, or a length that doesn't match: refused.
+    assert_eq!(FrameHeader::parse(&msg[..31]), None);
+    assert_eq!(FrameHeader::parse(&msg[..34]), None);
+    let mut v2 = msg.clone();
+    v2[0] = 2;
+    assert_eq!(FrameHeader::parse(&v2), None);
 }

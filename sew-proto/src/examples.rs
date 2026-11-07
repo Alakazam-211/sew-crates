@@ -285,6 +285,20 @@ fn member_full() -> Member {
             "pronouns".into(),
         ]),
         external_id: Some("k2:principal:0b5e7c1a-3f2d-4e8b-9a61-2c4d8f0e1b37".into()),
+        erased: false,
+    }
+}
+
+/// An erased member as others see it.
+fn member_erased() -> Member {
+    Member {
+        id: ID_BOB,
+        username: handle("erased-48831765147549700"),
+        display_name: "Deleted user".into(),
+        deactivated: true,
+        install_role: InstallRole::Member,
+        erased: true,
+        ..member_min()
     }
 }
 
@@ -311,12 +325,17 @@ fn member_min() -> Member {
         custom_fields: None,
         managed_fields: None,
         external_id: None,
+        erased: false,
     }
 }
 
 impl Example for Member {
     fn examples() -> Vec<(&'static str, Self)> {
-        vec![("full", member_full()), ("min", member_min())]
+        vec![
+            ("full", member_full()),
+            ("full_erased", member_erased()),
+            ("min", member_min()),
+        ]
     }
 }
 
@@ -888,6 +907,7 @@ fn message_full() -> Message {
         created_at: t(60_000),
         edited_at: Some(t(120_000)),
         deleted_at: Some(t(180_000)),
+        deleted_reason: Some(DeletedReason::Erased),
         previews: vec![media::link_preview_full(), media::link_preview_min()],
         previews_suppressed: true,
         emojis: vec![media::emoji_ref_full(), media::emoji_ref_deleted()],
@@ -921,6 +941,7 @@ fn message_min() -> Message {
         created_at: t(0),
         edited_at: None,
         deleted_at: None,
+        deleted_reason: None,
         previews: vec![],
         previews_suppressed: false,
         emojis: vec![],
@@ -2155,6 +2176,7 @@ impl Example for Status {
             mail: None,
             digest: None,
             exports: None,
+            erasures: None,
             voice: None,
             recording: None,
             features: Vec::new(),
@@ -2263,6 +2285,11 @@ impl Example for Status {
                 on_disk_bytes: 104_857_600,
                 last_done_at: Some(t(3_600_000)),
                 last_failed_at: Some(t(1_800_000)),
+            }),
+            erasures: Some(StatusErasures {
+                running: 1,
+                waiting: 2,
+                oldest_running_age_ms: Some(4_000),
             }),
             features: features(),
             gateway: Some(status_gateway_full()),
@@ -2505,6 +2532,161 @@ impl Example for DeprovisionResponse {
                 sessions_revoked: 2,
             },
         )]
+    }
+}
+
+impl Example for MgmtEraseRequest {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MgmtEraseRequest {
+                    external_id: ext(PRINCIPAL),
+                    mode: Some(EraseMode::DeleteContent),
+                    dry_run: true,
+                },
+            ),
+            (
+                "min",
+                MgmtEraseRequest {
+                    external_id: ext(PRINCIPAL),
+                    mode: None,
+                    dry_run: false,
+                },
+            ),
+        ]
+    }
+}
+
+fn erase_result() -> MgmtEraseResult {
+    MgmtEraseResult {
+        job_id: ID_JOB,
+        member_id: ID_BOB,
+        mode: EraseMode::DeleteContent,
+        dry_run: false,
+        state: EraseState::Waiting,
+        requested_at: t(0),
+        finished_at: None,
+        erased: MgmtEraseCounts {
+            profile: 1,
+            sessions: 3,
+            devices: 2,
+            notify_settings: 1,
+            drafts: 0,
+            read_positions: 57,
+            saved_items: 4,
+            uploads_pending: 1,
+            messages_deleted: 1204,
+            messages_anonymised: 0,
+            reactions: 88,
+            poll_votes: 3,
+            files: 31,
+            recordings: 1,
+            recording_segments: 40,
+            forward_snapshots: 2,
+            assistants: 1,
+        },
+        kept: vec![
+            MgmtEraseKept {
+                kind: EraseKeptKind::Messages,
+                count: 200,
+                reason: EraseKeptReason::LegalHold,
+                until: None,
+            },
+            MgmtEraseKept {
+                kind: EraseKeptKind::Files,
+                count: 2,
+                reason: EraseKeptReason::SharedWithOthers,
+                until: None,
+            },
+            MgmtEraseKept {
+                kind: EraseKeptKind::Backups,
+                count: 9,
+                reason: EraseKeptReason::BackupRetention,
+                until: Some(t(90_000_000)),
+            },
+        ],
+        pending_until: None,
+    }
+}
+
+impl Example for MgmtEraseResult {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            ("full", erase_result()),
+            (
+                "full_completed",
+                MgmtEraseResult {
+                    mode: EraseMode::Anonymise,
+                    state: EraseState::Completed,
+                    finished_at: Some(t(2_000)),
+                    erased: MgmtEraseCounts {
+                        profile: 1,
+                        sessions: 1,
+                        ..MgmtEraseCounts::default()
+                    },
+                    kept: vec![MgmtEraseKept {
+                        kind: EraseKeptKind::Backups,
+                        count: 2,
+                        reason: EraseKeptReason::BackupRetention,
+                        until: Some(t(90_000_000)),
+                    }],
+                    pending_until: Some(t(90_000_000)),
+                    ..erase_result()
+                },
+            ),
+        ]
+    }
+}
+
+impl Example for MgmtEraseAccepted {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![(
+            "full",
+            MgmtEraseAccepted {
+                job_id: ID_JOB,
+                member_id: ID_BOB,
+                mode: EraseMode::DeleteContent,
+                pending: true,
+            },
+        )]
+    }
+}
+
+impl Example for MgmtErasuresQuery {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MgmtErasuresQuery {
+                    state: Some(EraseState::Waiting),
+                    after: Some(ID_JOB),
+                    limit: Some(100),
+                },
+            ),
+            ("min", MgmtErasuresQuery::default()),
+        ]
+    }
+}
+
+impl Example for MgmtErasurePage {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MgmtErasurePage {
+                    items: vec![erase_result()],
+                    next: Some(ID_JOB),
+                },
+            ),
+            (
+                "last",
+                MgmtErasurePage {
+                    items: vec![],
+                    next: None,
+                },
+            ),
+        ]
     }
 }
 

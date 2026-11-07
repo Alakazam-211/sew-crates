@@ -179,6 +179,73 @@ pub(crate) async fn self_state(
     .map(|_| ())
 }
 
+/// Why Sew refused a video lease (`POST /api/v1/me/voice/state` with `self_video` or
+/// `self_stream`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LeaseRefused {
+    /// The HTTP status (0: the door could not be reached).
+    pub(crate) status: u16,
+    /// `error.code`.
+    pub(crate) code: Option<String>,
+    /// `error.details.reason`.
+    pub(crate) reason: Option<String>,
+    /// `Retry-After`, seconds.
+    pub(crate) retry_after: Option<u64>,
+    /// Transport failure text (status 0).
+    pub(crate) detail: String,
+}
+
+/// Takes or releases a video lease (`self_video` for a camera, `self_stream` for a screen
+/// share; `None` leaves that one), in the call credential's scope.
+pub(crate) async fn video_state(
+    http: &reqwest::Client,
+    base: &url::Url,
+    bearer: &str,
+    self_video: Option<bool>,
+    self_stream: Option<bool>,
+) -> Result<(), LeaseRefused> {
+    let io = |detail: String| LeaseRefused {
+        status: 0,
+        code: None,
+        reason: None,
+        retry_after: None,
+        detail,
+    };
+    let url = route(base, "/api/v1/me/voice/state").map_err(|e| io(format!("{e:?}")))?;
+    let mut body = serde_json::Map::new();
+    if let Some(v) = self_video {
+        body.insert("self_video".to_owned(), v.into());
+    }
+    if let Some(v) = self_stream {
+        body.insert("self_stream".to_owned(), v.into());
+    }
+    let r = http
+        .post(url)
+        .bearer_auth(bearer)
+        .json(&serde_json::Value::Object(body))
+        .send()
+        .await
+        .map_err(|e| io(e.without_url().to_string()))?;
+    if r.status().is_success() {
+        return Ok(());
+    }
+    let status = r.status().as_u16();
+    let retry_after = r
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    let body = r.bytes().await.unwrap_or_default();
+    let (code, reason) = error_of(&body);
+    Err(LeaseRefused {
+        status,
+        code,
+        reason,
+        retry_after,
+        detail: String::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

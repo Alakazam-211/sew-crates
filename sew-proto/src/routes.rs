@@ -288,6 +288,12 @@ pub const MGMT_PROVISION: &str = "/mgmt/v1/principals/provision";
 pub const MGMT_UPDATE: &str = "/mgmt/v1/principals/update";
 /// `POST`: deprovision a principal.
 pub const MGMT_DEPROVISION: &str = "/mgmt/v1/principals/deprovision";
+/// `POST`: erase a principal's account (deprovision, scrub, cut the external id mapping).
+pub const MGMT_PRINCIPALS_ERASE: &str = "/mgmt/v1/principals/erase";
+/// `GET`: one erasure.
+pub const MGMT_PRINCIPALS_ERASE_JOB: &str = "/mgmt/v1/principals/erase/{job_id}";
+/// `GET`: erasures, paged.
+pub const MGMT_PRINCIPALS_ERASURES: &str = "/mgmt/v1/principals/erasures";
 /// `POST`: give a local member a K2 identity, keeping its member id.
 pub const MGMT_PRINCIPALS_RELINK: &str = "/mgmt/v1/principals/relink";
 /// `POST`: switch the install's identity mode from standalone to K2, once.

@@ -36,7 +36,7 @@ use sew_proto::gateway::client::{
 use sew_proto::gateway::{Frame, Opcode};
 use sew_proto::id::Id;
 use sew_proto::recording::{Recording, RecordingUpdated};
-use sew_proto::voice::{VoiceServerUpdated, VoiceStateUpdated, call_close};
+use sew_proto::voice::{MediaPolicy, VoiceServerUpdated, VoiceStateUpdated, call_close};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -56,6 +56,7 @@ pub const CALL_SOCKET_EVENTS: &[&str] = &[
     "voice_server_updated",
     "voice_state_updated",
     "recording_updated",
+    "media_policy_updated",
 ];
 
 /// Connect and handshake timeout.
@@ -85,6 +86,9 @@ pub enum SocketEvent {
     /// prompt while it has not answered). On a full session's socket it may be another
     /// channel's: the engine keeps only its call channel's.
     RecordingUpdated(Box<Recording>),
+    /// `media_policy_updated`: the client media policy changed (layer hints, video on or
+    /// off).
+    MediaPolicyUpdated(Box<MediaPolicy>),
     /// The socket is gone for good.
     Closed(SocketClosed),
 }
@@ -434,6 +438,9 @@ pub fn filter_dispatch(t: &str, d: &Value) -> Option<SocketEvent> {
         "recording_updated" => serde_json::from_value::<RecordingUpdated>(d.clone())
             .ok()
             .map(|m| SocketEvent::RecordingUpdated(Box::new(m.recording))),
+        "media_policy_updated" => serde_json::from_value::<MediaPolicy>(d.clone())
+            .ok()
+            .map(|m| SocketEvent::MediaPolicyUpdated(Box::new(m))),
         _ => None,
     }
 }
@@ -745,6 +752,22 @@ mod tests {
                 assert_eq!(r.my_consent, Some(sew_proto::recording::Consent::Pending));
             }
             other => panic!("recording_updated: {other:?}"),
+        }
+        let hint = serde_json::json!({
+            "max_width": 640, "max_height": 360, "max_fps": 30,
+            "layers": [{"rid": "q", "height": 180, "max_kbps": 150}]
+        });
+        let policy = serde_json::json!({
+            "tier": "constrained", "video_enabled": true, "e2ee": "required",
+            "audio_codecs": ["opus"], "codecs": ["vp8", "h264"], "backup_codec": false,
+            "camera": hint, "screen": hint, "dynacast": true, "adaptive_stream": true
+        });
+        match filter_dispatch("media_policy_updated", &policy) {
+            Some(SocketEvent::MediaPolicyUpdated(m)) => {
+                assert_eq!(m.tier, sew_proto::voice::MediaTier::Constrained);
+                assert_eq!(m.camera.layers.len(), 1);
+            }
+            other => panic!("media_policy_updated: {other:?}"),
         }
     }
 

@@ -1,7 +1,10 @@
 //! The str0m peer connection of a voice call: the client is the full-ICE, controlling
 //! offerer, DTLS 1.2, RTP mode (the engine writes each Opus packet itself), Opus only with the
 //! RFC 6464 audio level, one `_reliable` data channel (as the SDKs open on the publisher PC),
-//! one send section for the microphone and the receive sections the engine asks for.
+//! one send section for the microphone and the receive sections the engine asks for. With
+//! `video-core`, the PC also negotiates VP8 and H.264 (each with RTX, NACK, PLI and FIR) and the
+//! Dependency Descriptor, and adds the video receive sections the engine asks for; without it,
+//! the offer is audio only, as before.
 //!
 //! Adapted from Sew's media test client (Alakazam Labs' own str0m glue, not published), trimmed
 //! to audio. All of this crate's str0m use lives here.
@@ -12,9 +15,10 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use str0m::bwe::{Bitrate, BweKind};
 use str0m::change::{SdpAnswer, SdpPendingOffer};
 use str0m::config::{CryptoProvider, DtlsVersion};
-use str0m::media::{Direction, MediaKind, Mid, Pt};
+use str0m::media::{Direction, MediaKind, Mid, Pt, Rid, Simulcast, SimulcastLayer};
 use str0m::net::{Protocol, Receive};
 use str0m::rtp::{ExtensionValues, RtpWrite};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
@@ -32,7 +36,12 @@ pub(crate) struct RtpRx {
     pub(crate) seq: u64,
     /// RTP timestamp.
     pub(crate) timestamp: u32,
-    /// Payload (an encrypted Opus frame).
+    /// The marker bit (video: the last packet of a frame).
+    pub(crate) marker: bool,
+    /// The negotiated video codec of its payload type (`None`: audio, or a payload type that is
+    /// no video codec of this PC).
+    pub(crate) video: Option<crate::video::VideoCodec>,
+    /// Payload (an encrypted Opus frame, or a part of an encrypted video frame).
     pub(crate) payload: Arc<[u8]>,
 }
 
@@ -45,6 +54,15 @@ pub(crate) enum PcEvent {
     Connected,
     /// One received RTP packet.
     Rtp(RtpRx),
+    /// The SFU asked for a keyframe (PLI or FIR) on our send section `mid`, layer `rid`.
+    KeyframeRequest {
+        /// The send section.
+        mid: String,
+        /// The simulcast layer.
+        rid: Option<String>,
+    },
+    /// str0m's send-side bandwidth estimate (TWCC), bit/s.
+    Bwe(u64),
     /// str0m's peer stats (about once a second): the selected pair's local candidate address
     /// and its ICE round-trip time.
     Peer {
@@ -68,8 +86,20 @@ pub(crate) enum IceState {
 
 #[derive(Clone, Debug)]
 enum Change {
-    SendAudio { stream: String, track: String },
+    SendAudio {
+        stream: String,
+        track: String,
+    },
+    /// A sendonly video section with simulcast send layers `rids` (lowest first).
+    SendVideo {
+        stream: String,
+        track: String,
+        rids: Vec<String>,
+    },
+    /// A send section stops (`inactive`): the engine unpublishes its track.
+    StopSend(String),
     RecvAudio,
+    RecvVideo,
     Channel(String),
     Renegotiate,
     IceRestart,
@@ -88,6 +118,9 @@ fn provider() -> Arc<CryptoProvider> {
     P.get_or_init(|| Arc::new(str0m::crypto::from_feature_flags()))
         .clone()
 }
+
+/// str0m's BWE starts here (the media server's initial estimate).
+pub(crate) const BWE_INITIAL_BPS: u64 = 1_500_000;
 
 /// The `a=mid` → `a=msid` map of an SDP (LiveKit's stream id is `PA_…|TR_…`).
 pub(crate) fn sdp_msids(sdp: &str) -> HashMap<String, (String, String)> {
@@ -157,7 +190,21 @@ fn ice_candidate(l: &LocalCandidate) -> Option<Candidate> {
 
 impl Pc {
     /// A PC with the transport's local candidates.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(locals: &[LocalCandidate], now: Instant) -> Pc {
+        Pc::new_with(locals, now, false, true)
+    }
+
+    /// A PC with the transport's local candidates; `send_video` (with `video-core`): the call
+    /// may publish video (the join's policy has video on and a camera or screen allowed), so
+    /// str0m's send-side bandwidth estimator is on too; `h264`: H.264 is negotiated beside VP8
+    /// ([`crate::ClientConfig::video_h264`]), else every video section is VP8 only.
+    pub(crate) fn new_with(
+        locals: &[LocalCandidate],
+        now: Instant,
+        send_video: bool,
+        h264: bool,
+    ) -> Pc {
         let cfg = RtcConfig::new()
             .set_crypto_provider(provider())
             .set_dtls_version(DtlsVersion::Dtls12)
@@ -165,6 +212,10 @@ impl Pc {
             .clear_codecs()
             .enable_opus(true, false)
             .set_stats_interval(Some(Duration::from_secs(1)));
+        let mut cfg = if VIDEO { video_config(cfg, h264) } else { cfg };
+        if VIDEO && send_video {
+            cfg = cfg.enable_bwe(Some(Bitrate::bps(BWE_INITIAL_BPS)));
+        }
         let mut rtc = cfg.build(now);
         let mut added = Vec::new();
         for l in locals {
@@ -221,6 +272,22 @@ impl Pc {
         }
     }
 
+    /// Queues a sendonly video section for a camera or screen share (msid `stream track`) with
+    /// the simulcast send layers `rids`, lowest first (`a=rid:<rid> send`, `a=simulcast:send`).
+    pub(crate) fn add_send_video(&mut self, stream: &str, track: &str, rids: &[String]) {
+        self.queued.push(Change::SendVideo {
+            stream: stream.to_owned(),
+            track: track.to_owned(),
+            rids: rids.to_vec(),
+        });
+    }
+
+    /// Queues the end of the send section `mid` (`inactive`): the engine unpublishes its track.
+    /// The section is never reused (a new publication takes a new one).
+    pub(crate) fn stop_send(&mut self, mid: &str) {
+        self.queued.push(Change::StopSend(mid.to_owned()));
+    }
+
     /// Queues a renegotiation without changes.
     pub(crate) fn renegotiate(&mut self) {
         self.queued.push(Change::Renegotiate);
@@ -265,8 +332,32 @@ impl Pc {
                     );
                     new_tracks.push((track, mid.to_string()));
                 }
+                Change::SendVideo {
+                    stream,
+                    track,
+                    rids,
+                } => {
+                    let mut sc = Simulcast::new();
+                    for r in &rids {
+                        sc.add_send_layer(SimulcastLayer::new(r));
+                    }
+                    let mid = api.add_media(
+                        MediaKind::Video,
+                        Direction::SendOnly,
+                        Some(stream),
+                        Some(track.clone()),
+                        (!rids.is_empty()).then_some(sc),
+                    );
+                    new_tracks.push((track, mid.to_string()));
+                }
+                Change::StopSend(mid) => {
+                    api.set_direction(mid.as_str().into(), Direction::Inactive);
+                }
                 Change::RecvAudio => {
                     api.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+                }
+                Change::RecvVideo => {
+                    api.add_media(MediaKind::Video, Direction::RecvOnly, None, None, None);
                 }
                 Change::Channel(label) => {
                     api.add_channel(label);
@@ -454,13 +545,23 @@ impl Pc {
                     Some(rx) => rx.mid().to_string(),
                     None => return,
                 };
+                let video = self.video_codec_of_pt(*p.header.payload_type);
                 events.push(PcEvent::Rtp(RtpRx {
                     mid,
                     ssrc: *ssrc,
                     seq: *p.seq_no,
                     timestamp: p.header.timestamp,
+                    marker: p.header.marker,
+                    video,
                     payload: p.payload.clone(),
                 }));
+            }
+            Event::KeyframeRequest(k) => events.push(PcEvent::KeyframeRequest {
+                mid: k.mid.to_string(),
+                rid: k.rid.map(|r| r.to_string()),
+            }),
+            Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. }) => {
+                events.push(PcEvent::Bwe(estimate.as_u64()));
             }
             Event::PeerStats(p) => {
                 let pair = p.selected_candidate_pair.as_ref();
@@ -527,9 +628,211 @@ impl Pc {
         Ok(())
     }
 
+    /// The negotiated payload type of `codec` on the send section `mid`: for H.264 one in
+    /// packetization mode 1, Constrained Baseline (`42e01f`) first.
+    pub(crate) fn video_pt(&mut self, mid: &str, codec: crate::video::VideoCodec) -> Option<u8> {
+        let mid: Mid = mid.into();
+        let remote: Vec<Pt> = self.rtc.media(mid)?.remote_pts().to_vec();
+        self.rtc
+            .codec_config()
+            .params()
+            .iter()
+            .filter(|p| remote.contains(&p.pt()))
+            .filter_map(|p| {
+                let spec = p.spec();
+                let rank = match codec {
+                    crate::video::VideoCodec::Vp8 => {
+                        (spec.codec == str0m::format::Codec::Vp8).then_some(0u8)
+                    }
+                    crate::video::VideoCodec::H264 => (spec.codec == str0m::format::Codec::H264
+                        && spec.format.packetization_mode == Some(1))
+                    .then_some(u8::from(spec.format.profile_level_id != Some(0x42e01f))),
+                };
+                rank.map(|r| (r, *p.pt()))
+            })
+            .min_by_key(|(r, _)| *r)
+            .map(|(_, pt)| pt)
+    }
+
+    /// The SSRC str0m sends simulcast layer `rid` of `mid` on, once negotiated.
+    pub(crate) fn tx_ssrc_rid(&mut self, mid: &str, rid: &str) -> Option<u32> {
+        let mid: Mid = mid.into();
+        let rid: Rid = rid.into();
+        self.rtc
+            .direct_api()
+            .stream_tx_by_mid(mid, Some(rid))
+            .map(|s| *s.ssrc())
+    }
+
+    /// Writes one video packet on layer `rid` of the send section `mid`: nackable, so str0m
+    /// answers the SFU's NACKs (over RTX where negotiated); `dd` is the packet's Dependency
+    /// Descriptor.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_video(
+        &mut self,
+        mid: &str,
+        rid: &str,
+        pt: u8,
+        seq: u64,
+        timestamp: u32,
+        now: Instant,
+        payload: Vec<u8>,
+        marker: bool,
+        dd: Vec<u8>,
+    ) -> Result<(), String> {
+        let mut ev = ExtensionValues::default();
+        if !dd.is_empty() {
+            ev.user_values.set(DdRaw(Arc::from(dd)));
+        }
+        let midv: Mid = mid.into();
+        let ridv: Rid = rid.into();
+        let mut api = self.rtc.direct_api();
+        let Some(tx) = api.stream_tx_by_mid(midv, Some(ridv)) else {
+            return Err(format!("no send stream for mid {mid} rid {rid}"));
+        };
+        tx.write_rtp(
+            RtpWrite::new(Pt::from(pt), seq.into(), timestamp, now, payload)
+                .marker(marker)
+                .ext_vals(ev)
+                .nackable(true),
+        );
+        Ok(())
+    }
+
+    /// The bitrate str0m's BWE probes up to (the sum of the wanted layers' caps).
+    pub(crate) fn set_desired_bitrate(&mut self, bps: u64) {
+        self.rtc.bwe().set_desired_bitrate(Bitrate::bps(bps));
+    }
+
     /// Closes the PC.
     pub(crate) fn disconnect(&mut self) {
         self.rtc.disconnect();
+    }
+}
+
+// ------------------------------------------------------------------ video (receive)
+//
+// Kept apart from the audio path: the publish side (simulcast send sections) adds its own
+// functions here.
+
+/// Whether this build negotiates video (`video-core`). Without it the PC is audio only and
+/// the engine adds no video section.
+pub(crate) const VIDEO: bool = cfg!(feature = "video-core");
+
+/// The Dependency Descriptor's header extension id in our offer (the answer maps it by URI).
+const DD_EXT_ID: u8 = 12;
+/// The Dependency Descriptor's URI (AV1 RTP specification, appendix A), which the media server
+/// negotiates for every video codec.
+const DD_URI: &str =
+    "https://aomediacodec.github.io/av1-rtp-spec/#dependency-descriptor-rtp-header-extension";
+
+/// H.264 payload types (main, RTX, profile-level-id), packetization mode 1 with
+/// level-asymmetry-allowed: Constrained Baseline 3.1 and Constrained High 3.1.
+const H264_PTS: [(u8, u8, u32); 2] = [(108, 109, 0x42e01f), (112, 113, 0x640c1f)];
+
+/// The codecs and the extension video adds to the PC: VP8 (str0m's default, with RTX), with
+/// `h264` the two H.264 profiles (each with RTX), NACK, PLI and FIR feedback on all of them
+/// (str0m's default for video codecs), and the Dependency Descriptor. mid, rid, repaired-rid,
+/// TWCC and abs-send-time are in str0m's standard extension map already. Without `h264` the
+/// receive sections offer VP8 only, so the media server never forwards this client H.264.
+fn video_config(cfg: RtcConfig, h264: bool) -> RtcConfig {
+    let mut cfg = cfg.enable_vp8(true);
+    if h264 {
+        for (pt, rtx, profile_level_id) in H264_PTS {
+            cfg.codec_config()
+                .add_h264(pt.into(), Some(rtx.into()), true, profile_level_id);
+        }
+    }
+    cfg.set_extension(
+        DD_EXT_ID,
+        str0m::rtp::Extension::with_serializer(DD_URI, DdExtension),
+    )
+}
+
+/// The raw Dependency Descriptor of a packet (the publish side writes it; receive ignores it:
+/// the depacketisers read VP8's and H.264's own fields).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DdRaw(pub(crate) Arc<[u8]>);
+
+/// The Dependency Descriptor as an opaque extension: parsed into [`DdRaw`], written from it.
+#[derive(Debug)]
+struct DdExtension;
+
+impl str0m::rtp::ExtensionSerializer for DdExtension {
+    fn write_to(&self, buf: &mut [u8], ev: &ExtensionValues) -> usize {
+        match ev.user_values.get::<DdRaw>() {
+            Some(d) if d.0.len() <= buf.len() => {
+                buf[..d.0.len()].copy_from_slice(&d.0);
+                d.0.len()
+            }
+            _ => 0,
+        }
+    }
+
+    fn parse_value(&self, buf: &[u8], ev: &mut ExtensionValues) -> bool {
+        ev.user_values.set(DdRaw(Arc::from(buf)));
+        true
+    }
+
+    fn is_video(&self) -> bool {
+        true
+    }
+
+    fn is_audio(&self) -> bool {
+        false
+    }
+
+    fn requires_two_byte_form(&self, ev: &ExtensionValues) -> bool {
+        ev.user_values
+            .get::<DdRaw>()
+            .is_some_and(|d| d.0.len() > 16)
+    }
+}
+
+impl Pc {
+    /// Queues `n` recvonly video sections (`MediaSectionsRequirement.num_videos`). Nothing
+    /// without `video-core`.
+    pub(crate) fn add_recv_video(&mut self, n: u32) {
+        if !VIDEO {
+            return;
+        }
+        for _ in 0..n {
+            self.queued.push(Change::RecvVideo);
+        }
+    }
+
+    /// The video codec of a negotiated (main) payload type.
+    fn video_codec_of_pt(&self, pt: u8) -> Option<crate::video::VideoCodec> {
+        if !VIDEO {
+            return None;
+        }
+        self.rtc
+            .codec_config()
+            .params()
+            .iter()
+            .find(|p| *p.pt() == pt)
+            .and_then(|p| match p.spec().codec {
+                str0m::format::Codec::Vp8 => Some(crate::video::VideoCodec::Vp8),
+                str0m::format::Codec::H264 => Some(crate::video::VideoCodec::H264),
+                _ => None,
+            })
+    }
+
+    /// Asks the sender of the remote stream `ssrc` for a keyframe: a PLI, or a FIR (`fir`).
+    /// `false` when no such receive stream exists.
+    pub(crate) fn request_keyframe(&mut self, ssrc: u32, fir: bool) -> bool {
+        let kind = if fir {
+            str0m::media::KeyframeRequestKind::Fir
+        } else {
+            str0m::media::KeyframeRequestKind::Pli
+        };
+        match self.rtc.direct_api().stream_rx(&ssrc.into()) {
+            Some(rx) => {
+                rx.request_keyframe(kind);
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -564,6 +867,132 @@ mod tests {
         );
         assert!(pc.negotiate().is_none(), "one offer at a time");
         assert!(pc.mid_for_track("mic-1").is_some());
+    }
+
+    #[test]
+    fn a_video_build_adds_video_sections_only_when_asked() {
+        let now = Instant::now();
+        let locals = [LocalCandidate {
+            addr: "127.0.0.1:40000".parse().unwrap(),
+            kind: LocalKind::Host,
+        }];
+        let mut pc = Pc::new(&locals, now);
+        pc.add_send_audio("PA_me", "mic-1");
+        let (first, _) = pc.negotiate().unwrap();
+        assert!(!first.contains("m=video"), "{first}");
+        assert!(!first.contains(DD_URI), "{first}");
+        let mut pc = Pc::new(&locals, now);
+        pc.add_send_audio("PA_me", "mic-1");
+        let queued = pc.queued.len();
+        pc.add_recv_video(2);
+        if !VIDEO {
+            assert_eq!(
+                pc.queued.len(),
+                queued,
+                "no video sections without video-core"
+            );
+            return;
+        }
+        let (sdp, _) = pc.negotiate().unwrap();
+        assert_eq!(sdp.matches("m=video").count(), 2, "{sdp}");
+        let video = &sdp[sdp.find("m=video").unwrap()..];
+        assert!(video.contains("a=recvonly"), "{video}");
+        assert!(video.contains("VP8/90000"), "{video}");
+        assert!(video.contains("H264/90000"), "{video}");
+        assert!(video.contains("rtx/90000"), "{video}");
+        for plid in ["42e01f", "640c1f"] {
+            let fmtp = video
+                .lines()
+                .find(|l| {
+                    l.starts_with("a=fmtp:") && l.contains(&format!("profile-level-id={plid}"))
+                })
+                .unwrap_or_else(|| panic!("no H.264 {plid} fmtp: {video}"));
+            assert!(fmtp.contains("packetization-mode=1"), "{fmtp}");
+            assert!(fmtp.contains("level-asymmetry-allowed=1"), "{fmtp}");
+        }
+        assert!(video.contains("nack pli"), "{video}");
+        assert!(video.contains("ccm fir"), "{video}");
+        assert!(video.contains(DD_URI), "{video}");
+        for uri in [
+            "urn:ietf:params:rtp-hdrext:sdes:mid",
+            "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+            "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
+            "transport-wide-cc",
+            "abs-send-time",
+        ] {
+            assert!(video.contains(uri), "{uri}: {video}");
+        }
+        let audio = &sdp[sdp.find("m=audio").unwrap()..sdp.find("m=video").unwrap()];
+        assert!(!audio.contains(DD_URI), "the DD is video only: {audio}");
+    }
+
+    #[test]
+    fn the_camera_offer_has_the_opened_layers_rids_and_simulcast() {
+        if !VIDEO {
+            return;
+        }
+        let now = Instant::now();
+        let locals = [LocalCandidate {
+            addr: "127.0.0.1:40000".parse().unwrap(),
+            kind: LocalKind::Host,
+        }];
+        let mut pc = Pc::new_with(&locals, now, true, true);
+        // Two layers opened (q, h): only theirs are offered.
+        pc.add_send_video("PA_me", "cam-1", &["q".to_owned(), "h".to_owned()]);
+        let (sdp, _) = pc.negotiate().unwrap();
+        let video = &sdp[sdp.find("m=video").expect("a video section")..];
+        for want in [
+            "a=sendonly",
+            "a=rid:q send",
+            "a=rid:h send",
+            "a=simulcast:send q;h",
+            "VP8/90000",
+            "H264/90000",
+            "packetization-mode=1",
+            "profile-level-id=42e01f",
+            "rtx/90000",
+            DD_URI,
+            "a=msid:PA_me cam-1",
+        ] {
+            assert!(video.contains(want), "{want} missing: {video}");
+        }
+        assert!(!video.contains("a=rid:f"), "{video}");
+        assert!(pc.mid_for_track("cam-1").is_some());
+    }
+
+    #[test]
+    fn without_h264_the_receive_sections_offer_vp8_only() {
+        if !VIDEO {
+            return;
+        }
+        let now = Instant::now();
+        let locals = [LocalCandidate {
+            addr: "127.0.0.1:40000".parse().unwrap(),
+            kind: LocalKind::Host,
+        }];
+        let mut pc = Pc::new_with(&locals, now, false, false);
+        pc.add_send_audio("PA_me", "mic-1");
+        pc.add_recv_video(2);
+        let (sdp, _) = pc.negotiate().unwrap();
+        assert_eq!(sdp.matches("m=video").count(), 2, "{sdp}");
+        let video = &sdp[sdp.find("m=video").unwrap()..];
+        assert!(video.contains("a=recvonly"), "{video}");
+        assert!(video.contains("VP8/90000"), "{video}");
+        assert!(video.contains("rtx/90000"), "{video}");
+        assert!(!video.contains("H264"), "no H.264 offered: {video}");
+        assert!(!video.contains("profile-level-id"), "{video}");
+        for line in video.lines().filter(|l| l.starts_with("m=video")) {
+            // VP8 and its RTX: two payload types.
+            assert_eq!(line.split(' ').skip(3).count(), 2, "{line}");
+        }
+    }
+
+    #[test]
+    fn linux_negotiates_vp8_only_by_default() {
+        let cfg = crate::ClientConfig::new("t", std::env::temp_dir());
+        assert_eq!(cfg.video_h264, !cfg!(target_os = "linux"));
+        assert!(cfg.clone().with_video_h264(true).video_h264);
+        assert!(!cfg.with_video_h264(false).video_h264);
     }
 
     #[test]

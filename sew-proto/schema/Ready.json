@@ -970,6 +970,10 @@
             "null"
           ]
         },
+        "erased": {
+          "description": "The account was erased (omitted when false): `display_name` is \"Deleted user\" (clients\nlocalise it by this flag), `username` is `erased-<id>` and is not shown, and there is no\navatar, title, pronouns, email or `external_id`.",
+          "type": "boolean"
+        },
         "external_id": {
           "description": "The member's K2 id (`k2:principal:<uuid>`, `k2:workspace:<uuid>` for agents, ...;\nadditive). Only on a K2-identity install, and only when the caller's session sees a\nSpace or DM shared with the member (an App session counts only its App's Spaces), or\non the self object. Never for guests or link guests; never on standalone installs.",
           "type": [

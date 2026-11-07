@@ -520,7 +520,9 @@ impl FrameSource for BlankSource {
     }
 }
 
+// They read the fixture bitstreams: only in Sew's tree (`sew_fixtures`, build.rs).
 #[cfg(test)]
+#[cfg(sew_fixtures)]
 mod tests {
     use super::*;
     use kessel_video::no_wake;

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Why a row was kept. The set is open: a reason this build does not know is still kept.",
+  "oneOf": [
+    {
+      "const": "legal_hold",
+      "description": "A legal hold covers it; it is erased when the hold lifts.",
+      "type": "string"
+    },
+    {
+      "const": "retention_min",
+      "description": "A keep-at-least policy (reserved; not sent today).",
+      "type": "string"
+    },
+    {
+      "const": "shared_with_others",
+      "description": "It holds other people's content too; it stays.",
+      "type": "string"
+    },
+    {
+      "const": "backup_retention",
+      "description": "It lives in a backup bundle or export archive until that is pruned.",
+      "type": "string"
+    },
+    {
+      "const": "audit_log",
+      "description": "The audit log is append-only.",
+      "type": "string"
+    }
+  ],
+  "title": "EraseKeptReason"
+}

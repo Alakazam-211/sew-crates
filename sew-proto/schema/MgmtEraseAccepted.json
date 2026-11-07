@@ -1,0 +1,49 @@
+{
+  "$defs": {
+    "EraseMode": {
+      "description": "What an erase does with the person's content.",
+      "oneOf": [
+        {
+          "const": "anonymise",
+          "description": "Messages, reactions and files stay, attributed to \"Deleted user\".",
+          "type": "string"
+        },
+        {
+          "const": "delete_content",
+          "description": "The person's messages are tombstoned and purged, reactions removed, uploads deleted.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`202` of `POST /mgmt/v1/principals/erase`: the account is cut off and the job is still\nrunning. Poll `GET /mgmt/v1/principals/erase/{job_id}`.",
+  "properties": {
+    "job_id": {
+      "description": "The erasure's id.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "member_id": {
+      "description": "The erased member.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "mode": {
+      "$ref": "#/$defs/EraseMode",
+      "description": "The mode that runs."
+    },
+    "pending": {
+      "description": "Always `true`.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "job_id",
+    "member_id",
+    "mode",
+    "pending"
+  ],
+  "title": "MgmtEraseAccepted",
+  "type": "object"
+}

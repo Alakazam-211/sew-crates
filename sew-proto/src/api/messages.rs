@@ -138,6 +138,16 @@ unit_enum! {
     }
 }
 
+unit_enum! {
+    /// Why a tombstone is one, when it is not the usual delete (`Message.deleted_reason`).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    pub enum DeletedReason {
+        /// Deleted with its author's account (an account erase). Clients may show "Deleted
+        /// with the account".
+        Erased = "erased",
+    }
+}
+
 /// A message's reference to another message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MessageReference {
@@ -343,6 +353,10 @@ pub struct Message {
     /// When it was deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<Timestamp>,
+    /// Why the tombstone is one: `erased` when it went with its author's account; absent for
+    /// every other delete and on live messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_reason: Option<DeletedReason>,
     /// Link previews in body order; `[]` on tombstones and until the preview job lands.
     #[serde(default)]
     pub previews: Vec<LinkPreview>,

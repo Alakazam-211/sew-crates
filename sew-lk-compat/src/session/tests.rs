@@ -758,6 +758,27 @@ fn request_responses() {
 }
 
 #[test]
+fn stream_states_are_passed_on() {
+    let t0 = Instant::now();
+    let mut s = joined_session(t0);
+    let states = vec![StreamStateInfo {
+        participant_sid: "PA_a".to_owned(),
+        track_sid: "TR_v".to_owned(),
+        state: sew_lkproto::livekit::StreamState::Paused as i32,
+    }];
+    s.handle_response(
+        t0,
+        msg(Msg::StreamStateUpdate(
+            sew_lkproto::livekit::StreamStateUpdate {
+                stream_states: states.clone(),
+            },
+        )),
+    );
+    assert_eq!(events(&mut s), vec![SessionEvent::StreamStates(states)]);
+    assert_eq!(s.counters().unknown, 0);
+}
+
+#[test]
 fn counters_ignored_and_unknown() {
     let t0 = Instant::now();
     let mut s = Session::new(t0);

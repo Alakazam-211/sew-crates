@@ -377,6 +377,36 @@ pub struct JoinArgs {
     pub deafened: Option<bool>,
 }
 
+/// A native join's options ([`crate::VoiceControl::join_with`]), for what CallKit's or
+/// Telecom's start says (video calls): `JoinOptions::default()` is a plain join.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct JoinOptions {
+    /// Turn the camera on as soon as the call is connected and the app is in front (the
+    /// engine takes the lease and publishes). Refusals come back as `local_video {camera:
+    /// "off", reason: <code>}`; the call still joins.
+    pub camera: bool,
+    /// The camera (a `video_devices` id or `"default"`; `None`: the one `set_video_device`
+    /// chose, else the default).
+    pub camera_device: Option<String>,
+}
+
+impl JoinOptions {
+    /// A join with the camera on (the chosen camera).
+    pub fn with_camera() -> JoinOptions {
+        JoinOptions {
+            camera: true,
+            camera_device: None,
+        }
+    }
+
+    /// With camera `device` (a `video_devices` id or `"default"`).
+    pub fn camera_device(mut self, device: &str) -> JoinOptions {
+        self.camera_device = Some(device.to_owned());
+        self
+    }
+}
+
 /// `join`'s answer: `{call_id}`. No token in or out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -593,7 +623,11 @@ impl StateEvent {
 ///
 /// `{"state": "connected", "target": "acme", "room": "48831765147549698", "participants":
 /// [...], "call_id": "r_..."}`.
+///
+/// Non-exhaustive (0.5.0): later releases add fields without a breaking change. Outside this
+/// crate, build one with [`StateSnapshot::new`] and set the fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct StateSnapshot {
     /// The current state.
     #[serde(flatten)]
@@ -612,11 +646,51 @@ pub struct StateSnapshot {
     /// The call's active recording (Sew 0.7.3), as the `recording` event; absent when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<RecordingInfo>,
+    /// The call's video tracks, as the `video` event; absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video: Vec<VideoTrack>,
+    /// This device's camera and screen, as the `local_video` event; absent while both are
+    /// off with no reason.
+    #[serde(default, skip_serializing_if = "LocalVideo::is_idle")]
+    pub local_video: LocalVideo,
+    /// The room's media policy (Sew's join answer's `MediaPolicy`, or the last
+    /// `media_policy_updated`), as the `policy` event; absent with no call or from an engine
+    /// without video.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<Value>,
+    /// The call has video, local (this device's camera or screen on or paused) or remote (an
+    /// unmuted camera or screen): a phone routes the call's audio to the speaker while it is
+    /// true (the listener's `video_changed`). Absent while false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_video: bool,
+}
+
+impl StateSnapshot {
+    /// A snapshot of `state` and nothing else: no `target` or `room`, no participants, no call
+    /// id, recording, video or policy.
+    pub fn new(state: CallState) -> StateSnapshot {
+        StateSnapshot {
+            state,
+            target: None,
+            room: None,
+            participants: Vec::new(),
+            call_id: None,
+            recording: None,
+            video: Vec::new(),
+            local_video: LocalVideo::default(),
+            policy: None,
+            has_video: false,
+        }
+    }
 }
 
 /// The plugin's events. Each window gets every event as `sew-voice://<name>`.
+///
+/// Non-exhaustive (0.5.0): later releases add events without a breaking change, so a `match`
+/// outside this crate needs a `_` arm.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum PluginEvent {
     /// `state`: [`StateEvent`] (the [`CallState`] with the call's `target` and `room`).
     State(StateEvent),
@@ -630,24 +704,45 @@ pub enum PluginEvent {
     Devices(DeviceList),
     /// `recording`: [`RecordingInfo`], or `null` when no recording is active.
     Recording(Option<RecordingInfo>),
+    /// `security`: [`crate::details::SecurityInfo`], or `null` with no call (0.4.1).
+    Security(Option<crate::details::SecurityInfo>),
+    /// `roster`: `[RosterEntry]`, every media participant with its engine identity and label
+    /// (0.4.1).
+    Roster(Vec<crate::details::RosterEntry>),
+    /// `quality`: [`crate::details::QualityInfo`] (0.4.1).
+    Quality(crate::details::QualityInfo),
+    /// `incoming`: [`crate::details::IncomingCall`], or `null` once it stops ringing (0.4.1).
+    Incoming(Option<crate::details::IncomingCall>),
+    /// `video`: `[VideoTrack]`, the whole list on any change.
+    Video(Vec<VideoTrack>),
+    /// `local_video`: [`LocalVideo`].
+    LocalVideo(LocalVideo),
+    /// `video_devices`: [`VideoDevices`], on hot-plug.
+    VideoDevices(VideoDevices),
+    /// `policy`: the room's new `MediaPolicy` (Sew's `media_policy_updated`).
+    Policy(Value),
 }
 
 /// The prefix of every event name the plugin emits: `sew-voice://state` and so on.
 pub const EVENT_PREFIX: &str = "sew-voice://";
 
-/// The six event names, without [`EVENT_PREFIX`].
-pub const EVENT_NAMES: [&str; 6] = [
+/// The event names, without [`EVENT_PREFIX`]: the six of voice, then the four of video.
+pub const EVENT_NAMES: [&str; 10] = [
     "state",
     "participants",
     "speaking",
     "errors",
     "devices",
     "recording",
+    "video",
+    "local_video",
+    "video_devices",
+    "policy",
 ];
 
 impl PluginEvent {
-    /// The event's frozen name: `state`, `participants`, `speaking`, `errors`, `devices` or
-    /// `recording`.
+    /// The event's frozen name: `state`, `participants`, `speaking`, `errors`, `devices`,
+    /// `recording`, `video`, `local_video`, `video_devices` or `policy`.
     pub fn name(&self) -> &'static str {
         match self {
             PluginEvent::State(_) => "state",
@@ -656,6 +751,14 @@ impl PluginEvent {
             PluginEvent::Errors(_) => "errors",
             PluginEvent::Devices(_) => "devices",
             PluginEvent::Recording(_) => "recording",
+            PluginEvent::Security(_) => "security",
+            PluginEvent::Roster(_) => "roster",
+            PluginEvent::Quality(_) => "quality",
+            PluginEvent::Incoming(_) => "incoming",
+            PluginEvent::Video(_) => "video",
+            PluginEvent::LocalVideo(_) => "local_video",
+            PluginEvent::VideoDevices(_) => "video_devices",
+            PluginEvent::Policy(_) => "policy",
         }
     }
 
@@ -673,9 +776,502 @@ impl PluginEvent {
             PluginEvent::Errors(e) => serde_json::to_value(e),
             PluginEvent::Devices(d) => serde_json::to_value(d),
             PluginEvent::Recording(r) => serde_json::to_value(r),
+            PluginEvent::Security(s) => serde_json::to_value(s),
+            PluginEvent::Roster(r) => serde_json::to_value(r),
+            PluginEvent::Quality(q) => serde_json::to_value(q),
+            PluginEvent::Incoming(i) => serde_json::to_value(i),
+            PluginEvent::Video(v) => serde_json::to_value(v),
+            PluginEvent::LocalVideo(l) => serde_json::to_value(l),
+            PluginEvent::VideoDevices(d) => serde_json::to_value(d),
+            PluginEvent::Policy(p) => Ok(p.clone()),
         };
         // These types are plain structs of strings, bools and numbers; serde_json cannot fail
         // on them (a NaN level is written as null).
         v.unwrap_or(Value::Null)
     }
+}
+
+// ───────────────────────────── video ─────────────────────────────
+
+pub use crate::video::{Tile, VideoCodec};
+
+/// The `video_caps` answer: what this device's video can do.
+///
+/// `{camera, screen: {supported, system_picker, list, windows}, publish_codecs, decode_codecs,
+/// receive, self_view, live_switch, backend}`. An engine without video (and a plugin built
+/// without it) answers everything off: `camera: false`, no screen, no codecs, `receive`,
+/// `self_view` and `live_switch` `false`, backend `null`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoCaps {
+    /// A camera API is present (there may still be no camera).
+    pub camera: bool,
+    /// Screen capture.
+    pub screen: ScreenCaps,
+    /// The codecs this device can send.
+    pub publish_codecs: Vec<VideoCodec>,
+    /// The codecs the engine can decode itself (the decoded fallback; the webview's own
+    /// WebCodecs probe is separate).
+    pub decode_codecs: Vec<VideoCodec>,
+    /// The engine receives remote camera and screen tracks: decrypted, checked encoded frames
+    /// through the sinks, for the webview's WebCodecs (the plugin's `video-core`). Missing in
+    /// an older payload: `false`.
+    #[serde(default)]
+    pub receive: bool,
+    /// The `local:camera` and `local:screen` sinks are fed this device's own camera and screen
+    /// during a call (the published layers' own frames) as well as by the preview. Missing in
+    /// an older payload: `false` (an older plugin feeds `local:camera` from the preview only).
+    #[serde(default)]
+    pub self_view: bool,
+    /// `set_video_device` switches a camera that is being published now, not only the one the
+    /// next `camera {on}` opens. Missing in an older payload: `false`.
+    #[serde(default)]
+    pub live_switch: bool,
+    /// The video backend (`apple`, `windows`, `linux`, `android`, `fake`, or `null` for an
+    /// engine without video).
+    pub backend: String,
+}
+
+impl Default for VideoCaps {
+    fn default() -> VideoCaps {
+        VideoCaps {
+            camera: false,
+            screen: ScreenCaps::default(),
+            publish_codecs: Vec::new(),
+            decode_codecs: Vec::new(),
+            receive: false,
+            self_view: false,
+            live_switch: false,
+            backend: "null".into(),
+        }
+    }
+}
+
+/// Screen capture support (`video_caps.screen`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenCaps {
+    /// Any screen capture (false on Linux without the portal or libpipewire, and on phones).
+    pub supported: bool,
+    /// `screen {on: true}` without a `source` shows the OS picker (macOS 14+, Windows, the
+    /// Linux portal).
+    pub system_picker: bool,
+    /// `screen_sources` lists displays and windows (macOS, Windows).
+    pub list: bool,
+    /// Single windows, not only displays.
+    pub windows: bool,
+}
+
+/// Which way a camera faces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Facing {
+    /// The front (selfie) camera.
+    Front,
+    /// The back camera.
+    Back,
+    /// A plugged-in camera.
+    External,
+    /// The OS doesn't say (most desktop cameras).
+    Unknown,
+}
+
+/// One camera.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Camera {
+    /// The stable id `set_video_device` and `camera` take.
+    pub id: String,
+    /// The OS's name for it.
+    pub name: String,
+    /// Which way it faces.
+    pub facing: Facing,
+    /// The OS default.
+    pub default: bool,
+}
+
+/// An OS permission's state: `"granted"`, `"denied"`, `"prompt"` or `"unsupported"`.
+///
+/// An engine maps the OS's states onto these four: restricted (MDM, parental controls) is
+/// `denied`; not asked yet is `prompt`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionState {
+    /// Allowed.
+    Granted,
+    /// Refused, by the person or by policy (the OS's restricted state too).
+    Denied,
+    /// Not asked yet: the OS will ask on the first `camera`, `screen` or `preview`.
+    Prompt,
+    /// No such capture on this OS or in this build (screen capture on Linux without the portal
+    /// or libpipewire, a build or an engine without video).
+    #[default]
+    Unsupported,
+}
+
+/// The OS permissions video needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoPermissions {
+    /// The camera.
+    pub camera: PermissionState,
+    /// Screen recording.
+    pub screen: PermissionState,
+}
+
+/// The `video_devices` answer and the `video_devices` event (hot-plug):
+/// `{cameras: [{id, name, facing, default}], camera, permission: {camera, screen}}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoDevices {
+    /// The cameras.
+    pub cameras: Vec<Camera>,
+    /// The camera chosen with `set_video_device` (`null`: the OS default).
+    pub camera: Option<String>,
+    /// The OS permissions.
+    pub permission: VideoPermissions,
+}
+
+/// `set_video_device`'s arguments: `{camera}`, a camera id or `"default"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetVideoDeviceArgs {
+    /// The camera's id, or `"default"`.
+    pub camera: String,
+}
+
+/// `camera`'s arguments: `{on, device?}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraArgs {
+    /// Publish the camera, or stop it.
+    pub on: bool,
+    /// A camera id or `"default"` (absent: the chosen one).
+    #[serde(default)]
+    pub device: Option<String>,
+}
+
+/// `screen`'s arguments: `{on, source?}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenArgs {
+    /// Share, or stop sharing.
+    pub on: bool,
+    /// A `screen_sources` id (absent: the OS picker).
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// `preview`'s arguments: `{on, device?}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewArgs {
+    /// Open the preview, or close it.
+    pub on: bool,
+    /// A camera id or `"default"` (absent: the chosen one).
+    #[serde(default)]
+    pub device: Option<String>,
+}
+
+/// `preview`'s answer: `{sink_track: "local:camera"}`, the track to open a sink on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewAnswer {
+    /// The track the preview's frames come on.
+    pub sink_track: String,
+}
+
+/// Whether a display or a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenKind {
+    /// A whole display.
+    Display,
+    /// One window.
+    Window,
+}
+
+/// One entry of `screen_sources`: `{id, kind, title, app?, width, height, thumbnail_png?}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenSource {
+    /// The id `screen {on: true, source}` takes.
+    pub id: String,
+    /// Display or window.
+    pub kind: ScreenKind,
+    /// The display's name or the window's title.
+    pub title: String,
+    /// The window's app, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// A small preview: a PNG at most 320 px wide, base64 (standard alphabet, padded, no
+    /// `data:` prefix; prefix `data:image/png;base64,` for an `<img>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_png: Option<String>,
+}
+
+/// Which source a video track carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoSource {
+    /// A camera.
+    Camera,
+    /// A screen share.
+    Screen,
+}
+
+/// Why a track's video is paused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoPaused {
+    /// The media server paused it: this device's downlink is congested.
+    Congestion,
+    /// The sender is in the background (a phone).
+    Background,
+    /// The room's policy paused it.
+    Policy,
+}
+
+/// One entry of the `video` event: a video track in the call.
+///
+/// `{member_id, is_self, source, track, codec, width, height, muted, paused, unsupported?}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoTrack {
+    /// The sender (Sew's member id).
+    pub member_id: String,
+    /// This device's own track (self-view uses `local:camera` / `local:screen`, not `track`).
+    pub is_self: bool,
+    /// Camera or screen.
+    pub source: VideoSource,
+    /// The `track_sid` to open a sink on.
+    pub track: String,
+    /// The track's codec.
+    pub codec: VideoCodec,
+    /// The sender's largest layer, in pixels.
+    pub width: u32,
+    /// The sender's largest layer, in pixels.
+    pub height: u32,
+    /// The sender turned the video off for now (the track stays).
+    pub muted: bool,
+    /// Why no frames come, or `null`.
+    pub paused: Option<VideoPaused>,
+    /// This device can't show the track (written only when `true`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unsupported: bool,
+}
+
+/// One of this device's own video sources (`local_video.camera`, `.screen`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalVideoState {
+    /// Not sending.
+    #[default]
+    Off,
+    /// Asking the OS permission, the lease or the device.
+    Asking,
+    /// Sending.
+    On,
+    /// Published but paused (background, thermal).
+    Paused,
+}
+
+/// The `local_video` event: `{camera, screen, reason?}`.
+///
+/// `reason` says why the last change happened: a `camera`/`screen` reject code, `background`,
+/// `thermal`, `user_stopped`, `source_closed` or `video_disabled`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalVideo {
+    /// The camera.
+    pub camera: LocalVideoState,
+    /// The screen share.
+    pub screen: LocalVideoState,
+    /// Why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl LocalVideo {
+    /// Both off, no reason: what a voice-only call has (the `state` command leaves it out).
+    pub fn is_idle(&self) -> bool {
+        *self == LocalVideo::default()
+    }
+}
+
+/// The webview decoder's counters of one sink (`video_sink_update.stats`), **cumulative since
+/// the sink opened** (each update replaces the last; the plugin sums a track's sinks).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SinkStats {
+    /// Frames decoded.
+    pub decoded: u64,
+    /// Frames dropped (decoder behind, decode errors).
+    pub dropped: u64,
+    /// Freezes seen.
+    pub freezes: u64,
+    /// Time frozen, in ms.
+    pub freeze_ms: u64,
+}
+
+/// `video_sink`'s arguments (without the `channel`, which is Tauri's):
+/// `{track, width, height, visible, tile, decode}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoSinkArgs {
+    /// A remote `track_sid`, `"local:camera"` or `"local:screen"`.
+    pub track: String,
+    /// The element's width in device pixels.
+    pub width: u32,
+    /// The element's height in device pixels.
+    pub height: u32,
+    /// The element is on screen.
+    pub visible: bool,
+    /// `large` (30 fps) or `grid` (15 fps).
+    pub tile: Tile,
+    /// The webview's WebCodecs probe: `["vp8", "h264"]`, or fewer (unknown names are ignored).
+    pub decode: Vec<String>,
+}
+
+/// How a sink's frames come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SinkMode {
+    /// Encoded frames (kind 1), decoded by the webview's WebCodecs.
+    Encoded,
+    /// Decoded frames (kinds 2 and 3): the fallback for a webview that can't decode the
+    /// track's codec. The engine decodes; frames are I420 (kind 2), or RGBA (kind 3) for a
+    /// webview without WebCodecs (an empty `decode`), scaled to fit the sink, at most 640x360
+    /// and 15 fps.
+    Decoded,
+}
+
+/// `video_sink`'s answer: `{sink_id, codec, mode}`. `codec` is the track's (`null` for a
+/// self-view sink before the camera or preview runs; every frame's header names it too).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoSinkAnswer {
+    /// The sink, in every frame header and the later sink commands.
+    pub sink_id: u32,
+    /// The track's codec (`null` in `decoded` mode, and for a self-view sink before its first
+    /// frame).
+    pub codec: Option<VideoCodec>,
+    /// `encoded`, or `decoded` (the engine decodes; see [`SinkMode::Decoded`]).
+    pub mode: SinkMode,
+}
+
+/// `video_sink_update`'s arguments: `{sink_id, width?, height?, visible?, tile?, stats?}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoSinkUpdateArgs {
+    /// The sink.
+    pub sink_id: u32,
+    /// The new width in device pixels.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// The new height in device pixels.
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// On screen or not.
+    #[serde(default)]
+    pub visible: Option<bool>,
+    /// The tile class.
+    #[serde(default)]
+    pub tile: Option<Tile>,
+    /// The decoder's counters.
+    #[serde(default)]
+    pub stats: Option<SinkStats>,
+}
+
+/// `video_sink_close` and `request_keyframe`'s arguments: `{sink_id}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SinkIdArgs {
+    /// The sink.
+    pub sink_id: u32,
+}
+
+/// The video command and event codes (each command rejects `{code, detail}`).
+pub mod video_code {
+    /// The engine has no video (built without it, or an engine that doesn't do video).
+    pub const VIDEO_UNSUPPORTED: &str = "video_unsupported";
+    /// `video_sink` on a track the call doesn't have.
+    pub const UNKNOWN_TRACK: &str = "unknown_track";
+    /// A sink command for a sink that isn't open.
+    pub const UNKNOWN_SINK: &str = "unknown_sink";
+    /// `video_sink`: the webview can't decode the track's codec and the engine can't either
+    /// (`detail.codec`): no decoded fallback for it.
+    pub const DECODED_UNSUPPORTED: &str = "decoded_unsupported";
+    /// `video_sink`: the sink would need the decoded fallback and this device already decodes
+    /// its most tiles (`detail.max`, 4). The tile shows its participant's avatar and "video
+    /// paused (this device)"; opening it again once another decoded sink closes may succeed.
+    pub const DECODED_TILES_FULL: &str = "decoded_tiles_full";
+    /// The room's policy allows no video, or no camera for this member.
+    pub const VIDEO_NOT_ALLOWED: &str = "video_not_allowed";
+    /// Sew turned video off for the room (`policy_denied video_disabled`).
+    pub const VIDEO_DISABLED: &str = "video_disabled";
+    /// The OS camera permission is denied or restricted.
+    pub const CAMERA_DENIED: &str = "camera_denied";
+    /// `camera {on}`: the OS camera permission is denied or restricted. The plugin never
+    /// prompts on its own: the person changes it in the OS settings.
+    pub const CAMERA_PERMISSION_DENIED: &str = "camera_permission_denied";
+    /// `camera {on}`: the person was never asked. The plugin never prompts on its own: the
+    /// app's camera button calls `request_camera_permission` first (iOS shows the OS prompt;
+    /// on Android the app asks for CAMERA itself), then `camera {on}`.
+    pub const CAMERA_PERMISSION_NOT_DETERMINED: &str = "camera_permission_not_determined";
+    /// Another app holds the camera.
+    pub const CAMERA_BUSY: &str = "camera_busy";
+    /// No such camera.
+    pub const CAMERA_NOT_FOUND: &str = "camera_not_found";
+    /// Every camera slot of the room is taken.
+    pub const VIDEO_SLOTS_FULL: &str = "video_slots_full";
+    /// The media server is busy (`detail.retry_after`).
+    pub const MEDIA_BUSY: &str = "media_busy";
+    /// The media server is at capacity.
+    pub const MEDIA_CAPACITY: &str = "media_capacity";
+    /// No encoder for a codec the room allows.
+    pub const CODEC_UNAVAILABLE: &str = "codec_unavailable";
+    /// The OS screen-recording permission is denied (macOS: System Settings, Privacy).
+    pub const SCREEN_DENIED: &str = "screen_denied";
+    /// Every screen-share slot of the room is taken.
+    pub const SCREEN_SLOTS_FULL: &str = "screen_slots_full";
+    /// The person cancelled the OS picker.
+    pub const PICKER_CANCELLED: &str = "picker_cancelled";
+    /// No screen capture here (Linux without the portal or libpipewire, phones).
+    pub const SCREEN_UNSUPPORTED: &str = "screen_unsupported";
+    /// `errors`: a track stayed broken 5 s after a full keyframe request.
+    pub const VIDEO_STALLED: &str = "video_stalled";
+    /// `errors`: a video encoder failed and couldn't be reopened.
+    pub const ENCODER_LOST: &str = "encoder_lost";
+    /// `errors`: the camera went away while sending.
+    pub const CAMERA_LOST: &str = "camera_lost";
+    /// `screen {on: true, source}`: the listed display or window is gone (or was never listed).
+    pub const SCREEN_NOT_FOUND: &str = "screen_not_found";
+    /// The camera or screen failed in a way none of the other codes says (`detail.error`: the
+    /// video backend's own code).
+    pub const CAPTURE_FAILED: &str = "capture_failed";
+}
+
+/// The `local_video.reason` words that are not reject codes (with them: `camera_denied` /
+/// `screen_denied` when the OS permission was revoked while sending, `camera_lost`,
+/// `camera_busy` when another app took the camera).
+pub mod video_reason {
+    /// A shared window is minimised or hidden: frames stop, the share stays (`paused`).
+    pub const HIDDEN: &str = "hidden";
+    /// The app is in the background (phones; `paused`).
+    pub const BACKGROUND: &str = "background";
+    /// Thermal pressure stopped the camera (`paused`).
+    pub const THERMAL: &str = "thermal";
+    /// The OS paused the source for a reason it added later (`paused`).
+    pub const PAUSED: &str = "paused";
+    /// The person stopped the share from the OS's own UI (`off`).
+    pub const USER_STOPPED: &str = "user_stopped";
+    /// The shared window closed, or the shared display went away (`off`).
+    pub const SOURCE_CLOSED: &str = "source_closed";
+    /// The room's policy turned video off (`off`).
+    pub const VIDEO_DISABLED: &str = "video_disabled";
 }

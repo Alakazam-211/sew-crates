@@ -16,6 +16,11 @@
       "const": "retention",
       "description": "File retention removed it.",
       "type": "string"
+    },
+    {
+      "const": "erased",
+      "description": "Its uploader's account was erased with its content (minor 11).",
+      "type": "string"
     }
   ],
   "title": "RemoveKind"

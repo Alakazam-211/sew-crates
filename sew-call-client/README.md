@@ -45,9 +45,16 @@ Not affiliated with or endorsed by LiveKit.
   noise suppression on; desktop keeps cpal (`AUDIO_BACKEND` says which). On Android call
   `sew_call_client::android_init(env, context)` before the first join (the platform TLS
   verifier needs the JVM), and add rustls-platform-verifier's Kotlin component to the app.
-- `video-core` and `video` (off by default, not yet wired into calls): `kessel-video`, K2's
-  cameras, screen capture and video codecs, without (`video-core`) or with (`video`) the
-  system's devices and OS codecs. A build without them has no video at all.
+- `video-core` and `video` (off by default): `kessel-video`, K2's cameras, screen capture and
+  video codecs, without (`video-core`) or with (`video`) the system's devices, OS codecs and
+  its pure-Rust VP8. With either, calls receive video: the remote camera and screen tracks
+  (`CallEvent::VideoAdded`, `VideoChanged`, `VideoRemoved`, `Participant::camera` and
+  `screen`), each disabled at the media server until the host opens a sink for it
+  (`Call::video_sink`), then decrypted, verified encoded VP8 and H.264 frames through
+  `Call::video_frames`. `VideoCapture` opens cameras and screens (the OS picker, the screen
+  list with PNG thumbnails) and runs the pre-join camera preview; `VideoBridge` publishes the
+  camera and screens opened through it (one opener holds the camera), with the in-call
+  self-view (`VideoBridge::self_view`). A build without them negotiates no video at all.
 - `builtin-ring-provider` (default): TLS falls back to rustls's ring provider when you pass
   no provider and install no process default (see "TLS crypto provider" below). Without it,
   that case is refused with `no_crypto_provider`.
@@ -72,9 +79,9 @@ built-in)`. It covers TLS only; the call's DTLS and SRTP keep their own backend.
 ## Usage
 
 The crate is not published on crates.io yet, because some of its dependencies are not:
-`sew-e2ee` and `sew-mls-crypto` (held back for the P-256 advisory below), `kessel-audio` (K2's
-audio pipeline, which you supply; `kessel-video` too with the video features) and Alakazam
-Labs' forks of `str0m` and `dimpl`. Until they are, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates)
+`sew-e2ee` and `sew-mls-crypto` (held back for the P-256 advisory below) and Alakazam Labs'
+forks of `str0m` and `dimpl` (K2's `kessel-audio` and `kessel-video` come from crates.io).
+Until they are, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates)
 repository, which holds it with the Sew crates it depends on: clone it into your project (for
 example as `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists
 into your workspace's root `Cargo.toml`. It needs a Sew server to join calls on (see the same
@@ -82,8 +89,13 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.4.1"
+sew-call-client = "0.5.0"
 ```
+
+**Known issue without the `str0m` fork.** The fork's `[patch.crates-io]` rows carry a fix to
+str0m's bandwidth estimate at the start of a call. A build that takes `str0m` from crates.io
+instead works, but video layers can start low for a few seconds after joining until str0m
+releases the fix.
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
 session and returns it. A minimal one, and a call through it (the same code is compiled as the

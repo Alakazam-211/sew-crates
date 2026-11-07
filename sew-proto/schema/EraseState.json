@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Where an erasure stands.",
+  "oneOf": [
+    {
+      "const": "running",
+      "description": "The account is cut off; the job is still erasing.",
+      "type": "string"
+    },
+    {
+      "const": "waiting",
+      "description": "The pass is done, but some kept rows are pending (a legal hold, backups).",
+      "type": "string"
+    },
+    {
+      "const": "completed",
+      "description": "Nothing is pending; any rows left are final.",
+      "type": "string"
+    }
+  ],
+  "title": "EraseState"
+}

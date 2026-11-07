@@ -26,6 +26,7 @@ mod app_settings;
 mod apps;
 mod backups;
 mod channels;
+mod erase;
 mod identity;
 pub mod local;
 mod meet;
@@ -52,6 +53,12 @@ pub use channels::{
     MgmtChannelCreateRequest, MgmtChannelCreateResponse, MgmtChannelNotAdded,
     MgmtChannelNotAddedReason, MgmtChannelOp, MgmtChannelOpKind, MgmtChannelOpResult,
     MgmtChannelTypeMismatchDetails, MgmtMemberRef,
+};
+pub use erase::{
+    EraseKeptKind, EraseKeptReason, EraseMode, EraseState, FEATURE_PRINCIPAL_ERASE,
+    MGMT_ERASURES_LIMIT_DEFAULT, MGMT_ERASURES_LIMIT_MAX, MgmtEraseAccepted, MgmtEraseCounts,
+    MgmtEraseKept, MgmtEraseRequest, MgmtEraseResult, MgmtErasurePage, MgmtErasuresQuery,
+    StatusErasures,
 };
 pub use identity::{
     FEATURE_PRINCIPAL_RELINK, IdentitySwitchRequest, IdentitySwitchResponse,
@@ -233,6 +240,7 @@ pub struct StatusJobs {
 unit_enum! {
     /// A status alarm. K2 shows each one verbatim.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum StatusAlarm {
         /// `db.ok = false`.
         DbDown = "db_down",
@@ -278,6 +286,9 @@ unit_enum! {
         DigestMailUnconfigured = "digest_mail_unconfigured",
         /// A running export wrote no progress for 10 minutes.
         ExportStuck = "export_stuck",
+        /// A running account erasure made no progress for 10 minutes (its job is lost, overdue
+        /// or has failed for that long; a wait for an active recording is not stuck).
+        EraseStuck = "erase_stuck",
         /// Voice is enabled and the media engine has been unreachable for more than 60 s.
         VoiceMediaDown = "voice_media_down",
         /// The snapshot audit found voice state Sew did not expect.
@@ -599,6 +610,9 @@ pub struct Status {
     /// Exports running, queued and on disk (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exports: Option<crate::api::exports::StatusExports>,
+    /// Account erasures running and waiting (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erasures: Option<StatusErasures>,
     /// Voice, the media engine and call keys (additive). Absent while
     /// voice was never configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -724,6 +738,8 @@ pub const FEATURES: &[&str] = &[
     FEATURE_MGMT_VOICE_STATES,
     // `GET /mgmt/v1/people/{external_id}/notifications`.
     FEATURE_PERSON_NOTIFICATIONS,
+    // `principals/erase`, its status and list routes, and the `erased:` tombstone id.
+    FEATURE_PRINCIPAL_ERASE,
     // `principals/relink`, `identity/switch` and the transition state.
     FEATURE_PRINCIPAL_RELINK,
     // Private Spaces (`Space.private`, `/mgmt/v1/spaces/{space_id}/settings`).
@@ -1048,8 +1064,21 @@ pub struct UpdatePrincipalRequest {
 
 impl Validate for UpdatePrincipalRequest {
     fn validate(&self) -> Result<(), ValidationError> {
+        not_erased("external_id", &self.external_id)?;
         self.profile.validate().map_err(|e| e.nested("profile"))
     }
+}
+
+/// Refuses an erased member's tombstone id (`erased:<member_id>`) as a mgmt input: it is
+/// Sew's own name for an erased account, never an id a caller addresses.
+fn not_erased(field: &str, e: &ExternalId) -> Result<(), ValidationError> {
+    if e.is_erased() {
+        return Err(ValidationError::invalid(
+            field,
+            "erased:<member_id> names an erased account and is never a mgmt input",
+        ));
+    }
+    Ok(())
 }
 
 /// Body of `POST /mgmt/v1/principals/deprovision`.
@@ -1062,7 +1091,7 @@ pub struct DeprovisionRequest {
 
 impl Validate for DeprovisionRequest {
     fn validate(&self) -> Result<(), ValidationError> {
-        Ok(())
+        not_erased("external_id", &self.external_id)
     }
 }
 
@@ -1095,6 +1124,9 @@ pub struct RevokeSessionsRequest {
 
 impl Validate for RevokeSessionsRequest {
     fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(e) = &self.external_id {
+            not_erased("external_id", e)?;
+        }
         if self.external_id.is_none() && self.k2_sid.is_none() && self.app_id.is_none() {
             return Err(ValidationError::invalid(
                 "external_id",
@@ -1466,6 +1498,9 @@ pub mod reasons {
     /// Sew 0.8.0: the home client is never a participant App: a link naming it, or a home
     /// client that is a participant somewhere (409).
     pub const HOME_CLIENT_CANNOT_LINK: &str = "home_client_cannot_link";
+    /// An erase asks for `anonymise` after the account was erased with `delete_content` (409;
+    /// the content is gone).
+    pub const ERASE_MODE_DOWNGRADE: &str = "erase_mode_downgrade";
     /// `governance: app` while box users (`k2:owner`, `k2:connect:`) other than
     /// the owner are members of the Space (409, `MgmtBoxUsersDetails`).
     pub const BOX_USERS_PRESENT: &str = "box_users_present";

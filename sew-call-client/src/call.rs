@@ -28,6 +28,8 @@ use crate::stats::{CallStatsReport, PlayoutStats, StatsWindow};
 pub(crate) const SEND_QUEUE: usize = 50;
 /// Items the receive queue holds before it drops (and counts) new frames.
 pub(crate) const RECV_QUEUE: usize = 1024;
+/// Items the video receive queue holds before it drops (and counts) new frames.
+pub(crate) const VIDEO_RECV_QUEUE: usize = 256;
 
 /// Why a call ended (`ended.reason`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -121,6 +123,12 @@ pub struct Participant {
     pub speak_denied: bool,
     /// The recorder (Sew Notes): the engine's recorder participant, which has no member.
     pub recorder: bool,
+    /// The participant's camera track, if it publishes one (`video-core` builds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera: Option<crate::video::VideoTrackView>,
+    /// The participant's screen-share track, if it publishes one (`video-core` builds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<crate::video::VideoTrackView>,
 }
 
 /// A person's answer to a recording's notice, as Sew stores it.
@@ -286,6 +294,76 @@ pub enum CallEvent {
     /// The call's recording changed (Sew 0.7.3): started, someone answered, this person's
     /// prompt, or `None` once no recording is active (also [`Call::recording`]).
     Recording(Option<Box<CallRecording>>),
+    /// The call's key state or its security code changed (also [`CallSnapshot::security`]):
+    /// a new epoch, the keys securing or recovering, or a re-join's new key session.
+    Security(CallSecurity),
+    /// A remote camera or screen track appeared (`video-core` builds). It is disabled at the
+    /// media server until the host opens a sink for it ([`Call::video_sink`]).
+    VideoAdded(crate::video::VideoTrack),
+    /// A remote video track ended (unpublished, or its publisher left).
+    VideoRemoved {
+        /// Its id ([`crate::VideoTrack::id`]).
+        id: u64,
+        /// Its track sid.
+        track_sid: String,
+    },
+    /// A remote video track changed: muted, its size or layers, its codec (known from its
+    /// first packet), or paused by the server for congestion.
+    VideoChanged(crate::video::VideoTrack),
+    /// A local camera or screen share went on (the SFU confirmed it) or off (and why:
+    /// `unpublished`, `video_disabled`, `server_unpublished`, `lease_lost`, …).
+    LocalVideo(crate::video::LocalVideo),
+    /// The media policy changed (`media_policy_updated`, a move): the latest hints, with the
+    /// join's `camera_allowed` and `screen_allowed` (also [`Call::media_policy`]).
+    MediaPolicy(Box<sew_proto::voice::MediaPolicy>),
+}
+
+/// The call's end-to-end key state and its security code, as the keys report them
+/// ([`CallEvent::Security`], [`CallSnapshot::security`]). Ids, an epoch and a code only: no
+/// key material.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct CallSecurity {
+    /// The key state: `preparing`, `joining`, `active`, `securing`, `recovering`,
+    /// `device_not_enrolled`, `server_identity_changed`, `unsupported`, `failed` or `left`.
+    pub state: String,
+    /// The active epoch (with `active`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    /// Since when the keys are in this state (the key session's clock, ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<u64>,
+    /// With `securing`: show "Securing…" only this long after `since_ms`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_after_ms: Option<u64>,
+    /// Why (`recovering`, `unsupported`, `failed`, `left`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The active epoch's security code, six groups of five digits separated by spaces
+    /// (`"01234 56789 …"`), the same on every device in the epoch. `None` before an epoch is
+    /// active, or when Sew's policy hides it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+impl CallSecurity {
+    /// A key state with nothing else (for a host's own engine or a test).
+    pub fn new(state: impl Into<String>) -> CallSecurity {
+        CallSecurity {
+            state: state.into(),
+            ..CallSecurity::default()
+        }
+    }
+
+    /// `active` in `epoch` with `code` (for a host's own engine or a test).
+    pub fn active(epoch: u64, code: Option<String>) -> CallSecurity {
+        CallSecurity {
+            state: "active".to_owned(),
+            epoch: Some(epoch),
+            code,
+            ..CallSecurity::default()
+        }
+    }
 }
 
 /// Where a moderator move took the call (Sew's `voice_server_updated`).
@@ -354,6 +432,28 @@ pub struct CallCounters {
     pub credential_renewals: u64,
     /// Network changes the host reported ([`Call::network_changed`]).
     pub network_changes: u64,
+    /// Remote video frames decrypted and handed over ([`Call::video_frames`]).
+    pub video_frames_received: u64,
+    /// Remote video frames that did not decrypt (never handed over); each breaks its track
+    /// until a keyframe.
+    pub video_decrypt_failures: u64,
+    /// Remote video frames dropped because the sender's key was not installed yet.
+    pub video_frames_before_key: u64,
+    /// Remote video frames lost (a gap the retransmissions did not fill) or dropped while
+    /// their track waited for a keyframe.
+    pub video_frames_dropped: u64,
+    /// Video packets of tracks with no open sink (not forwarded) or of no known track.
+    pub video_packets_unwanted: u64,
+    /// Video packets skipped over by the reorder buffer (never arrived in time).
+    pub video_packets_lost: u64,
+    /// Video packets that arrived after their gap was skipped (dropped).
+    pub video_packets_late: u64,
+    /// Video frames the video receive queue was too full for.
+    pub video_recv_queue_drops: u64,
+    /// Picture Loss Indications sent.
+    pub video_plis: u64,
+    /// Full Intra Requests sent.
+    pub video_firs: u64,
 }
 
 /// A point-in-time view of a call (`state` command).
@@ -376,6 +476,10 @@ pub struct CallSnapshot {
     /// The call's active recording, if any ([`CallEvent::Recording`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording: Option<CallRecording>,
+    /// The call's key state and security code, once the keys reported one
+    /// ([`CallEvent::Security`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<CallSecurity>,
 }
 
 impl Default for CallSnapshot {
@@ -388,6 +492,7 @@ impl Default for CallSnapshot {
             counters: CallCounters::default(),
             moved: None,
             recording: None,
+            security: None,
         }
     }
 }
@@ -505,6 +610,9 @@ pub(crate) enum Cmd {
         reply: oneshot::Sender<Result<(), CallError>>,
     },
     NetworkChanged,
+    /// A video sink opened, changed, asked for a keyframe or closed.
+    Video(crate::video::subscribe::SinkCmd),
+    Publish(crate::video::publish::VideoCmd),
 }
 
 /// The engine of one app: at most one live call.
@@ -603,6 +711,7 @@ impl CallClient {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (push_tx, push_rx) = mpsc::channel(SEND_QUEUE);
         let (frames_tx, frames_rx) = mpsc::channel(RECV_QUEUE);
+        let (video_tx, video_rx) = mpsc::channel(VIDEO_RECV_QUEUE);
         let snapshot = Arc::new(Mutex::new(CallSnapshot::default()));
         let shared = Arc::new(engine::Shared {
             events: events.clone(),
@@ -611,6 +720,8 @@ impl CallClient {
             stats: Mutex::new(CallStatsReport::default()),
             playout: Mutex::new(None),
             beacon_stopped: AtomicBool::new(false),
+            policy: Mutex::new(None),
+            video_stats: Arc::new(Mutex::new(crate::video::VideoSendStats::default())),
         });
         if let engine::First::Held(c) = &first {
             // Held before `join` returns: a host that reads the snapshot at once (to decide
@@ -627,6 +738,7 @@ impl CallClient {
             cmd_rx,
             push_rx,
             frames_tx,
+            video_tx,
             busy,
         })
         .map_err(CallError::Setup)?;
@@ -635,6 +747,8 @@ impl CallClient {
             push: push_tx,
             shared,
             frames: Mutex::new(Some(FrameStream(frames_rx))),
+            video: Mutex::new(Some(crate::video::VideoFrameStream(video_rx))),
+            next_sink: std::sync::atomic::AtomicU64::new(1),
         })
     }
 }
@@ -676,6 +790,8 @@ pub struct Call {
     push: mpsc::Sender<OpusFrame>,
     shared: Arc<engine::Shared>,
     frames: Mutex<Option<FrameStream>>,
+    video: Mutex<Option<crate::video::VideoFrameStream>>,
+    next_sink: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for Call {
@@ -821,5 +937,159 @@ impl Call {
     /// audio pipeline. The first call takes it; later calls get `None`.
     pub fn frames(&self) -> Option<FrameStream> {
         self.frames.lock().ok().and_then(|mut f| f.take())
+    }
+
+    /// The video receive side: decrypted, verified **encoded** frames of the remote camera and
+    /// screen tracks that have an open sink ([`Call::video_sink`]), with each track's `Added`,
+    /// `Removed`, `Broken` and `KeyframeNeeded`. The first call takes it; later calls get
+    /// `None`. Without `video-core` the engine negotiates no video and nothing arrives.
+    pub fn video_frames(&self) -> Option<crate::video::VideoFrameStream> {
+        self.video.lock().ok().and_then(|mut f| f.take())
+    }
+
+    /// Opens a sink for the remote video track `track_sid` ([`CallEvent::VideoAdded`]): while
+    /// at least one of a track's sinks is open and visible, the engine asks the media server
+    /// for it (the largest visible sink's size, 30 fps for a large tile, 15 for a grid tile)
+    /// and its frames flow through [`Call::video_frames`], starting at a keyframe. With none,
+    /// the track is disabled at the server and nothing is forwarded. Dropping the sink closes
+    /// it.
+    pub fn video_sink(
+        &self,
+        track_sid: &str,
+        spec: crate::video::VideoSinkSpec,
+    ) -> crate::video::VideoSink {
+        let id = self.next_sink.fetch_add(1, Ordering::Relaxed);
+        let _ = self
+            .cmd
+            .send(Cmd::Video(crate::video::subscribe::SinkCmd::Open {
+                id,
+                track_sid: track_sid.to_owned(),
+                spec,
+            }));
+        crate::video::VideoSink {
+            id,
+            cmd: self.cmd.clone(),
+        }
+    }
+
+    /// The client media policy of the join (its `camera_allowed` and `screen_allowed`) with
+    /// the latest layer hints (`media_policy_updated`, a move), if the join answer had one.
+    pub fn media_policy(&self) -> Option<sew_proto::voice::MediaPolicy> {
+        self.shared.policy.lock().ok().and_then(|p| p.clone())
+    }
+
+    /// The send-side video counters.
+    pub fn video_stats(&self) -> crate::video::VideoSendStats {
+        self.shared
+            .video_stats
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    async fn video(
+        &self,
+        cmd: impl FnOnce(
+            oneshot::Sender<Result<(), crate::video::VideoError>>,
+        ) -> crate::video::publish::VideoCmd,
+    ) -> Result<(), crate::video::VideoError> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd
+            .send(Cmd::Publish(cmd(reply)))
+            .map_err(|_| crate::video::VideoError::Ended)?;
+        rx.await.map_err(|_| crate::video::VideoError::Ended)?
+    }
+
+    /// Takes (`on`) or releases a video lease: Sew's `self_video` for the camera, `self_stream`
+    /// for a screen share (`POST /api/v1/me/voice/state` with the call credential). Refused
+    /// with `video_not_allowed` when the join's policy has video off or this session may not
+    /// hold it, and with Sew's own refusals (`video_slots_full`, `media_busy` with its
+    /// `Retry-After`, `media_capacity`, `video_disabled`). A publication needs the lease
+    /// first; releasing it does not unpublish ([`Call::unpublish_video`] does both).
+    pub async fn set_video_lease(
+        &self,
+        source: crate::video::VideoSource,
+        on: bool,
+    ) -> Result<(), crate::video::VideoError> {
+        self.video(|reply| crate::video::publish::VideoCmd::Lease { source, on, reply })
+            .await
+    }
+
+    /// Publishes a camera or screen share under its lease: the `AddTrackRequest` with the
+    /// layers that opened and the codec, the SFU's `TrackPublished` confirmed GCM by the keys,
+    /// then the simulcast send section. The handle takes each layer's encoded frames and says
+    /// what the engine needs ([`crate::video::VideoControl`]: keyframes, which layers run at
+    /// what rates, a republish, the end). Refused with `no_lease` without the lease,
+    /// `e2ee_downgraded` when the SFU drops GCM, `already_published` for a second publication
+    /// of the source.
+    pub async fn publish_video(
+        &self,
+        req: crate::video::VideoPublish,
+    ) -> Result<crate::video::VideoPublication, crate::video::VideoError> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd
+            .send(Cmd::Publish(crate::video::publish::VideoCmd::Publish {
+                req,
+                reply,
+            }))
+            .map_err(|_| crate::video::VideoError::Ended)?;
+        rx.await.map_err(|_| crate::video::VideoError::Ended)?
+    }
+
+    /// Unpublishes the source's track (its send section goes inactive; the producer gets
+    /// `Ended { reason: "unpublished" }`) and, with `release_lease`, releases its lease.
+    pub async fn unpublish_video(
+        &self,
+        source: crate::video::VideoSource,
+        release_lease: bool,
+    ) -> Result<(), crate::video::VideoError> {
+        self.unpublish_video_because(source, release_lease, crate::video::publish::UNPUBLISHED)
+            .await
+    }
+
+    /// [`Call::unpublish_video`] with `reason` as the producer's `Ended` and `local_video`'s
+    /// reason (who turned it off: `camera_off`, `camera_switch`, `system_ui`, …).
+    pub async fn unpublish_video_because(
+        &self,
+        source: crate::video::VideoSource,
+        release_lease: bool,
+        reason: &str,
+    ) -> Result<(), crate::video::VideoError> {
+        let reason = reason.to_owned();
+        self.video(|reply| crate::video::publish::VideoCmd::Unpublish {
+            source,
+            release: release_lease,
+            reason,
+            reply,
+        })
+        .await
+    }
+
+    /// A handle that ends this call's publications from another thread (the bridge's
+    /// pipeline, when its source ends).
+    #[cfg(feature = "video-core")]
+    pub(crate) fn video_ctl(&self) -> crate::video::publish::VideoCtl {
+        crate::video::publish::VideoCtl::new(self.cmd.clone())
+    }
+
+    /// Mutes or unmutes the source's published track at the SFU (`MuteTrackRequest`) while
+    /// keeping the publication and its lease: subscribers see the track muted (a phone app in
+    /// the background, whose producer stops sending frames). Sent again after a republish or a
+    /// reconnect. Nothing happens without a publication of the source.
+    pub fn set_video_muted(&self, source: crate::video::VideoSource, muted: bool) {
+        let _ = self
+            .cmd
+            .send(Cmd::Publish(crate::video::publish::VideoCmd::Mute {
+                source,
+                muted,
+            }));
+    }
+
+    /// Caps on top of the policy (thermal pressure, low power): each layer's bitrate, the
+    /// number of layers and the frame rate, applied before the bandwidth split.
+    pub fn set_video_caps(&self, caps: crate::video::VideoCaps) {
+        let _ = self
+            .cmd
+            .send(Cmd::Publish(crate::video::publish::VideoCmd::Caps(caps)));
     }
 }

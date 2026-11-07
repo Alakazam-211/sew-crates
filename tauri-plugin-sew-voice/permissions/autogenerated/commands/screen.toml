@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-screen"
+description = "Enables the screen command without any pre-configured scope."
+commands.allow = ["screen"]
+
+[[permission]]
+identifier = "deny-screen"
+description = "Denies the screen command without any pre-configured scope."
+commands.deny = ["screen"]

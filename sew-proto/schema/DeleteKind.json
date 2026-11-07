@@ -21,6 +21,11 @@
       "const": "retention",
       "description": "Retention expired it.",
       "type": "string"
+    },
+    {
+      "const": "erased",
+      "description": "Its author's account was erased with its content (minor 11).",
+      "type": "string"
     }
   ],
   "title": "DeleteKind"

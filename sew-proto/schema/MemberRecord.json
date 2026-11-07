@@ -41,6 +41,21 @@
       ],
       "type": "object"
     },
+    "EraseMode": {
+      "description": "What an erase does with the person's content.",
+      "oneOf": [
+        {
+          "const": "anonymise",
+          "description": "Messages, reactions and files stay, attributed to \"Deleted user\".",
+          "type": "string"
+        },
+        {
+          "const": "delete_content",
+          "description": "The person's messages are tombstoned and purged, reactions removed, uploads deleted.",
+          "type": "string"
+        }
+      ]
+    },
     "InstallRole": {
       "description": "Install-wide role. Separate from space roles.",
       "oneOf": [
@@ -216,6 +231,25 @@
     },
     "email": {
       "description": "Email.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "erase_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EraseMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What the erase did with the content (minor 11); present exactly when `erased_at` is."
+    },
+    "erased_at": {
+      "description": "When the account was erased (minor 11); omitted for a member never erased. An erased\nmember's `external_id` is `erased:<id>`, and the two always go together.",
+      "format": "date-time",
       "type": [
         "string",
         "null"

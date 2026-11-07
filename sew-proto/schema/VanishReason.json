@@ -11,6 +11,11 @@
       "const": "moderation",
       "description": "A ban's recent-message wipe: a moderator delete, one batch of up\nto 1,000 messages of one channel.",
       "type": "string"
+    },
+    {
+      "const": "erased",
+      "description": "An account erase: the author's messages, one batch of one channel.",
+      "type": "string"
     }
   ],
   "title": "VanishReason"

@@ -13,10 +13,11 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-call-client"
-version = "0.4.1"
-build = false
+version = "0.5.0"
+build = "build.rs"
 include = [
     "src/**",
+    "build.rs",
     "LICENSE-MIT",
     "LICENSE-APACHE",
     "NOTICE",
@@ -60,12 +61,19 @@ rust-crypto = [
     "sew-lk-compat/rust-crypto",
 ]
 sim-software-key = []
-testing = ["kessel-video?/fake"]
+testing = [
+    "kessel-video?/fake",
+    "kessel-video?/vp8",
+]
 video = [
     "video-core",
     "kessel-video/system",
 ]
-video-core = ["dep:kessel-video"]
+video-core = [
+    "dep:kessel-video",
+    "kessel-video/vp8",
+    "dep:png",
+]
 
 [lib]
 name = "sew_call_client"
@@ -111,12 +119,17 @@ version = "0.12"
 version = "1"
 
 [dependencies.kessel-audio]
-version = "0.1.0"
+version = "0.1"
 optional = true
 default-features = false
 
 [dependencies.kessel-video]
-version = "0.1"
+version = "0.1.3"
+optional = true
+default-features = false
+
+[dependencies.png]
+version = "0.18"
 optional = true
 default-features = false
 
@@ -160,16 +173,16 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-e2ee]
-version = "0.8.1"
+version = "0.8.2"
 
 [dependencies.sew-lk-compat]
-version = "0.8.1"
+version = "0.8.2"
 
 [dependencies.sew-lkproto]
-version = "0.8.1"
+version = "0.8.2"
 
 [dependencies.sew-proto]
-version = "0.8.1"
+version = "0.8.2"
 
 [dependencies.sha1]
 version = "0.10"

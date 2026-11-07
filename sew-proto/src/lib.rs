@@ -65,8 +65,10 @@ pub const EXPORT_FORMAT: u32 = 1;
 /// space records carry `governance` and role records the managed-role mark `managed`. Minor 9
 /// (Sew 0.7.0): space records may carry governance `server` (the server-governed Space,
 /// owned by the `k2:server` member) and channel records `closing`. Minor 10 (Sew 0.8.0): space
-/// records carry `participant_app_ids` (the participant links).
-pub const EXPORT_FORMAT_MINOR: u32 = 10;
+/// records carry `participant_app_ids` (the participant links). Minor 11: member records of an
+/// erased account carry `erased_at` and `erase_mode` (with the `erased:<id>` external id),
+/// messages and attachments the delete and remove kind `erased`.
+pub const EXPORT_FORMAT_MINOR: u32 = 11;
 
 /// The first export minor that carries BAN_MEMBERS (bit 47) itself.
 pub const EXPORT_MINOR_BAN_MEMBERS: u32 = 4;

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.2 (2026-11-06)
+
+- `Session::add_track` sends a caller-built `AddTrackRequest` (a video track's layers and
+  simulcast codecs); new events `SessionEvent::SubscribedQuality` (the server's
+  `SubscribedQualityUpdate`, for dynacast) and `SessionEvent::TrackUnpublished`.
+- `SessionEvent::StreamStates`: the server's `StreamStateUpdate` (a track paused or resumed for
+  this client, as a congested downlink pauses video) is passed on instead of dropped. Additive
+  (`SessionEvent` is non-exhaustive).
+
 ## 0.8.1 (2026-11-06)
 
 - The version follows Sew 0.8.1. No API or behaviour change.

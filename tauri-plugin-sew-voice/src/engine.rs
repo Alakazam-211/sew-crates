@@ -15,9 +15,21 @@ use std::sync::Arc;
 use sew_call_client::device::DeviceKeyId;
 use tokio::sync::broadcast;
 
-use crate::wire::{
-    CallState, DeviceChoice, DeviceList, ErrorInfo, Participant, RecordingInfo, Speaking,
+use crate::details::{QualityInfo, RosterEntry, SecurityInfo};
+use crate::video::{
+    CameraRequest, DecoderSpec, DecoderWake, FrameDecoder, PreviewRequest, ScreenRequest,
+    TrackSettings, VideoFrames,
 };
+use crate::wire::{
+    CallState, DeviceChoice, DeviceList, ErrorInfo, LocalVideo, Participant, PermissionState,
+    RecordingInfo, ScreenSource, SinkStats, Speaking, VideoCaps, VideoDevices, VideoTrack,
+    video_code,
+};
+
+/// The answer of a video method an engine doesn't implement.
+fn no_video<T>() -> Result<T, EngineError> {
+    Err(EngineError::failed(video_code::VIDEO_UNSUPPORTED))
+}
 
 /// The host's sign-in callback and its types, from `sew-call-client`.
 ///
@@ -147,6 +159,33 @@ pub enum CallEvent {
     },
     /// The call's recording changed (Sew 0.7.3), or `None` once none is active.
     Recording(Option<RecordingInfo>),
+    /// The call's key state or security code changed (0.4.1; [`CallHandle::security`]).
+    Security(Option<SecurityInfo>),
+    /// Every media participant with its engine identity and label (0.4.1;
+    /// [`CallHandle::roster`]).
+    Roster(Vec<RosterEntry>),
+    /// A stats window's connection quality (0.4.1; [`CallHandle::quality`]). The plugin shows
+    /// `lost` while the call is reconnecting, whatever the engine last said.
+    Quality(QualityInfo),
+    /// The call's video tracks changed (added, removed, muted, resized, paused): the whole
+    /// list.
+    Video(Vec<VideoTrack>),
+    /// This device's camera or screen changed state.
+    LocalVideo(LocalVideo),
+    /// The room's media policy changed (Sew's `media_policy_updated`; the engine also sends
+    /// the join answer's at the start).
+    Policy(serde_json::Value),
+}
+
+/// A call's video now, for a late subscriber ([`CallHandle::video_snapshot`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VideoSnapshot {
+    /// The video tracks.
+    pub tracks: Vec<VideoTrack>,
+    /// This device's camera and screen.
+    pub local: LocalVideo,
+    /// The room's media policy (`None`: the engine has none).
+    pub policy: Option<serde_json::Value>,
 }
 
 /// A call's current state, for a late subscriber (the engine's `CallSnapshot`).
@@ -208,6 +247,128 @@ pub trait CallHandle: Send + Sync + 'static {
     /// It must not block: an engine starts the work and returns. The default does nothing
     /// (the engine notices the loss itself, later).
     fn network_changed(&self) {}
+    /// The call's key state and security code now (0.4.1); then [`CallEvent::Security`]. The
+    /// default has none.
+    fn security(&self) -> Option<SecurityInfo> {
+        None
+    }
+    /// Every media participant now (0.4.1); then [`CallEvent::Roster`]. The default has none.
+    fn roster(&self) -> Vec<RosterEntry> {
+        Vec::new()
+    }
+    /// The last stats window's quality (0.4.1); then [`CallEvent::Quality`]. The default is
+    /// `unknown`.
+    fn quality(&self) -> QualityInfo {
+        QualityInfo::unknown()
+    }
+
+    // ── video (the defaults: an engine without video) ──
+
+    /// The call's frame channel: every subscribed track's encoded plaintext frames (decrypted
+    /// and checked; nothing that failed decryption) and this device's self-view frames, with
+    /// the tracks' `Added`, `Removed`, `Broken` and `KeyframeNeeded` items. The plugin takes it
+    /// once, right after `join`; a second call answers `None`. The default: `None` (no video).
+    fn video_frames(&self) -> Option<VideoFrames> {
+        None
+    }
+    /// The call's video tracks, this device's camera and screen and the media policy now
+    /// (read after `join` and after a missed event). The default: none.
+    fn video_snapshot(&self) -> VideoSnapshot {
+        VideoSnapshot::default()
+    }
+    /// What the sinks of remote track `track` want now (the union of its sinks, sent on every
+    /// change). The engine keeps every track disabled until told otherwise. It must not
+    /// block. The default does nothing.
+    fn set_video_settings(&self, track: &str, settings: TrackSettings) {
+        let _ = (track, settings);
+    }
+    /// A sink of `track` needs a keyframe (it opened, became visible, or its decoder failed or
+    /// fell behind): the engine asks the sender (rate-limited) or, for `local:*`, its own
+    /// encoder. It must not block. The default does nothing.
+    fn request_keyframe(&self, track: &str) {
+        let _ = track;
+    }
+    /// The webview's decoder counters of `track`'s sinks (every `video_sink_update` with
+    /// stats; summed over the track's sinks), for the stats beacon. The default drops them.
+    fn video_sink_stats(&self, track: &str, stats: SinkStats) {
+        let _ = (track, stats);
+    }
+    /// Camera on or off: the policy, the OS permission, the lease, the device, the encoders,
+    /// then publishing (`local_video` follows each step). Answers once publishing (or off).
+    /// The default: `video_unsupported`.
+    fn camera(&self, req: CameraRequest) -> BoxFuture<'_, Result<(), EngineError>> {
+        let _ = req;
+        Box::pin(std::future::ready(no_video()))
+    }
+    /// Camera off with `reason` as `local_video`'s reason (who turned it off: `system_ui` for
+    /// CallKit's or Telecom's video button), so a call log tells the offs apart. The default:
+    /// [`CallHandle::camera`] off.
+    fn camera_off_because(&self, reason: &'static str) -> BoxFuture<'_, Result<(), EngineError>> {
+        let _ = reason;
+        self.camera(CameraRequest {
+            on: false,
+            device: None,
+        })
+    }
+    /// Screen share on or off, as [`CallHandle::camera`] (the picker when `source` is
+    /// `None`). The default: `video_unsupported`.
+    fn screen(&self, req: ScreenRequest) -> BoxFuture<'_, Result<(), EngineError>> {
+        let _ = req;
+        Box::pin(std::future::ready(no_video()))
+    }
+    /// The iPhone screen share (`VoiceControl::screen_share_ring`): arm the broadcast
+    /// extension's ring in `container` (the App Group container) for the rest of the call; its
+    /// frames are published as the call's screen while the extension sends them. Arming again
+    /// replaces the ring. Answers once the ring's file is made. The default:
+    /// `screen_unsupported`.
+    fn screen_share_ring(
+        &self,
+        container: std::path::PathBuf,
+    ) -> BoxFuture<'_, Result<(), EngineError>> {
+        let _ = container;
+        Box::pin(std::future::ready(Err(EngineError::failed(
+            crate::wire::video_code::SCREEN_UNSUPPORTED,
+        ))))
+    }
+    /// The app went to the background or came back, as the plugin decides it: background when
+    /// the app says so ([`VoiceEngine::app_scene`]) **or** the video backend does (kessel-video's
+    /// `BackendEvent::Background`), foreground only when both say foreground. The plugin has
+    /// already hidden (or re-shown) the sinks; this is the engine's hook for its own sending
+    /// side (pausing and resuming the camera publish). It must not block. The default does
+    /// nothing.
+    fn app_scene(&self, scene: AppScene) {
+        let _ = scene;
+    }
+}
+
+/// Whether the app is on screen (phones): [`crate::VoiceControl::app_scene`].
+///
+/// It is not an audio interruption: `suspend` / `resume` ([`AudioSessionEvent`]) stay for
+/// those (Siri, a cellular call) and never touch video, and an app can go to the background
+/// with no audio interruption at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum AppScene {
+    /// On screen.
+    #[default]
+    Foreground,
+    /// In the background (iOS `sceneDidEnterBackground`, Android `onPause` / `onStop`).
+    Background,
+}
+
+impl AppScene {
+    /// Background or foreground from a flag.
+    pub fn background(background: bool) -> AppScene {
+        if background {
+            AppScene::Background
+        } else {
+            AppScene::Foreground
+        }
+    }
+
+    /// Is it the background?
+    pub fn is_background(self) -> bool {
+        self == AppScene::Background
+    }
 }
 
 /// The phone's audio session, as CallKit (iOS) or Telecom (Android) reports it, for the engine
@@ -271,5 +432,99 @@ pub trait VoiceEngine: Send + Sync + 'static {
     /// Every device key the engine's device store holds, sorted. The default holds none.
     fn known_device_keys(&self) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
         Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
+    // ── video (the defaults: an engine without video) ──
+
+    /// What this device's video can do. The default: everything off (backend `null`).
+    fn video_caps(&self) -> VideoCaps {
+        VideoCaps::default()
+    }
+    /// The cameras, the chosen one and the OS permissions. The default: `video_unsupported`.
+    fn video_devices(&self) -> Result<VideoDevices, EngineError> {
+        no_video()
+    }
+    /// Choose the camera: switches a live camera without a republish, and is kept for the
+    /// next `camera` or `preview`. The default: `video_unsupported`.
+    fn set_video_device(&self, camera: DeviceChoice) -> Result<(), EngineError> {
+        let _ = camera;
+        no_video()
+    }
+    /// Camera list changes (hot-plug, a permission change, a `set_video_device`). The plugin
+    /// subscribes on the first use of video. The default: `None` (no events).
+    fn video_device_events(&self) -> Option<broadcast::Receiver<VideoDevices>> {
+        None
+    }
+    /// The displays and windows to share, for an App's own picker (`[]` where only the OS
+    /// picker exists). The default: `video_unsupported`.
+    fn screen_sources(&self) -> BoxFuture<'_, Result<Vec<ScreenSource>, EngineError>> {
+        Box::pin(std::future::ready(no_video()))
+    }
+    /// The camera outside a call (a pre-join check): on, it answers the preview's frame channel
+    /// (`local:camera` frames); off, `None`. The camera opens **only** on this explicit call.
+    /// The default: `video_unsupported`.
+    fn preview(
+        &self,
+        req: PreviewRequest,
+    ) -> BoxFuture<'_, Result<Option<VideoFrames>, EngineError>> {
+        let _ = req;
+        Box::pin(std::future::ready(no_video()))
+    }
+    /// A `local:camera` sink outside a call needs a keyframe: the preview's encoder makes one
+    /// now. It must not block. The default does nothing.
+    fn preview_keyframe(&self) {}
+
+    // ── phones (the defaults: a desktop engine, or one without video) ──
+
+    /// The camera permission now. Never prompts. The default: `unsupported`.
+    fn camera_permission(&self) -> PermissionState {
+        PermissionState::Unsupported
+    }
+    /// Asks for the camera: the OS prompt when the permission is `prompt` (iOS), else the state
+    /// at once. On Android the app asks for CAMERA itself (an Activity callback, in Tauri its
+    /// permission API); this then reports the state without a prompt. The default:
+    /// `unsupported`.
+    fn request_camera_permission(&self) -> BoxFuture<'_, PermissionState> {
+        Box::pin(std::future::ready(PermissionState::Unsupported))
+    }
+    /// The app went to the background or came back, as the app reports it (passed on before
+    /// the plugin hides or re-shows its sinks). The real engine tells kessel-video's Android
+    /// backend (`AndroidContext::set_background`). It must not block. The default does
+    /// nothing.
+    fn app_scene(&self, scene: AppScene) {
+        let _ = scene;
+    }
+    /// The device turned (degrees clockwise from its natural orientation, as Android's
+    /// `OrientationEventListener` reports it): kessel-video's Android backend turns camera
+    /// frames upright from the next one. It must not block. The default does nothing (iOS's
+    /// backend follows the device itself).
+    fn device_orientation(&self, degrees: u32) {
+        let _ = degrees;
+    }
+    /// The video backend's own background signal (kessel-video's `BackendEvent::Background`:
+    /// `true` in the background), the second signal next to [`VoiceEngine::app_scene`]. The
+    /// plugin subscribes on the first use of a sink or a scene. The default: `None`.
+    fn video_background_events(&self) -> Option<broadcast::Receiver<bool>> {
+        None
+    }
+    /// The video backend, for the plugin's native sinks (they decode VP8 with its decoder and
+    /// turn frames into OS buffers with its `convert`). The default: `None` (a native sink then
+    /// delivers H.264 only).
+    #[cfg(feature = "video-core")]
+    fn native_video_backend(&self) -> Option<Arc<dyn sew_call_client::kessel_video::VideoBackend>> {
+        None
+    }
+    /// A decoder for the decoded-frame fallback (a sink whose webview can't decode the track's
+    /// codec): `spec.codec` in, `spec.format` out at most `spec.fit`. `wake` is called (from
+    /// any thread) whenever an output or an error is queued. Only for a codec
+    /// [`VoiceEngine::video_caps`] lists in `decode_codecs`. The default:
+    /// `video_unsupported`.
+    fn video_decoder(
+        &self,
+        spec: DecoderSpec,
+        wake: DecoderWake,
+    ) -> Result<Box<dyn FrameDecoder>, EngineError> {
+        let _ = (spec, wake);
+        no_video()
     }
 }

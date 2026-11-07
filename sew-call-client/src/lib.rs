@@ -57,12 +57,12 @@ pub use audio::{
 };
 pub use call::{
     Call, CallClient, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallRecording,
-    CallSnapshot, CallState, EndReason, FrameSender, FrameStream, OpusFrame, Participant,
-    RecordingConsent, RecordingMember, RecvItem, RecvOpus, Speaking,
+    CallSecurity, CallSnapshot, CallState, EndReason, FrameSender, FrameStream, OpusFrame,
+    Participant, RecordingConsent, RecordingMember, RecvItem, RecvOpus, Speaking,
 };
-pub use config::ClientConfig;
 #[cfg(feature = "testing")]
 pub use config::TestingOverrides;
+pub use config::{ClientConfig, default_video_h264};
 /// kessel-audio, re-exported for hosts that configure the audio engine.
 #[cfg(feature = "audio-core")]
 pub use kessel_audio;
@@ -82,9 +82,34 @@ pub use stats::{
     BeaconOutcome, BeforeFirstWindow, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals,
     StatsWindow,
 };
+/// The video bridge: a kessel-video backend's cameras, screens and encoders into a call, with
+/// the in-call self-view.
+#[cfg(feature = "video-core")]
+pub use video::{
+    CameraRequest, CameraState, SelfViewFrames, SelfViewItem, SourceFeed, SourceNote, VideoBridge,
+    choose_codec,
+};
+/// Video capture (`video-core`): cameras, screens, the OS picker, screen thumbnails and the
+/// pre-join preview over a kessel-video backend, as the sources the publish side takes.
+#[cfg(feature = "video-core")]
+pub use video::{
+    CameraSource, Capture, CaptureEnd, CaptureError, CaptureEvent, CaptureKind, CapturePause,
+    LocalFrame, PREVIEW_BITRATE_BPS, PREVIEW_FPS, PREVIEW_HEIGHT, PREVIEW_QUEUE, PREVIEW_WIDTH,
+    Preview, PreviewFrames, PreviewItem, ScreenChoice, ScreenPick, ScreenSource,
+    THUMBNAIL_MAX_WIDTH, VideoCapture, preview_codec, screen_constraints, thumbnail_png,
+};
+/// Video publishing: the engine's frame API ([`Call::publish_video`]) and its types.
+pub use video::{
+    EncodedVideo, LayerRate, LayerSpec, LocalVideo, VideoCaps, VideoControl, VideoError,
+    VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
+};
 /// A kessel-video backend replaying pre-encoded VP8 and H.264 simulcast streams (test only).
 #[cfg(all(feature = "testing", feature = "video-core"))]
 pub use video::{FixtureBackend, FixtureError};
+pub use video::{
+    VideoCodec, VideoFrame, VideoFrameStream, VideoLayerInfo, VideoPause, VideoRecvItem, VideoSink,
+    VideoSinkSpec, VideoSource, VideoTrack, VideoTrackView,
+};
 
 // aws-lc-rs is never built for the phones; their DTLS/SRTP is the pure-Rust provider.
 #[cfg(all(

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What a kept row is. The set is open: a kind this build does not know is still kept.",
+  "oneOf": [
+    {
+      "const": "messages",
+      "description": "Messages.",
+      "type": "string"
+    },
+    {
+      "const": "revisions",
+      "description": "Edit history.",
+      "type": "string"
+    },
+    {
+      "const": "reactions",
+      "description": "Reactions.",
+      "type": "string"
+    },
+    {
+      "const": "poll_votes",
+      "description": "Poll votes.",
+      "type": "string"
+    },
+    {
+      "const": "files",
+      "description": "Files.",
+      "type": "string"
+    },
+    {
+      "const": "recordings",
+      "description": "Recordings.",
+      "type": "string"
+    },
+    {
+      "const": "recording_segments",
+      "description": "Speaker segments of recordings.",
+      "type": "string"
+    },
+    {
+      "const": "recording_mixes",
+      "description": "Mixed parts of recordings (they hold other people's audio too).",
+      "type": "string"
+    },
+    {
+      "const": "space_assets",
+      "description": "Space content the person made (emoji, bookmarks, pins, groups).",
+      "type": "string"
+    },
+    {
+      "const": "identity",
+      "description": "A sealed copy of who the person was, kept for a legal hold.",
+      "type": "string"
+    },
+    {
+      "const": "exports",
+      "description": "Export archives made before the erase.",
+      "type": "string"
+    },
+    {
+      "const": "backups",
+      "description": "Backup bundles made before the erase.",
+      "type": "string"
+    },
+    {
+      "const": "audit_rows",
+      "description": "Rows of the append-only audit log.",
+      "type": "string"
+    }
+  ],
+  "title": "EraseKeptKind"
+}

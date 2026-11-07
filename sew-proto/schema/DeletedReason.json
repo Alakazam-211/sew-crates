@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Why a tombstone is one, when it is not the usual delete (`Message.deleted_reason`).",
+  "oneOf": [
+    {
+      "const": "erased",
+      "description": "Deleted with its author's account (an account erase). Clients may show \"Deleted\nwith the account\".",
+      "type": "string"
+    }
+  ],
+  "title": "DeletedReason"
+}

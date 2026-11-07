@@ -59,6 +59,18 @@ pub enum OpenError {
     BadTag(u8),
 }
 
+/// The codec of a video frame, which decides its clear prefix (LkGcm: VP8 10 bytes on a
+/// keyframe, 3 on a delta; H.264 the NAL units up to the first slice, plus 2). Shared with
+/// receive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum VideoFrameCodec {
+    /// One raw VP8 frame (RFC 6386).
+    Vp8,
+    /// One H.264 access unit, Annex B with 4-byte start codes and no AUD.
+    H264,
+}
+
 /// One audio frame cipher: LkGcm's Opus case (clear prefix = the TOC byte, also the AAD).
 ///
 /// `Key` is the derived AES key (HKDF-SHA256 of the 32-byte IKM, salt `LKFrameEncryptionKey`);
@@ -81,6 +93,22 @@ pub trait FrameCrypto: Send + Sync + 'static {
         out: &mut Vec<u8>,
     ) -> Result<(), SealError>;
 
+    /// Seals one encoded video frame of `codec` under key index `slot`, appending the wire
+    /// frame (the codec's clear prefix ‖ ciphertext ‖ tag ‖ IV ‖ IV length ‖ slot) to `out`.
+    /// The default refuses every frame (a cipher without video sends no video).
+    fn seal_video(
+        &self,
+        key: &Self::Key,
+        slot: u8,
+        codec: VideoFrameCodec,
+        iv: IvParts,
+        frame: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), SealError> {
+        let _ = (key, slot, codec, iv, frame, out);
+        Err(SealError::Cipher)
+    }
+
     /// The key index in a received frame's trailer, without opening it.
     fn key_index(&self, frame: &[u8]) -> Result<u8, OpenError>;
 
@@ -88,4 +116,22 @@ pub trait FrameCrypto: Send + Sync + 'static {
     /// the Opus frame to `out`. A frame that does not verify is an error, whatever it ends with
     /// (no server-injected trailer, no magic plaintext bytes).
     fn open(&self, key: &Self::Key, frame: &[u8], out: &mut Vec<u8>) -> Result<(), OpenError>;
+
+    /// Opens one received **video** frame of `codec` with `key`, appending the plaintext frame
+    /// to `out` (LkGcm's VP8 case: 10 clear bytes on a keyframe, 3 on a delta frame; H.264: the
+    /// NAL headers up to the first slice and 2 bytes of it, the ciphertext RBSP-unescaped). The
+    /// trailer is the audio one, so [`FrameCrypto::key_index`] reads it too.
+    ///
+    /// A cipher without video refuses every frame (the default): nothing unverified is handed
+    /// out.
+    fn open_video(
+        &self,
+        key: &Self::Key,
+        codec: crate::video::VideoCodec,
+        frame: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), OpenError> {
+        let _ = (key, codec, frame, out);
+        Err(OpenError::BadTrailer)
+    }
 }

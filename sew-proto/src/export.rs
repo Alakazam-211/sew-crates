@@ -133,6 +133,7 @@ unit_enum! {
 unit_enum! {
     /// Why a message was deleted.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum DeleteKind {
         /// Its author deleted it.
         Own = "own",
@@ -142,12 +143,15 @@ unit_enum! {
         Thread = "thread",
         /// Retention expired it.
         Retention = "retention",
+        /// Its author's account was erased with its content (minor 11).
+        Erased = "erased",
     }
 }
 
 unit_enum! {
     /// Why an attachment was removed.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum RemoveKind {
         /// Its uploader removed it.
         Own = "own",
@@ -155,6 +159,8 @@ unit_enum! {
         Moderator = "moderator",
         /// File retention removed it.
         Retention = "retention",
+        /// Its uploader's account was erased with its content (minor 11).
+        Erased = "erased",
     }
 }
 
@@ -440,6 +446,13 @@ pub struct MemberRecord {
     /// omitted when the member was never relinked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relinked_from: Option<String>,
+    /// When the account was erased (minor 11); omitted for a member never erased. An erased
+    /// member's `external_id` is `erased:<id>`, and the two always go together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erased_at: Option<Timestamp>,
+    /// What the erase did with the content (minor 11); present exactly when `erased_at` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erase_mode: Option<crate::mgmt::EraseMode>,
     /// The member change-log head (*always*; full exports).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_seq: Option<u64>,

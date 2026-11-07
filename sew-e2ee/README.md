@@ -42,7 +42,7 @@ depends on, from your workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-e2ee = "0.8.1"
+sew-e2ee = "0.8.2"
 
 [patch.crates-io]
 sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }

@@ -33,7 +33,7 @@ use std::sync::Arc;
 use sew_proto::e2ee::ConsentState;
 use sew_proto::id::Id;
 use sew_proto::recording::Recording;
-use sew_proto::voice::{VoiceJoinResponse, VoiceServerUpdated, VoiceState};
+use sew_proto::voice::{MediaPolicy, VoiceJoinResponse, VoiceServerUpdated, VoiceState};
 use tokio::sync::{mpsc, watch};
 
 use crate::provider::{BoxFuture, CallCredential};
@@ -48,10 +48,10 @@ pub mod session;
 pub mod transport;
 
 pub use credential::{Bearer, CredentialGrant, RenewAnswer, RenewRefused, SharedBearer};
-pub use frame::{FrameCrypto, IvParts, OpenError, SealError};
+pub use frame::{FrameCrypto, IvParts, OpenError, SealError, VideoFrameCodec};
 pub use guard::{
-    KEY_PENDING_GRACE_MS, PublishGuard, PublishRefused, RecvGate, RecvRefused, SendGate,
-    SubscribeDecision, SubscribeGuard, SubscribeRefused,
+    KEY_PENDING_GRACE_MS, Leases, PublishGuard, PublishRefused, RecvGate, RecvRefused, SendGate,
+    SubscribeDecision, SubscribeGuard, SubscribeRefused, check_publish,
 };
 pub use keys::{MediaCounters, MediaKeys, MediaReport, PublishState, engine_caps};
 pub use lkgcm::LkGcm;
@@ -142,6 +142,10 @@ pub enum E2eeEvent {
     /// A move or a token re-issue (the call socket's `voice_server_updated`): the engine
     /// reconnects signalling with the new token and room.
     ServerUpdated(VoiceServerUpdated),
+    /// The client media policy changed (the call socket's `media_policy_updated`: a budget
+    /// tier change, video turned on or off): new layer hints for a published camera or
+    /// screen share. The join answer's `camera_allowed` and `screen_allowed` still stand.
+    MediaPolicy(Box<MediaPolicy>),
     /// Sew no longer accepts the credential for this join (`call_credential_stale`, a swap):
     /// the call ends with `credential_lost`.
     CredentialLost,
@@ -167,6 +171,9 @@ pub enum E2eeEvent {
         /// The key group's reason.
         reason: String,
     },
+    /// The keys' state or the active epoch's security code changed (the engine's
+    /// [`crate::CallEvent::Security`]).
+    Security(crate::call::CallSecurity),
 }
 
 /// The sending half the engine gives [`E2eeProvider::start`].
@@ -263,9 +270,40 @@ pub trait KeySession: Send + Sync + 'static {
         out: &mut Vec<u8>,
     ) -> Result<(), CryptoError>;
 
+    /// Encrypts one encoded video frame of the local layer `ssrc` (`rtp_ts` for the IV) into
+    /// `out`. `Err` drops the frame: it is never sent unencrypted. The default refuses every
+    /// frame (keys without video send no video).
+    fn encrypt_video(
+        &self,
+        codec: VideoFrameCodec,
+        frame: &[u8],
+        ssrc: u32,
+        rtp_ts: u32,
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoError> {
+        let _ = (codec, frame, ssrc, rtp_ts, out);
+        Err(CryptoError::NoSendKey)
+    }
+
     /// Decrypts and verifies one Opus frame from `sender` (engine identity `p_…`) into
     /// `out`. `Err`: the frame is never played.
     fn decrypt(&self, sender: &str, frame: &[u8], out: &mut Vec<u8>) -> Result<(), CryptoError>;
+
+    /// Decrypts and verifies one encoded video frame of `codec` from `sender` into `out`
+    /// (LkGcm's VP8 and H.264 cases). `Err`: the frame never reaches a sink or a decoder.
+    ///
+    /// Keys without video refuse every frame (the default: [`CryptoError::NoKey`]); there is no
+    /// plaintext fallback.
+    fn decrypt_video(
+        &self,
+        sender: &str,
+        codec: crate::video::VideoCodec,
+        frame: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoError> {
+        let _ = (sender, codec, frame, out);
+        Err(CryptoError::NoKey)
+    }
 
     /// Whether `publisher`'s `track` may be subscribed.
     fn may_subscribe(&self, publisher: &str, track: &RemoteTrack) -> Subscribe;
@@ -335,7 +373,7 @@ mod testing {
 
     use super::{
         CryptoError, E2eeContext, E2eeError, E2eeEvent, E2eeEvents, E2eeProvider, KeySession,
-        RemoteTrack, Subscribe,
+        RemoteTrack, Subscribe, VideoFrameCodec,
     };
     use crate::provider::BoxFuture;
 
@@ -394,6 +432,39 @@ mod testing {
                 .map_err(|_| CryptoError::BadFrame)
         }
 
+        fn encrypt_video(
+            &self,
+            codec: VideoFrameCodec,
+            frame: &[u8],
+            ssrc: u32,
+            rtp_ts: u32,
+            out: &mut Vec<u8>,
+        ) -> Result<(), CryptoError> {
+            let Some(key) = self.ring.get(0) else {
+                return Err(CryptoError::NoSendKey);
+            };
+            let send_count = {
+                let mut c = self.counts.lock().map_err(|_| CryptoError::NoSendKey)?;
+                let n = c
+                    .entry(ssrc)
+                    .or_insert_with(|| u32::from(rand::random::<u16>()));
+                *n = n.wrapping_add(1);
+                *n
+            };
+            let iv = FrameIv {
+                ssrc,
+                timestamp: rtp_ts,
+                send_count,
+            };
+            let codec = match codec {
+                VideoFrameCodec::Vp8 => Codec::Vp8,
+                VideoFrameCodec::H264 => Codec::H264,
+            };
+            LkGcmV1
+                .encrypt(codec, frame, key, 0, iv, out)
+                .map_err(|_| CryptoError::BadFrame)
+        }
+
         fn decrypt(
             &self,
             _sender: &str,
@@ -404,6 +475,27 @@ mod testing {
                 .decrypt(Codec::Opus, frame, &self.ring, out)
                 .map(|_| ())
                 .map_err(|_| CryptoError::BadFrame)
+        }
+
+        fn decrypt_video(
+            &self,
+            _sender: &str,
+            codec: crate::video::VideoCodec,
+            frame: &[u8],
+            out: &mut Vec<u8>,
+        ) -> Result<(), CryptoError> {
+            let codec = match codec {
+                crate::video::VideoCodec::Vp8 => Codec::Vp8,
+                crate::video::VideoCodec::H264 => Codec::H264,
+            };
+            let start = out.len();
+            match LkGcmV1.decrypt(codec, frame, &self.ring, out) {
+                Ok(info) if !info.empty && out.len() > start => Ok(()),
+                _ => {
+                    out.truncate(start);
+                    Err(CryptoError::BadFrame)
+                }
+            }
         }
 
         fn may_subscribe(&self, _publisher: &str, track: &RemoteTrack) -> Subscribe {

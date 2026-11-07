@@ -50,6 +50,14 @@ pub struct ClientConfig {
     /// it, TLS setup fails with `no_crypto_provider`). A host sets it with
     /// [`ClientConfig::with_crypto_provider`].
     pub crypto_provider: Option<Arc<CryptoProvider>>,
+    /// Whether the media connection negotiates H.264 beside VP8 (feature `video-core`): the
+    /// receive sections offer it, so the media server may forward H.264 tracks, and a camera
+    /// or screen may publish in it. Default [`default_video_h264`]: on where this device can
+    /// show H.264 (VideoToolbox on macOS and iOS; the webview's WebCodecs elsewhere), off on
+    /// Linux, which has no H.264 decoder in the engine (kessel-video decodes only VP8 there), so
+    /// the media server never sends a Linux client H.264 it can't show. A host that decodes
+    /// H.264 itself turns it on with [`ClientConfig::with_video_h264`].
+    pub video_h264: bool,
     /// Test-only overrides (feature `testing`).
     #[cfg(feature = "testing")]
     pub testing: TestingOverrides,
@@ -66,9 +74,17 @@ impl ClientConfig {
             reconnect_window: Duration::from_secs(20),
             connect_timeout: Duration::from_secs(20),
             crypto_provider: None,
+            video_h264: default_video_h264(),
             #[cfg(feature = "testing")]
             testing: TestingOverrides::default(),
         }
+    }
+
+    /// Negotiates H.264 (`true`) or VP8 only (`false`) for video, instead of the
+    /// [`default_video_h264`] of this platform ([`ClientConfig::video_h264`]).
+    pub fn with_video_h264(mut self, on: bool) -> ClientConfig {
+        self.video_h264 = on;
+        self
     }
 
     /// Keeps the device's private key and public record in the host's own store (e.g. K2's
@@ -101,6 +117,12 @@ impl ClientConfig {
     }
 }
 
+/// Whether this platform negotiates H.264 by default ([`ClientConfig::video_h264`]): `false` on
+/// Linux (no H.264 decoder there), `true` elsewhere.
+pub const fn default_video_h264() -> bool {
+    !cfg!(target_os = "linux")
+}
+
 /// TEST ONLY (feature `testing`): what the loopback lanes change.
 #[cfg(feature = "testing")]
 #[derive(Clone, Debug, Default)]
@@ -118,6 +140,26 @@ pub struct TestingOverrides {
     /// (each new PC; `None`: the engine's own random start in [0, 2^15)). Lanes set it near
     /// 65535 to make the sequence wrap early.
     pub first_seq: Option<u16>,
+    /// Received video RTP packets to drop on arrival, before the reorder buffer (a lost
+    /// burst the retransmissions cannot fill: str0m already counted them received). A lane sets
+    /// it mid-call; each dropped packet takes one off.
+    pub drop_video_packets: Arc<std::sync::atomic::AtomicU32>,
+}
+
+/// Takes one off [`TestingOverrides::drop_video_packets`]: whether to drop this packet.
+#[cfg(feature = "testing")]
+pub(crate) fn drop_video_packet(cfg: &ClientConfig) -> bool {
+    use std::sync::atomic::Ordering;
+    cfg.testing
+        .drop_video_packets
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+        .is_ok()
+}
+
+/// No packet is dropped (no testing override in this build).
+#[cfg(not(feature = "testing"))]
+pub(crate) fn drop_video_packet(_cfg: &ClientConfig) -> bool {
+    false
 }
 
 /// The testing source address of the media transport, if one is set.

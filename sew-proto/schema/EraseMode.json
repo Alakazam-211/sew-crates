@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What an erase does with the person's content.",
+  "oneOf": [
+    {
+      "const": "anonymise",
+      "description": "Messages, reactions and files stay, attributed to \"Deleted user\".",
+      "type": "string"
+    },
+    {
+      "const": "delete_content",
+      "description": "The person's messages are tombstoned and purged, reactions removed, uploads deleted.",
+      "type": "string"
+    }
+  ],
+  "title": "EraseMode"
+}

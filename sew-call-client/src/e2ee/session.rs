@@ -39,7 +39,7 @@ use sew_e2ee::{
 use sew_proto::e2ee::{CallKeysInit, CallScope, ConsentState, E2eeJoin};
 use sew_proto::id::Id;
 use sew_proto::recording::Recording;
-use sew_proto::voice::{VoiceServerUpdated, VoiceStateUpdated};
+use sew_proto::voice::{MediaPolicy, VoiceServerUpdated, VoiceStateUpdated};
 use tokio::sync::mpsc;
 use url::Url;
 
@@ -229,6 +229,8 @@ pub enum KeySessionEvent {
     /// socket's READY `recording`); `None`: READY says the call has no active recording. Never
     /// fed to the keys by the session itself: see [`MlsSession::set_recording`].
     Recording(Option<Box<Recording>>),
+    /// `media_policy_updated` (new layer hints, video on or off).
+    MediaPolicy(Box<MediaPolicy>),
     /// A warning for the host (`key_storage_file`, `pins_reset`).
     Warning(DeviceWarning),
     /// A move's key join failed.
@@ -569,6 +571,16 @@ impl<C: FrameCrypto> MlsSession<C> {
     /// The recording state last given to [`MlsSession::set_recording`].
     pub fn recording(&self) -> Option<(Option<Id>, ConsentState)> {
         lock(&self.shared.core).recording
+    }
+
+    /// The key state and the active epoch's security code (`None` before the session has a
+    /// status).
+    pub fn security(&self) -> Option<crate::call::CallSecurity> {
+        let c = lock(&self.shared.core);
+        let s = c.session.as_ref()?;
+        let mut out = security_of(s.status()?);
+        out.code = s.security_code().map(|code| code.display());
+        Some(out)
     }
 
     /// The active key epoch, when the session has one.
@@ -992,6 +1004,10 @@ async fn on_socket<C: FrameCrypto>(shared: &Arc<Shared<C>>, ev: SocketEvent) -> 
             shared.emit(KeySessionEvent::Recording(Some(r)));
             None
         }
+        SocketEvent::MediaPolicyUpdated(m) => {
+            shared.emit(KeySessionEvent::MediaPolicy(m));
+            None
+        }
         SocketEvent::Closed(SocketClosed::Revoked) => Some(KeyEnd::CredentialLost {
             reason: "session_revoked".to_owned(),
             rejoin: false,
@@ -1082,5 +1098,138 @@ async fn drive<C: FrameCrypto>(
                 }
             }
         }
+    }
+}
+
+/// A key status as the engine's [`crate::call::CallSecurity`] (without the code).
+pub(crate) fn security_of(s: &E2eeStatus) -> crate::call::CallSecurity {
+    let mut out = crate::call::CallSecurity::default();
+    out.state = match s {
+        E2eeStatus::Preparing => "preparing",
+        E2eeStatus::Joining { since } => {
+            out.since_ms = Some(*since);
+            "joining"
+        }
+        E2eeStatus::Active { epoch, since } => {
+            out.epoch = Some(*epoch);
+            out.since_ms = Some(*since);
+            "active"
+        }
+        E2eeStatus::Securing {
+            since,
+            show_after_ms,
+        } => {
+            out.since_ms = Some(*since);
+            out.show_after_ms = Some(*show_after_ms);
+            "securing"
+        }
+        E2eeStatus::Recovering { reason, since } => {
+            out.since_ms = Some(*since);
+            out.reason = Some((*reason).to_owned());
+            "recovering"
+        }
+        E2eeStatus::DeviceNotEnrolled => "device_not_enrolled",
+        E2eeStatus::ServerIdentityChanged => "server_identity_changed",
+        E2eeStatus::Unsupported { reason } => {
+            out.reason = Some(reason.clone());
+            "unsupported"
+        }
+        E2eeStatus::Failed { reason } => {
+            out.reason = Some((*reason).to_owned());
+            "failed"
+        }
+        E2eeStatus::Left { reason } => {
+            out.reason = Some(match reason {
+                LeftReason::Left => "left".to_owned(),
+                LeftReason::Removed(r) => format!("removed:{}", r.as_str()),
+                LeftReason::Failed(r) => format!("failed:{r}"),
+            });
+            "left"
+        }
+    }
+    .to_owned();
+    out
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use sew_proto::e2ee::RemoveReason;
+
+    #[test]
+    fn each_key_status_is_its_security_state() {
+        let s = security_of(&E2eeStatus::Active {
+            epoch: 7,
+            since: 1_000,
+        });
+        assert_eq!(
+            (s.state.as_str(), s.epoch, s.since_ms, s.code),
+            ("active", Some(7), Some(1_000), None)
+        );
+        let s = security_of(&E2eeStatus::Securing {
+            since: 5,
+            show_after_ms: 1_500,
+        });
+        assert_eq!(
+            (s.state.as_str(), s.since_ms, s.show_after_ms, s.epoch),
+            ("securing", Some(5), Some(1_500), None)
+        );
+        let s = security_of(&E2eeStatus::Recovering {
+            reason: "readd",
+            since: 9,
+        });
+        assert_eq!(
+            (s.state.as_str(), s.reason.as_deref()),
+            ("recovering", Some("readd"))
+        );
+        assert_eq!(security_of(&E2eeStatus::Preparing).state, "preparing");
+        assert_eq!(
+            security_of(&E2eeStatus::Joining { since: 3 }).since_ms,
+            Some(3)
+        );
+        assert_eq!(
+            security_of(&E2eeStatus::DeviceNotEnrolled).state,
+            "device_not_enrolled"
+        );
+        assert_eq!(
+            security_of(&E2eeStatus::ServerIdentityChanged).state,
+            "server_identity_changed"
+        );
+        let s = security_of(&E2eeStatus::Unsupported {
+            reason: "no_insertable_streams".to_owned(),
+        });
+        assert_eq!(
+            (s.state.as_str(), s.reason.as_deref()),
+            ("unsupported", Some("no_insertable_streams"))
+        );
+        let s = security_of(&E2eeStatus::Failed {
+            reason: "recovery_timeout",
+        });
+        assert_eq!(s.reason.as_deref(), Some("recovery_timeout"));
+        let s = security_of(&E2eeStatus::Left {
+            reason: LeftReason::Removed(RemoveReason::PermsLost),
+        });
+        assert_eq!(
+            (s.state.as_str(), s.reason.as_deref()),
+            ("left", Some("removed:perms_lost"))
+        );
+        let s = security_of(&E2eeStatus::Left {
+            reason: LeftReason::Left,
+        });
+        assert_eq!(s.reason.as_deref(), Some("left"));
+    }
+
+    #[test]
+    fn the_security_json_writes_only_what_it_has() {
+        let code = "01234 56789 01234 56789 01234 56789";
+        let s = crate::call::CallSecurity::active(3, Some(code.into()));
+        assert_eq!(
+            serde_json::to_value(&s).unwrap_or_default(),
+            serde_json::json!({"state": "active", "epoch": 3, "code": code})
+        );
+        assert_eq!(
+            serde_json::to_value(crate::call::CallSecurity::new("joining")).unwrap_or_default(),
+            serde_json::json!({"state": "joining"})
+        );
     }
 }

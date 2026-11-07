@@ -43,6 +43,23 @@ use sew_call_client::{
 use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 
+#[cfg(feature = "video-core")]
+mod backend;
+#[cfg(feature = "video-core")]
+mod capture;
+#[cfg(feature = "video-core")]
+mod publish;
+#[cfg(all(
+    feature = "ios-screen-ring",
+    feature = "video-core",
+    any(target_os = "ios", target_os = "linux")
+))]
+mod ring;
+#[cfg(feature = "video-core")]
+mod scene;
+mod video;
+
+use crate::details::{QualityInfo, RosterEntry, SecurityInfo, roster_of};
 use crate::engine::{
     AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, EngineError, JoinAnswer,
     JoinProvider, JoinRequest, ProviderError, VoiceEngine,
@@ -100,6 +117,24 @@ struct EngineInner {
     state: Mutex<DevState>,
     /// The phone's audio session, for every call's kessel-audio.
     session: AudioSession,
+    /// The video backend (the camera permission, the background signal, the native sinks'
+    /// decoder, the camera and screen publish).
+    #[cfg(feature = "video-core")]
+    video: backend::EngineVideo,
+    /// Cameras, screens and the preview over the same backend (`video-core`; use
+    /// [`EngineInner::capture`]).
+    #[cfg(feature = "video-core")]
+    capture: capture::EngineCapture,
+}
+
+#[cfg(feature = "video-core")]
+impl EngineInner {
+    /// The capture, attached to the bridge's `VideoCapture` on first use (one opener holds
+    /// the camera: the preview and the camera publish share it).
+    fn capture(&self) -> &capture::EngineCapture {
+        self.capture.attach(|| self.video.capture());
+        &self.capture
+    }
 }
 
 #[derive(Default)]
@@ -147,8 +182,42 @@ impl CallClientEngine {
                 devices_tx,
                 state: Mutex::new(DevState::default()),
                 session: AudioSession::new(),
+                #[cfg(feature = "video-core")]
+                video: backend::EngineVideo::default(),
+                #[cfg(feature = "video-core")]
+                capture: capture::EngineCapture::new(),
             }),
         }
+    }
+
+    /// The host's own video backend instead of kessel-video's `system` (tests: kessel-video's
+    /// fake backend). Built engines take it before the first use of video. It is the engine's
+    /// one backend: the cameras, screens, permissions and the preview (`video_capture`), the
+    /// camera and screen publish (`VideoBridge`, over the same capture), the native sinks'
+    /// decoder and the decoded fallback's decoders (`video_caps.decode_codecs`). Without it and
+    /// without the plugin's `video` there is none (`camera`, `screen` and `preview` answer
+    /// `video_unsupported` and nothing is decoded).
+    #[cfg(feature = "video-core")]
+    pub fn with_video_backend(
+        self,
+        backend: Arc<dyn sew_call_client::kessel_video::VideoBackend>,
+    ) -> CallClientEngine {
+        self.inner.video.set_backend(backend);
+        self
+    }
+
+    /// Android: the host's JNI handles for kessel-video's Android backend
+    /// (`unsafe { AndroidContext::new(vm, context) }` from `ndk_context::android_context()`),
+    /// so it reads the CAMERA permission. Without it the permission reads as `prompt` until a
+    /// camera opens. [`crate::VoiceControl::app_scene`] and `device_orientation` reach this
+    /// context; other platforms ignore it.
+    #[cfg(feature = "video-core")]
+    pub fn with_android_video_context(
+        self,
+        ctx: sew_call_client::kessel_video::AndroidContext,
+    ) -> CallClientEngine {
+        self.inner.video.set_android(ctx);
+        self
     }
 
     /// The production engine: Sew's MLS call keys ([`CallClient::with_mls`]: the device key
@@ -158,9 +227,20 @@ impl CallClientEngine {
     /// On iOS and Android nothing is listed between calls (no device enumeration, no poll):
     /// the OS owns the route there (CallKit, Telecom), and `devices` answers the last call's
     /// list, empty before the first.
+    ///
+    /// With `video`, the cameras and screens are the system's (kessel-video's backend for the
+    /// target, made on first use; none when it can't start).
     #[cfg(feature = "audio")]
     pub fn with_mls(cfg: sew_call_client::ClientConfig) -> CallClientEngine {
         CallClientEngine::new(CallClient::with_mls(cfg), system_audio()).with_idle_devices()
+    }
+
+    /// The engine's capture (`video-core`; `None` without a video backend): the cameras, the
+    /// screens and the preview over the engine's one backend. It is the camera publish's own
+    /// (`VideoBridge::capture`): one opener holds the camera.
+    #[cfg(feature = "video-core")]
+    pub fn video_capture(&self) -> Option<sew_call_client::VideoCapture> {
+        self.inner.capture().capture()
     }
 
     /// The system's devices between calls (desktop).
@@ -494,6 +574,144 @@ impl VoiceEngine for CallClientEngine {
                 .map_err(device_error)
         })
     }
+
+    /// With `video-core` the engine receives remote video (decoded by the webview's
+    /// WebCodecs, or by the decoded fallback's backend: `decode_codecs`); with a video backend
+    /// it also has the backend's cameras and screens and publishes them (`publish_codecs`: the
+    /// backend's encoders).
+    fn video_caps(&self) -> crate::wire::VideoCaps {
+        #[cfg(feature = "video-core")]
+        {
+            let mut caps = self.inner.capture().caps();
+            caps.decode_codecs = self
+                .inner
+                .video
+                .backend()
+                .map(|b| crate::kessel::decode_codecs(b.as_ref()))
+                .unwrap_or_default();
+            caps
+        }
+        #[cfg(not(feature = "video-core"))]
+        {
+            crate::wire::VideoCaps::default()
+        }
+    }
+
+    /// The cameras, the chosen one and the OS permissions, from the video backend.
+    #[cfg(feature = "video-core")]
+    fn video_devices(&self) -> Result<crate::wire::VideoDevices, EngineError> {
+        self.inner.capture().devices()
+    }
+
+    /// The camera `camera {on}` and `preview` open when they name none (a camera the backend
+    /// doesn't list is `camera_not_found`); a camera published now switches to it at once.
+    #[cfg(feature = "video-core")]
+    fn set_video_device(&self, camera: Choice) -> Result<(), EngineError> {
+        let inner = &self.inner;
+        inner.capture().set_device(camera)?;
+        let live = lock(&inner.state).live();
+        if let Some(sh) = live
+            && inner.video.backend().is_some()
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            let bridge = inner.video.bridge();
+            let device = inner.capture().chosen_camera();
+            rt.spawn(async move {
+                let g = sh.call.read().await;
+                let Some(call) = g.as_ref() else { return };
+                if let Err(e) = bridge.switch_camera(call, device).await {
+                    tracing::warn!(code = e.code(), "sew-voice: the camera did not switch");
+                    sh.send(CallEvent::Error(publish::error(&e).to_info()));
+                }
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "video-core")]
+    fn video_device_events(&self) -> Option<broadcast::Receiver<crate::wire::VideoDevices>> {
+        self.inner.capture().device_events()
+    }
+
+    #[cfg(feature = "video-core")]
+    fn screen_sources(&self) -> BoxFuture<'_, Result<Vec<crate::wire::ScreenSource>, EngineError>> {
+        Box::pin(self.inner.capture().screen_sources())
+    }
+
+    /// The camera outside a call. While the camera is published the call's self-view already
+    /// feeds `local:camera`: nothing opens (one opener holds the camera).
+    #[cfg(feature = "video-core")]
+    fn preview(
+        &self,
+        req: crate::video::PreviewRequest,
+    ) -> BoxFuture<'_, Result<Option<crate::video::VideoFrames>, EngineError>> {
+        Box::pin(async move {
+            if req.on
+                && self.inner.video.backend().is_some()
+                && matches!(
+                    self.inner.video.bridge().camera_state().await,
+                    sew_call_client::CameraState::On { .. }
+                )
+            {
+                return Ok(None);
+            }
+            self.inner.capture().preview(req).await
+        })
+    }
+
+    #[cfg(feature = "video-core")]
+    fn preview_keyframe(&self) {
+        self.inner.capture().preview_keyframe();
+    }
+
+    #[cfg(feature = "video-core")]
+    fn camera_permission(&self) -> crate::wire::PermissionState {
+        self.inner.video.camera_permission()
+    }
+
+    #[cfg(feature = "video-core")]
+    fn request_camera_permission(&self) -> BoxFuture<'_, crate::wire::PermissionState> {
+        Box::pin(self.inner.video.request_camera_permission())
+    }
+
+    /// To kessel-video's Android backend (its cameras close in the background); the camera
+    /// publish's pause is the call's (`CallHandle::app_scene`, `real/scene.rs`).
+    #[cfg(feature = "video-core")]
+    fn app_scene(&self, scene: crate::engine::AppScene) {
+        self.inner.video.app_scene(scene.is_background());
+    }
+
+    #[cfg(feature = "video-core")]
+    fn device_orientation(&self, degrees: u32) {
+        self.inner.video.device_orientation(degrees);
+    }
+
+    #[cfg(feature = "video-core")]
+    fn video_background_events(&self) -> Option<broadcast::Receiver<bool>> {
+        self.inner
+            .video
+            .background_events(Arc::downgrade(&self.inner))
+    }
+
+    #[cfg(feature = "video-core")]
+    fn native_video_backend(&self) -> Option<Arc<dyn sew_call_client::kessel_video::VideoBackend>> {
+        self.inner.video.backend()
+    }
+
+    #[cfg(feature = "video-core")]
+    fn video_decoder(
+        &self,
+        spec: crate::video::DecoderSpec,
+        wake: crate::video::DecoderWake,
+    ) -> Result<Box<dyn crate::video::FrameDecoder>, EngineError> {
+        let Some(backend) = self.inner.video.backend() else {
+            return Err(EngineError::Failed(ErrorInfo::with_detail(
+                crate::wire::video_code::DECODED_UNSUPPORTED,
+                serde_json::json!({ "codec": spec.codec }),
+            )));
+        };
+        crate::kessel::open_decoder(backend.as_ref(), spec, wake)
+    }
 }
 
 /// The plugin's audio-session event as sew-call-client's.
@@ -557,6 +775,58 @@ struct CallShared {
     last: Mutex<CallSnapshot>,
     engine: Weak<EngineInner>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// The last stats window's quality (0.4.1).
+    quality: Mutex<QualityInfo>,
+    /// The call's video receive (with `video-core`).
+    video: video::CallVideo,
+    /// The iPhone screen share's armed ring (`ios-screen-ring`).
+    #[cfg(all(
+        feature = "ios-screen-ring",
+        feature = "video-core",
+        any(target_os = "ios", target_os = "linux")
+    ))]
+    ring: ring::RingSlot,
+    /// The camera publish's pause in the app's background (`real/scene.rs`).
+    #[cfg(feature = "video-core")]
+    scene: std::sync::OnceLock<Arc<scene::ScenePause>>,
+}
+
+impl RealCall {
+    /// `camera {on, device?}`; an off with `off_reason` says it as `local_video`'s reason.
+    #[cfg(feature = "video-core")]
+    async fn camera_with(
+        &self,
+        req: crate::video::CameraRequest,
+        off_reason: Option<&'static str>,
+    ) -> Result<(), EngineError> {
+        let engine = self
+            .shared
+            .engine
+            .upgrade()
+            .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+        let bridge = self
+            .shared
+            .video_bridge()
+            .ok_or_else(|| EngineError::failed(crate::wire::video_code::VIDEO_UNSUPPORTED))?;
+        let g = self.shared.call.read().await;
+        let call = g
+            .as_ref()
+            .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+        let chosen = engine.capture().chosen_camera();
+        let done = publish::camera(&bridge, call, &req, chosen, off_reason).await;
+        // The pause takes the call's lock itself.
+        drop(g);
+        if done.is_ok()
+            && let Some(scene) = self.shared.scene.get()
+        {
+            if req.on {
+                scene.camera_started().await;
+            } else {
+                scene.camera_stopped().await;
+            }
+        }
+        done
+    }
 }
 
 impl RealCall {
@@ -570,6 +840,13 @@ impl RealCall {
         let rx = call.events();
         let snap = call.snapshot();
         let last = map_snapshot(&snap);
+        // Video only in a plugin built with `video-core`: without it the plugin's video seam
+        // keeps its defaults (no frames).
+        let frames = if cfg!(feature = "video-core") {
+            call.video_frames()
+        } else {
+            None
+        };
         let shared = Arc::new(CallShared {
             call: RwLock::new(Some(call)),
             audio_started: AtomicBool::new(bridge.is_some()),
@@ -580,10 +857,50 @@ impl RealCall {
             last: Mutex::new(last),
             engine,
             tasks: Mutex::new(Vec::new()),
+            quality: Mutex::new(QualityInfo::unknown()),
+            video: video::CallVideo::default(),
+            #[cfg(all(
+                feature = "ios-screen-ring",
+                feature = "video-core",
+                any(target_os = "ios", target_os = "linux")
+            ))]
+            ring: ring::RingSlot::default(),
+            #[cfg(feature = "video-core")]
+            scene: std::sync::OnceLock::new(),
         });
+        #[cfg(feature = "video-core")]
+        {
+            let ops = Arc::new(SceneOps {
+                shared: Arc::downgrade(&shared),
+            });
+            let _ = shared.scene.set(scene::ScenePause::new(
+                ops,
+                tokio::runtime::Handle::current(),
+            ));
+        }
         let forward = tokio::spawn(forward(Arc::downgrade(&shared), rx));
         let audio = tokio::spawn(audio(Arc::downgrade(&shared)));
         lock(&shared.tasks).extend([forward, audio]);
+        // This device's own camera and screen: the bridge's self-view into the same frame
+        // channel, and its sources' pauses as `local_video`.
+        #[cfg(feature = "video-core")]
+        let (self_view, notes) = match shared.video_bridge() {
+            Some(b) if frames.is_some() => (Some(b.self_view()), Some(b.events())),
+            _ => (None, None),
+        };
+        #[cfg(not(feature = "video-core"))]
+        let self_view = None;
+        if let Some(t) = shared
+            .video
+            .start(frames, self_view, Arc::downgrade(&shared))
+        {
+            lock(&shared.tasks).push(t);
+        }
+        #[cfg(feature = "video-core")]
+        if let Some(rx) = notes {
+            let t = tokio::spawn(source_notes(Arc::downgrade(&shared), rx));
+            lock(&shared.tasks).push(t);
+        }
         RealCall { shared }
     }
 }
@@ -682,6 +999,14 @@ impl CallShared {
             .unwrap_or_default()
     }
 
+    /// The app's video publisher (`None` without a video backend, or once the engine is gone).
+    #[cfg(feature = "video-core")]
+    fn video_bridge(&self) -> Option<Arc<sew_call_client::VideoBridge>> {
+        let engine = self.engine.upgrade()?;
+        engine.video.backend()?;
+        Some(engine.video.bridge())
+    }
+
     /// The engine's snapshot now, when the call is not being left.
     fn engine_snapshot(&self) -> Option<sew_call_client::CallSnapshot> {
         let g = self.call.try_read().ok()?;
@@ -702,6 +1027,12 @@ impl CallShared {
     /// The call is over: close the audio (the microphone) and free the app's call slot.
     fn finish(self: &Arc<Self>) {
         drop(lock(&self.bridge).take());
+        self.video.clear();
+        #[cfg(feature = "video-core")]
+        if let Some(bridge) = self.video_bridge() {
+            // The pipelines stop; the call already took its publications with it.
+            tokio::spawn(async move { bridge.close().await });
+        }
         if let Some(engine) = self.engine.upgrade() {
             engine.call_over(self);
         }
@@ -756,6 +1087,121 @@ impl CallHandle for RealCall {
         })
     }
 
+    fn security(&self) -> Option<SecurityInfo> {
+        let sec = self.shared.engine_snapshot()?.security?;
+        Some(SecurityInfo::from(&sec))
+    }
+
+    fn roster(&self) -> Vec<RosterEntry> {
+        roster_of(&self.shared.engine_participants())
+    }
+
+    fn quality(&self) -> QualityInfo {
+        lock(&self.shared.quality).clone()
+    }
+
+    fn video_frames(&self) -> Option<crate::video::VideoFrames> {
+        self.shared.video.take_frames()
+    }
+
+    fn video_snapshot(&self) -> crate::engine::VideoSnapshot {
+        let mut v = video::snapshot(self.shared.engine_snapshot().as_ref());
+        v.local = self.shared.video.local();
+        if let Ok(g) = self.shared.call.try_read()
+            && let Some(call) = g.as_ref()
+        {
+            v.policy = call
+                .media_policy()
+                .and_then(|p| serde_json::to_value(p).ok());
+        }
+        v
+    }
+
+    #[cfg(feature = "video-core")]
+    fn camera(&self, req: crate::video::CameraRequest) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(self.camera_with(req, None))
+    }
+
+    #[cfg(feature = "video-core")]
+    fn camera_off_because(&self, reason: &'static str) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(self.camera_with(
+            crate::video::CameraRequest {
+                on: false,
+                device: None,
+            },
+            Some(reason),
+        ))
+    }
+
+    /// The camera publish pauses in the background and resumes with a keyframe on the return
+    /// (`real/scene.rs`); the webview sinks are the plugin's.
+    #[cfg(feature = "video-core")]
+    fn app_scene(&self, scene: crate::engine::AppScene) {
+        if let Some(s) = self.shared.scene.get() {
+            s.scene(scene.is_background());
+        }
+    }
+
+    #[cfg(feature = "video-core")]
+    fn screen(&self, req: crate::video::ScreenRequest) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(async move {
+            let engine = self
+                .shared
+                .engine
+                .upgrade()
+                .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+            let bridge = self
+                .shared
+                .video_bridge()
+                .ok_or_else(|| EngineError::failed(crate::wire::video_code::SCREEN_UNSUPPORTED))?;
+            let g = self.shared.call.read().await;
+            let call = g
+                .as_ref()
+                .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+            publish::screen(&bridge, engine.capture(), call, &req).await
+        })
+    }
+
+    #[cfg(all(
+        feature = "ios-screen-ring",
+        feature = "video-core",
+        any(target_os = "ios", target_os = "linux")
+    ))]
+    fn screen_share_ring(
+        &self,
+        container: std::path::PathBuf,
+    ) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(ring::arm(&self.shared, container))
+    }
+
+    fn set_video_settings(&self, track: &str, settings: crate::video::TrackSettings) {
+        // Never blocks: a leave holding the write lock is taking the call away.
+        let g = self.shared.call.try_read().ok();
+        let call = g.as_ref().and_then(|g| g.as_ref());
+        self.shared.video.set_settings(call, track, settings);
+    }
+
+    /// A remote track's keyframe goes to its engine sink; a self-view's to the publication's
+    /// self-view layer.
+    fn request_keyframe(&self, track: &str) {
+        #[cfg(feature = "video-core")]
+        if crate::video::is_local_track(track) {
+            if let Some(bridge) = self.shared.video_bridge() {
+                bridge.self_view_keyframe(if track == crate::video::LOCAL_CAMERA {
+                    sew_call_client::VideoSource::Camera
+                } else {
+                    sew_call_client::VideoSource::ScreenShare
+                });
+            }
+            return;
+        }
+        self.shared.video.request_keyframe(track);
+    }
+
+    fn video_sink_stats(&self, track: &str, stats: crate::wire::SinkStats) {
+        self.shared.video.sink_stats(track, stats);
+    }
+
     fn network_changed(&self) {
         // Sync and never blocks: `Call::network_changed` only queues the command. A leave
         // holding the write lock is taking the call away, so there is nothing to move.
@@ -803,6 +1249,75 @@ impl CallHandle for RealCall {
     }
 }
 
+/// The real call's side of the camera's background pause.
+#[cfg(feature = "video-core")]
+struct SceneOps {
+    shared: Weak<CallShared>,
+}
+
+#[cfg(feature = "video-core")]
+impl scene::CameraOps for SceneOps {
+    fn pause(&self, paused: bool) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            let Some(sh) = self.shared.upgrade() else {
+                return false;
+            };
+            let Some(bridge) = sh.video_bridge() else {
+                return false;
+            };
+            let g = sh.call.read().await;
+            let Some(call) = g.as_ref() else {
+                return false;
+            };
+            let camera = sew_call_client::VideoSource::Camera;
+            if paused {
+                // The frames stop first, then subscribers see the track muted.
+                let on = bridge.pause_camera(true).await;
+                if on {
+                    call.set_video_muted(camera, true);
+                }
+                on
+            } else {
+                call.set_video_muted(camera, false);
+                bridge.pause_camera(false).await
+            }
+        })
+    }
+
+    fn unpublish(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let Some(sh) = self.shared.upgrade() else {
+                return;
+            };
+            let Some(bridge) = sh.video_bridge() else {
+                return;
+            };
+            let g = sh.call.read().await;
+            let Some(call) = g.as_ref() else {
+                return;
+            };
+            sh.video.background_off();
+            tracing::info!("sew-voice: the camera turns off after its time in the background");
+            if let Err(e) = bridge
+                .set_camera(
+                    call,
+                    sew_call_client::CameraRequest::off().with_reason(video::BACKGROUND),
+                )
+                .await
+            {
+                tracing::info!(error = %e, "sew-voice: the background's camera off failed");
+            }
+        })
+    }
+
+    fn paused_changed(&self, paused: bool) {
+        if let Some(sh) = self.shared.upgrade() {
+            let local = sh.video.set_camera_paused(paused);
+            sh.send(CallEvent::LocalVideo(local));
+        }
+    }
+}
+
 /// The engine's events in the plugin's shapes, while the call lives.
 async fn forward(
     shared: Weak<CallShared>,
@@ -828,7 +1343,14 @@ async fn forward(
             }
             Ok(E::Participants(p)) => {
                 sh.send(CallEvent::Participants(map_participants(&p)));
+                sh.send(CallEvent::Roster(roster_of(&p)));
                 sh.update_recording(None, &p);
+            }
+            Ok(E::Security(sec)) => sh.send(CallEvent::Security(Some(SecurityInfo::from(&sec)))),
+            Ok(E::Stats(w)) => {
+                let q = QualityInfo::from_window(&w);
+                *lock(&sh.quality) = q.clone();
+                sh.send(CallEvent::Quality(q));
             }
             Ok(E::Recording(r)) => {
                 let p = sh.engine_participants();
@@ -840,6 +1362,26 @@ async fn forward(
             Ok(E::Moved(m)) => sh.send(CallEvent::Moved {
                 room: m.room().to_owned(),
             }),
+            // The whole video list on every change (the snapshot already has it).
+            Ok(E::VideoAdded(_) | E::VideoRemoved { .. } | E::VideoChanged(_)) => {
+                let list = sh
+                    .engine_snapshot()
+                    .map(|s| video::tracks(&s))
+                    .unwrap_or_default();
+                sh.video.forget(&list);
+                sh.send(CallEvent::Video(list));
+            }
+            // This device's camera or screen went on or off.
+            Ok(E::LocalVideo(l)) => {
+                if let Some(local) = sh.video.local_changed(&l) {
+                    sh.send(CallEvent::LocalVideo(local));
+                }
+            }
+            Ok(E::MediaPolicy(p)) => {
+                if let Ok(v) = serde_json::to_value(&*p) {
+                    sh.send(CallEvent::Policy(v));
+                }
+            }
             // An event sew-call-client adds later.
             Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -847,6 +1389,10 @@ async fn forward(
                 let ended = matches!(snap.state, CallState::Ended { .. });
                 if let Some(engine) = sh.engine_snapshot() {
                     sh.update_recording(Some(engine.recording.clone()), &engine.participants);
+                    sh.send(CallEvent::Roster(roster_of(&engine.participants)));
+                    if let Some(sec) = &engine.security {
+                        sh.send(CallEvent::Security(Some(SecurityInfo::from(sec))));
+                    }
                 }
                 sh.send(CallEvent::Participants(snap.participants));
                 sh.send(CallEvent::State(snap.state));
@@ -860,6 +1406,35 @@ async fn forward(
                 sh.finish();
                 return;
             }
+        }
+    }
+}
+
+/// The published sources' pauses and resumes (a hidden window, another app took the camera,
+/// back) as `local_video`, while the call lives. Their ends come as the engine's `LocalVideo`
+/// (the bridge unpublishes them with the source's reason).
+#[cfg(feature = "video-core")]
+async fn source_notes(
+    shared: Weak<CallShared>,
+    mut rx: broadcast::Receiver<sew_call_client::SourceNote>,
+) {
+    use sew_call_client::{CaptureEvent, CaptureKind, VideoSource};
+    loop {
+        let note = match rx.recv().await {
+            Ok(n) => n,
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let Some(sh) = shared.upgrade() else { return };
+        if !matches!(note.event, CaptureEvent::Paused(_) | CaptureEvent::Resumed) {
+            continue;
+        }
+        let kind = match note.source {
+            VideoSource::Camera => CaptureKind::Camera,
+            _ => CaptureKind::Screen,
+        };
+        if let Some(local) = sh.video.source_changed(kind, &note.event) {
+            sh.send(CallEvent::LocalVideo(local));
         }
     }
 }
@@ -1356,6 +1931,71 @@ mod tests {
         }
     }
 
+    /// The decoded fallback's decoders: none until a backend is given (nothing in
+    /// `decode_codecs`, `decoded_unsupported`), then that backend's (kessel-video's fake: its
+    /// pure-Rust VP8 and its own H.264).
+    #[cfg(feature = "video-core")]
+    #[test]
+    fn the_decoded_fallback_decodes_with_the_given_backend() {
+        use crate::video::{DecodedFormat, DecoderSpec, VideoCodec};
+        let dir = std::env::temp_dir().join("sew-voice-real-decoders");
+        let audio: AudioConfig = Arc::new(|_, _| EngineConfig::default());
+        let spec = DecoderSpec {
+            codec: VideoCodec::Vp8,
+            format: DecodedFormat::I420,
+            fit: (640, 360),
+        };
+        let wake: crate::video::DecoderWake = Arc::new(|| {});
+        let bare = CallClientEngine::new(
+            CallClient::with_mls(sew_call_client::ClientConfig::new("sew.test", dir.clone())),
+            Arc::clone(&audio),
+        );
+        assert_eq!(bare.video_caps().decode_codecs, vec![]);
+        let Err(e) = bare.video_decoder(spec, Arc::clone(&wake)) else {
+            panic!("a decoder without a backend");
+        };
+        assert_eq!(
+            e.to_info().code,
+            crate::wire::video_code::DECODED_UNSUPPORTED
+        );
+        let fake = sew_call_client::kessel_video::fake::FakeBackend::new(
+            sew_call_client::kessel_video::fake::FakeConfig::default(),
+        );
+        let engine = CallClientEngine::new(
+            CallClient::with_mls(sew_call_client::ClientConfig::new("sew.test", dir)),
+            audio,
+        )
+        .with_video_backend(fake);
+        let caps = engine.video_caps();
+        assert!(caps.receive);
+        assert!(caps.decode_codecs.contains(&VideoCodec::H264), "{caps:?}");
+        // The plugin's own tests turn on kessel-video's VP8 (the engine's `testing`).
+        assert!(caps.decode_codecs.contains(&VideoCodec::Vp8), "{caps:?}");
+        assert!(engine.video_decoder(spec, wake).is_ok());
+        // One backend: the publisher's is the decoders' (and the native sinks').
+        let one = engine.inner.video.backend().expect("the given backend");
+        let bridge = engine.inner.video.bridge();
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(&one), Arc::as_ptr(bridge.backend())),
+            "the publish and the decoded fallback share the engine's backend"
+        );
+        assert!(
+            Arc::ptr_eq(&bridge, &engine.inner.video.bridge()),
+            "one bridge"
+        );
+        // The capture (cameras, screens, the preview) is the bridge's own.
+        let capture = engine.video_capture().expect("a capture");
+        assert!(
+            std::ptr::addr_eq(Arc::as_ptr(capture.backend()), Arc::as_ptr(&one)),
+            "the capture shares the engine's backend"
+        );
+        assert_eq!(
+            caps.publish_codecs,
+            vec![VideoCodec::Vp8, VideoCodec::H264],
+            "publish_codecs: the backend's encoders"
+        );
+    }
+
     /// The device-key calls are the client's, over its data directory; a live call is
     /// `in_call`, any other store failure `device_store`.
     #[tokio::test(flavor = "multi_thread")]
@@ -1451,5 +2091,97 @@ mod tests {
             join_error(CallError::Setup("no roots".into())).to_info(),
             ErrorInfo::with_detail("engine_stopped", "no roots")
         );
+    }
+
+    /// The video backend (kessel-video's fake here): the camera permission and its prompt,
+    /// the camera list and choice, the backend's background signal, and the Android context
+    /// the scene and orientation reach.
+    #[cfg(feature = "video-core")]
+    #[tokio::test]
+    async fn the_video_backend_answers_permission_cameras_and_background() {
+        use crate::wire::{Facing, PermissionState};
+        use sew_call_client::kessel_video::fake::{FakeBackend, FakeConfig, FakePermission};
+        use sew_call_client::kessel_video::{AndroidContext, BackendEvent, Permission};
+
+        let (bare, _) = counted();
+        assert_eq!(bare.camera_permission(), PermissionState::Unsupported);
+        assert!(bare.native_video_backend().is_none());
+        assert!(bare.video_background_events().is_none());
+        assert_eq!(
+            bare.video_devices().unwrap_err().to_info().code,
+            "video_unsupported"
+        );
+
+        let mut cfg = FakeConfig::default();
+        cfg.camera_permission = FakePermission::Prompt {
+            answer: Permission::Granted,
+            after: Duration::from_millis(20),
+        };
+        cfg.backend_events = vec![
+            (Duration::from_millis(300), BackendEvent::LowPower(true)),
+            (Duration::from_millis(350), BackendEvent::Background(true)),
+            (Duration::from_millis(450), BackendEvent::Background(false)),
+        ];
+        let ctx = AndroidContext::default();
+        let (engine, _) = counted();
+        let engine = engine
+            .with_video_backend(FakeBackend::new(cfg))
+            .with_android_video_context(ctx.clone());
+        let mut rx = engine.video_background_events().unwrap();
+        assert!(engine.native_video_backend().is_some());
+
+        assert_eq!(engine.camera_permission(), PermissionState::Prompt);
+        assert_eq!(
+            engine.request_camera_permission().await,
+            PermissionState::Granted,
+            "the prompt's answer"
+        );
+        assert_eq!(engine.camera_permission(), PermissionState::Granted);
+
+        let d = engine.video_devices().unwrap();
+        assert_eq!(d.cameras.len(), 1);
+        assert_eq!(
+            (
+                d.cameras[0].id.as_str(),
+                d.cameras[0].facing,
+                d.cameras[0].default
+            ),
+            ("fake:camera:0", Facing::Front, true)
+        );
+        assert_eq!(d.camera, None);
+        assert_eq!(d.permission.camera, PermissionState::Granted);
+        assert_eq!(
+            engine
+                .set_video_device(Choice::Id("nope".into()))
+                .unwrap_err()
+                .to_info()
+                .code,
+            "camera_not_found"
+        );
+        engine
+            .set_video_device(Choice::Id("fake:camera:0".into()))
+            .unwrap();
+        assert_eq!(
+            engine.video_devices().unwrap().camera.as_deref(),
+            Some("fake:camera:0")
+        );
+
+        // Only the background events come through, in order.
+        async fn next(rx: &mut broadcast::Receiver<bool>) -> bool {
+            tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        }
+        assert!(next(&mut rx).await);
+        assert!(!next(&mut rx).await);
+
+        // The scene and the orientation reach the Android context.
+        engine.app_scene(crate::engine::AppScene::Background);
+        assert!(ctx.is_background());
+        engine.app_scene(crate::engine::AppScene::Foreground);
+        assert!(!ctx.is_background());
+        engine.device_orientation(100);
+        assert_eq!(ctx.device_orientation(), 90);
     }
 }

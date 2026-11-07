@@ -242,6 +242,10 @@ pub const NESTED: &[&str] = &[
     // One link of `GET /mgmt/v1/spaces/{space_id}/apps`.
     "MgmtSpaceApp",
     "MgmtAppSpace",
+    // An erasure's counts and kept rows, and `status.erasures`.
+    "MgmtEraseCounts",
+    "MgmtEraseKept",
+    "StatusErasures",
     // One item of a bulk member-channels sync, and its answer.
     "MgmtMemberChannelsItem",
     "MgmtMemberChannelsItemResult",
@@ -493,6 +497,12 @@ pub fn all() -> Vec<WireType> {
         // api/messages
         wire!(Enum, "api/messages", ReferenceKind, ""),
         wire!(Enum, "api/messages", OnBehalfApprovalState, ""),
+        wire!(
+            Enum,
+            "api/messages",
+            DeletedReason,
+            "Message.deleted_reason"
+        ),
         wire!(
             Record,
             "api/messages",
@@ -847,6 +857,41 @@ pub fn all() -> Vec<WireType> {
             DeprovisionResponse,
             "POST /mgmt/v1/principals/deprovision"
         ),
+        // Account erase.
+        wire!(
+            Request,
+            "mgmt",
+            MgmtEraseRequest,
+            "POST /mgmt/v1/principals/erase"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtEraseResult,
+            "POST /mgmt/v1/principals/erase (200), GET /mgmt/v1/principals/erase/{job_id}"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtEraseAccepted,
+            "POST /mgmt/v1/principals/erase (202)"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtErasuresQuery,
+            "GET /mgmt/v1/principals/erasures"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtErasurePage,
+            "GET /mgmt/v1/principals/erasures"
+        ),
+        wire!(Enum, "mgmt", EraseMode, "MgmtEraseRequest.mode"),
+        wire!(Enum, "mgmt", EraseState, "MgmtEraseResult.state"),
+        wire!(Enum, "mgmt", EraseKeptKind, "MgmtEraseKept.kind"),
+        wire!(Enum, "mgmt", EraseKeptReason, "MgmtEraseKept.reason"),
         // Standalone -> K2 identity.
         wire!(
             Request,

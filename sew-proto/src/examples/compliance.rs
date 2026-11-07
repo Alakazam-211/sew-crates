@@ -604,6 +604,8 @@ impl Example for MemberRecord {
             created_at: t(0),
             deactivated_at: Some(t(90_000)),
             relinked_from: Some("local:morgan-assistant".into()),
+            erased_at: None,
+            erase_mode: None,
             head_seq: Some(42),
             source: source(),
         };
@@ -630,8 +632,23 @@ impl Example for MemberRecord {
             created_at: t(0),
             deactivated_at: None,
             relinked_from: None,
+            erased_at: None,
+            erase_mode: None,
             head_seq: None,
             source: None,
+        };
+        // An erased member: the tombstone id, the scrubbed profile, when and how.
+        let erased = MemberRecord {
+            id: ID_BOB,
+            external_id: format!("erased:{ID_BOB}"),
+            install_role: InstallRole::Member,
+            username: format!("erased-{ID_BOB}"),
+            display_name: "Deleted user".into(),
+            deactivated_at: Some(t(90_000)),
+            erased_at: Some(t(90_000)),
+            erase_mode: Some(crate::mgmt::EraseMode::DeleteContent),
+            head_seq: Some(42),
+            ..min.clone()
         };
         let status_min = MemberRecord {
             status: Some(StatusRecord {
@@ -642,7 +659,12 @@ impl Example for MemberRecord {
             }),
             ..min.clone()
         };
-        vec![("full", full), ("min", min), ("status_min", status_min)]
+        vec![
+            ("full", full),
+            ("min", min),
+            ("status_min", status_min),
+            ("full_erased", erased),
+        ]
     }
 }
 

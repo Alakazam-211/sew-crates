@@ -311,6 +311,16 @@
       ],
       "type": "object"
     },
+    "DeletedReason": {
+      "description": "Why a tombstone is one, when it is not the usual delete (`Message.deleted_reason`).",
+      "oneOf": [
+        {
+          "const": "erased",
+          "description": "Deleted with its author's account (an account erase). Clients may show \"Deleted\nwith the account\".",
+          "type": "string"
+        }
+      ]
+    },
     "Emoji": {
       "description": "An emoji on a reaction: Unicode or a custom emoji.",
       "oneOf": [
@@ -623,6 +633,17 @@
             "string",
             "null"
           ]
+        },
+        "deleted_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeletedReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the tombstone is one: `erased` when it went with its author's account; absent for\nevery other delete and on live messages."
         },
         "edited_at": {
           "description": "When it was last edited.",

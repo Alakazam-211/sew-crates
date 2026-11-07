@@ -42,7 +42,7 @@ use super::lkgcm::LkGcm;
 use super::session::{KeyEnd, KeyError, KeySessionConfig, KeySessionEvent, MlsSession};
 use super::{
     CredentialHandle, CryptoError, E2eeContext, E2eeError, E2eeEvent, E2eeEvents, E2eeProvider,
-    KeySession, RemoteTrack, Subscribe,
+    KeySession, RemoteTrack, Subscribe, VideoFrameCodec,
 };
 use crate::Clock;
 use crate::config::ClientConfig;
@@ -310,6 +310,24 @@ impl fmt::Debug for MlsKeySession {
 }
 
 impl KeySession for MlsKeySession {
+    fn encrypt_video(
+        &self,
+        codec: VideoFrameCodec,
+        frame: &[u8],
+        ssrc: u32,
+        rtp_ts: u32,
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoError> {
+        match self.send.seal_video(codec, ssrc, rtp_ts, frame) {
+            Some(sealed) => {
+                out.extend_from_slice(&sealed);
+                Ok(())
+            }
+            None if self.keys.local_slot().is_none() => Err(CryptoError::NoSendKey),
+            None => Err(CryptoError::BadFrame),
+        }
+    }
+
     fn encrypt(
         &self,
         frame: &[u8],
@@ -334,6 +352,27 @@ impl KeySession for MlsKeySession {
         match self.recv.open(&id, frame) {
             Ok(opus) => {
                 out.extend_from_slice(&opus);
+                Ok(())
+            }
+            Err(RecvRefused::Unverified) => Err(CryptoError::NoKey),
+            Err(RecvRefused::KeyPending(_)) => Err(CryptoError::KeyPending),
+            Err(RecvRefused::Undecryptable(_)) => Err(CryptoError::BadFrame),
+        }
+    }
+
+    fn decrypt_video(
+        &self,
+        sender: &str,
+        codec: crate::video::VideoCodec,
+        frame: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CryptoError> {
+        let Ok(id) = LkIdentity::parse(sender) else {
+            return Err(CryptoError::BadFrame);
+        };
+        match self.recv.open_video(&id, codec, frame) {
+            Ok(plain) => {
+                out.extend_from_slice(&plain);
                 Ok(())
             }
             Err(RecvRefused::Unverified) => Err(CryptoError::NoKey),
@@ -435,6 +474,7 @@ async fn bridge(
 ) {
     let mut last_epoch: Option<u64> = None;
     let mut last_members: Vec<(String, String)> = Vec::new();
+    let mut last_security: Option<crate::call::CallSecurity> = None;
     // Only renewals of this join's credential: a re-join publishes another credential, which
     // belongs to the next key session.
     let join_id = credential.current().map(|c| c.join_id);
@@ -470,6 +510,7 @@ async fn bridge(
                 KeySessionEvent::Status(_) | KeySessionEvent::Roster => {}
                 KeySessionEvent::VoiceServerUpdated(u) => out.push(E2eeEvent::ServerUpdated(*u)),
                 KeySessionEvent::Recording(r) => out.push(E2eeEvent::Recording(r)),
+                KeySessionEvent::MediaPolicy(m) => out.push(E2eeEvent::MediaPolicy(m)),
                 KeySessionEvent::VoiceStateUpdated(u) => {
                     if let Some(reason) = self_left(&u, me) {
                         out.push(E2eeEvent::Ended { reason });
@@ -528,6 +569,12 @@ async fn bridge(
                     epoch: epoch.unwrap_or(0),
                 });
             }
+        }
+        if let Some(security) = session.security()
+            && last_security.as_ref() != Some(&security)
+        {
+            last_security = Some(security.clone());
+            out.push(E2eeEvent::Security(security));
         }
         for e in out {
             if !events.send(e) {

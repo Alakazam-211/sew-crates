@@ -163,13 +163,13 @@ async fn every_scenario_gives_exactly_the_fixture_calls() {
 }
 
 /// Every listener call but `on_self_mute` is the webview's event with the same payload, in
-/// the same order (`speaking` has no listener method).
+/// the same order (`speaking`, `security`, `roster` and `quality` have no listener method).
 fn mirrors_the_webview(w: &World, name: &str) {
     let webview: Vec<Value> = w
         .sink
         .events()
         .into_iter()
-        .filter(|(n, _)| n != "speaking")
+        .filter(|(n, _)| !matches!(n.as_str(), "speaking" | "security" | "roster" | "quality"))
         .map(|(n, v)| {
             let method = match n.as_str() {
                 "errors" => "on_error".to_owned(),

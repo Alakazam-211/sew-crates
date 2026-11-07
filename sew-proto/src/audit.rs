@@ -43,6 +43,7 @@ unit_enum! {
 unit_enum! {
     /// An audited action, `<entity>.<verb>` in `lower_snake`. New actions are added over time.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum Action {
         /// A session was created.
         SessionCreate = "session.create",
@@ -60,6 +61,16 @@ unit_enum! {
         MemberUpdate = "member.update",
         /// A principal was deprovisioned.
         MemberDeprovision = "member.deprovision",
+        /// A principal's account was erased: deprovisioned, scrubbed and its external id
+        /// mapping cut (`details {erasure_id, mode, sessions_revoked, upgraded?, cascade_of?}`).
+        MemberErase = "member.erase",
+        /// An erasure has nothing left pending (`details {erasure_id, erased, kept}`: counts and
+        /// kinds only).
+        MemberEraseComplete = "member.erase_complete",
+        /// A dry run of an erase (`details {member_id, mode, erased, kept}`: counts only).
+        MemberErasePreview = "member.erase_preview",
+        /// A restored database brought an erased member back; it was erased again at start.
+        MemberEraseReplayed = "member.erase_replayed",
         /// A local member got a K2 identity, keeping its member id; details `{from, to}`.
         PrincipalRelink = "principal.relink",
         /// The install's identity mode switched from standalone to K2; details `{from, to}`.
@@ -573,6 +584,10 @@ impl Action {
             | A::MemberProvision
             | A::MemberUpdate
             | A::MemberDeprovision
+            | A::MemberErase
+            | A::MemberEraseComplete
+            | A::MemberErasePreview
+            | A::MemberEraseReplayed
             | A::PrincipalRelink
             | A::IdentitySwitch
             | A::MemberInstallRoleSet

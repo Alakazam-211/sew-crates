@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-video-sink"
+description = "Enables the video_sink command without any pre-configured scope."
+commands.allow = ["video_sink"]
+
+[[permission]]
+identifier = "deny-video-sink"
+description = "Denies the video_sink command without any pre-configured scope."
+commands.deny = ["video_sink"]

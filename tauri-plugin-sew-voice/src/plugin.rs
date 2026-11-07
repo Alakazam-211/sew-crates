@@ -38,11 +38,15 @@ pub struct Builder {
     crypto_provider: Option<Arc<CryptoProvider>>,
 }
 
-/// Row 11: the device key in hardware and the enrolment platform.
+/// Row 11: the device key in hardware and the enrolment platform; and the video backend.
 #[derive(Default)]
 struct DeviceOptions {
     hardware_key: Option<Arc<dyn HardwareDeviceKey>>,
     platform: Option<DevicePlatform>,
+    #[cfg(feature = "video-core")]
+    video_backend: Option<Arc<dyn sew_call_client::kessel_video::VideoBackend>>,
+    #[cfg(feature = "video-core")]
+    android_video: Option<sew_call_client::kessel_video::AndroidContext>,
 }
 
 impl std::fmt::Debug for Builder {
@@ -135,6 +139,34 @@ impl Builder {
         self
     }
 
+    /// The engine's video backend instead of kessel-video's `system` for this OS (feature
+    /// `video-core`): for tests, or a host that shares its own backend.
+    #[cfg(feature = "video-core")]
+    pub fn video_backend(
+        mut self,
+        backend: Arc<dyn sew_call_client::kessel_video::VideoBackend>,
+    ) -> Builder {
+        self.device.video_backend = Some(backend);
+        self
+    }
+
+    /// Android (feature `video-core`): the app's JNI handles for kessel-video's Android
+    /// backend, so it reads the CAMERA permission:
+    /// `let ctx = ndk_context::android_context();`
+    /// `unsafe { AndroidContext::new(ctx.vm(), ctx.context()) }`. Without it the plugin uses a
+    /// context with no handles (the permission reads as `prompt` until a camera opens). The
+    /// plugin drives its background flag and orientation from
+    /// [`VoiceControl::app_scene`] and [`VoiceControl::device_orientation`]; other platforms
+    /// ignore it.
+    #[cfg(feature = "video-core")]
+    pub fn android_video_context(
+        mut self,
+        ctx: sew_call_client::kessel_video::AndroidContext,
+    ) -> Builder {
+        self.device.android_video = Some(ctx);
+        self
+    }
+
     /// The rustls crypto provider of the engine's TLS connections (signalling, TURN-TLS, Sew's
     /// API): `sew_call_client::ClientConfig::with_crypto_provider`. Default: the process
     /// default (`CryptoProvider::install_default`), else the built-in ring provider (feature
@@ -169,6 +201,22 @@ impl Builder {
                 crate::commands::withdraw_consent,
                 crate::commands::forget_server,
                 crate::commands::known_device_keys,
+                crate::commands::call_details,
+                crate::commands::ring,
+                crate::commands::ring_ended,
+                crate::commands::video_caps,
+                crate::commands::video_devices,
+                crate::commands::set_video_device,
+                crate::commands::camera,
+                crate::commands::screen_sources,
+                crate::commands::screen,
+                crate::commands::preview,
+                crate::commands::video_sink,
+                crate::commands::video_sink_update,
+                crate::commands::video_sink_close,
+                crate::commands::request_keyframe,
+                crate::commands::camera_permission,
+                crate::commands::request_camera_permission,
             ])
             .setup(move |app, _api| {
                 let engine = match engine {
@@ -225,7 +273,18 @@ fn default_engine<R: Runtime>(
     if let Some(provider) = crypto_provider {
         cfg = cfg.with_crypto_provider(provider);
     }
-    Ok(Arc::new(crate::real::CallClientEngine::with_mls(cfg)))
+    #[allow(unused_mut)]
+    let mut engine = crate::real::CallClientEngine::with_mls(cfg);
+    #[cfg(feature = "video-core")]
+    {
+        if let Some(ctx) = device.android_video {
+            engine = engine.with_android_video_context(ctx);
+        }
+        if let Some(backend) = device.video_backend {
+            engine = engine.with_video_backend(backend);
+        }
+    }
+    Ok(Arc::new(engine))
 }
 
 /// Without the `audio` feature there is no default engine: [`Builder::engine`] is required.

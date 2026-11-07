@@ -295,6 +295,42 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the call_details command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-call-details",
+          "markdownDescription": "Enables the call_details command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the call_details command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-call-details",
+          "markdownDescription": "Denies the call_details command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the camera command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-camera",
+          "markdownDescription": "Enables the camera command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the camera command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-camera",
+          "markdownDescription": "Denies the camera command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the camera_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-camera-permission",
+          "markdownDescription": "Enables the camera_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the camera_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-camera-permission",
+          "markdownDescription": "Denies the camera_permission command without any pre-configured scope."
+        },
+        {
           "description": "Enables the consent command without any pre-configured scope.",
           "type": "string",
           "const": "allow-consent",
@@ -379,6 +415,90 @@
           "markdownDescription": "Denies the mute command without any pre-configured scope."
         },
         {
+          "description": "Enables the preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview",
+          "markdownDescription": "Enables the preview command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preview command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview",
+          "markdownDescription": "Denies the preview command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_camera_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-camera-permission",
+          "markdownDescription": "Enables the request_camera_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_camera_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-camera-permission",
+          "markdownDescription": "Denies the request_camera_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_keyframe command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-keyframe",
+          "markdownDescription": "Enables the request_keyframe command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_keyframe command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-keyframe",
+          "markdownDescription": "Denies the request_keyframe command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ring command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ring",
+          "markdownDescription": "Enables the ring command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ring command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ring",
+          "markdownDescription": "Denies the ring command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ring_ended command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ring-ended",
+          "markdownDescription": "Enables the ring_ended command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ring_ended command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ring-ended",
+          "markdownDescription": "Denies the ring_ended command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the screen command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-screen",
+          "markdownDescription": "Enables the screen command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the screen command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-screen",
+          "markdownDescription": "Denies the screen command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the screen_sources command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-screen-sources",
+          "markdownDescription": "Enables the screen_sources command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the screen_sources command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-screen-sources",
+          "markdownDescription": "Denies the screen_sources command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_device command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-device",
@@ -389,6 +509,18 @@
           "type": "string",
           "const": "deny-set-device",
           "markdownDescription": "Denies the set_device command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_video_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-video-device",
+          "markdownDescription": "Enables the set_video_device command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_video_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-video-device",
+          "markdownDescription": "Denies the set_video_device command without any pre-configured scope."
         },
         {
           "description": "Enables the state command without any pre-configured scope.",
@@ -403,6 +535,66 @@
           "markdownDescription": "Denies the state command without any pre-configured scope."
         },
         {
+          "description": "Enables the video_caps command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-video-caps",
+          "markdownDescription": "Enables the video_caps command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the video_caps command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-video-caps",
+          "markdownDescription": "Denies the video_caps command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the video_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-video-devices",
+          "markdownDescription": "Enables the video_devices command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the video_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-video-devices",
+          "markdownDescription": "Denies the video_devices command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the video_sink command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-video-sink",
+          "markdownDescription": "Enables the video_sink command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the video_sink command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-video-sink",
+          "markdownDescription": "Denies the video_sink command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the video_sink_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-video-sink-close",
+          "markdownDescription": "Enables the video_sink_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the video_sink_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-video-sink-close",
+          "markdownDescription": "Denies the video_sink_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the video_sink_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-video-sink-update",
+          "markdownDescription": "Enables the video_sink_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the video_sink_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-video-sink-update",
+          "markdownDescription": "Denies the video_sink_update command without any pre-configured scope."
+        },
+        {
           "description": "Enables the withdraw_consent command without any pre-configured scope.",
           "type": "string",
           "const": "allow-withdraw-consent",
@@ -415,6 +607,12 @@
           "markdownDescription": "Denies the withdraw_consent command without any pre-configured scope."
         },
         {
+          "description": "The call-detail commands, for a call UI that shows more than `sew-voice:default` gives:\n`call_details` (the key state and security code, the quality, every media participant with\nits engine identity and label, and the ring, for a window opened mid-call), `ring` and\n`ring_ended` (an incoming DM call, set from Sew's ring and cleared when it stops). Their events\n(`sew-voice://security`, `roster`, `quality`, `incoming`) reach every window. Not in\n`sew-voice:default`: grant it next to it, or `sew-voice:allow-call-details`,\n`sew-voice:allow-ring` and `sew-voice:allow-ring-ended` one by one.\n\n#### This permission set includes:\n\n- `allow-call-details`\n- `allow-ring`\n- `allow-ring-ended`",
+          "type": "string",
+          "const": "call-details",
+          "markdownDescription": "The call-detail commands, for a call UI that shows more than `sew-voice:default` gives:\n`call_details` (the key state and security code, the quality, every media participant with\nits engine identity and label, and the ring, for a window opened mid-call), `ring` and\n`ring_ended` (an incoming DM call, set from Sew's ring and cleared when it stops). Their events\n(`sew-voice://security`, `roster`, `quality`, `incoming`) reach every window. Not in\n`sew-voice:default`: grant it next to it, or `sew-voice:allow-call-details`,\n`sew-voice:allow-ring` and `sew-voice:allow-ring-ended` one by one.\n\n#### This permission set includes:\n\n- `allow-call-details`\n- `allow-ring`\n- `allow-ring-ended`"
+        },
+        {
           "description": "Everything a call UI needs: join, leave, mute, list devices, switch devices, read the call\nstate and answer a recording's notice (`sew-voice:allow-join`, `allow-leave`, `allow-mute`,\n`allow-devices`, `allow-set-device`, `allow-state`, `allow-consent`,\n`allow-withdraw-consent`). Every window gets every event (`sew-voice://state`, `participants`,\n`speaking`, `errors`, `devices`, `recording`). A window that should only watch a call can list\n`sew-voice:allow-state` and `sew-voice:allow-devices` alone instead of this set.\n\n#### This default permission set includes:\n\n- `allow-join`\n- `allow-leave`\n- `allow-mute`\n- `allow-devices`\n- `allow-set-device`\n- `allow-state`\n- `allow-consent`\n- `allow-withdraw-consent`",
           "type": "string",
           "const": "default",
@@ -425,6 +623,12 @@
           "type": "string",
           "const": "device-keys",
           "markdownDescription": "The device-key commands, for a window that signs the person out: `forget_server` (deletes the\ndevices of one Sew install, the hardware keys included, and answers the removed keys) and\n`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant\nit, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the\nwindow that needs it.\n\n#### This permission set includes:\n\n- `allow-forget-server`\n- `allow-known-device-keys`"
+        },
+        {
+          "description": "The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,\n`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,\n`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and\n`request_camera_permission`. The frames reach only the window\nthat opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call\nwindow, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs\n`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and\n`allow-request-keyframe`). The OS asks for the camera and screen recording itself.\n\n#### This permission set includes:\n\n- `allow-video-caps`\n- `allow-video-devices`\n- `allow-set-video-device`\n- `allow-camera`\n- `allow-screen-sources`\n- `allow-screen`\n- `allow-preview`\n- `allow-video-sink`\n- `allow-video-sink-update`\n- `allow-video-sink-close`\n- `allow-request-keyframe`\n- `allow-camera-permission`\n- `allow-request-camera-permission`",
+          "type": "string",
+          "const": "video",
+          "markdownDescription": "The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,\n`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,\n`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and\n`request_camera_permission`. The frames reach only the window\nthat opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call\nwindow, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs\n`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and\n`allow-request-keyframe`). The OS asks for the camera and screen recording itself.\n\n#### This permission set includes:\n\n- `allow-video-caps`\n- `allow-video-devices`\n- `allow-set-video-device`\n- `allow-camera`\n- `allow-screen-sources`\n- `allow-screen`\n- `allow-preview`\n- `allow-video-sink`\n- `allow-video-sink-update`\n- `allow-video-sink-close`\n- `allow-request-keyframe`\n- `allow-camera-permission`\n- `allow-request-camera-permission`"
         }
       ]
     }

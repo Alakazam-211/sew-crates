@@ -20,6 +20,12 @@
 //! [`engine`], the real and the fake engine), which builds and tests without Tauri's system
 //! libraries. The crate's README is the guide.
 //!
+//! **Call details (0.4.1).** Beside the frozen eight, the `call_details`, `ring` and
+//! `ring_ended` commands (permission set `sew-voice:call-details`) and the `security`, `roster`,
+//! `quality` and `incoming` events give a call UI the key state and security code, each media
+//! participant's engine identity and label, the connection quality and an incoming DM call
+//! ([`details`]).
+//!
 //! **Phones (0.3.0).** A CallKit or Telecom shim registers a [`VoiceListener`]
 //! (`Builder::listener`), which sees the call whether or not a webview is awake, and acts
 //! through [`VoiceControl`] (Tauri state): join, leave, mute, consent, the snapshot on wake,
@@ -27,13 +33,36 @@
 //! Android the plugin lists no devices between calls (the OS owns the route) and has no
 //! keyring backend. It has no Swift or Kotlin of its own: on mobile it registers exactly as on
 //! desktop (`.plugin(Builder::new(provider).build())` in the app's mobile entry point).
+//!
+//! **Video.** Eleven more commands ([`VIDEO_COMMANDS`], the `sew-voice:video`
+//! permission set) and four events (`sew-voice://video`, `local_video`, `video_devices`,
+//! `policy`). Remote and self-view frames reach the webview over a Tauri raw `Channel` per
+//! element, a 32-byte header ([`video::FrameHeader`]) then the encoded frame, decoded by the
+//! webview's WebCodecs; keys never leave Rust. The engine side is in [`video`]: every video
+//! method of [`VoiceEngine`] and [`CallHandle`] defaults to "no video", so an engine without it
+//! is unchanged.
 
+pub mod details;
 pub mod engine;
 pub mod fake;
+#[cfg(feature = "video-core")]
+pub mod kessel;
 pub mod listener;
+#[cfg(feature = "video-core")]
+pub mod native;
 #[cfg(feature = "audio-core")]
 pub mod real;
+/// The iPhone screen share's ring (feature `ios-screen-ring` with `video-core`; iOS, and Linux
+/// for tests off the device).
+#[cfg(all(
+    feature = "ios-screen-ring",
+    feature = "video-core",
+    any(target_os = "ios", target_os = "linux")
+))]
+pub mod screen_ring;
 pub mod service;
+mod sink;
+pub mod video;
 pub mod wire;
 
 #[cfg(feature = "tauri")]
@@ -41,10 +70,15 @@ mod commands;
 #[cfg(feature = "tauri")]
 mod plugin;
 
+pub use details::{
+    CallDetails, DETAIL_COMMANDS, DETAIL_EVENTS, IncomingCall, QualityInfo, RingEndedArgs,
+    RosterEntry, SecurityInfo,
+};
 pub use engine::{
-    AnswerError, AudioSessionEvent, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, CallEvent,
-    CallHandle, CallSnapshot, ConsentAnswer, ConsentRequired, EngineError, JoinAnswer,
-    JoinProvider, JoinRequest, ProviderError, RejoinReason, VoiceEngine, app_server_answer,
+    AnswerError, AppScene, AudioSessionEvent, BoxFuture, CONSENT_UNSUPPORTED, CallCredential,
+    CallEvent, CallHandle, CallSnapshot, ConsentAnswer, ConsentRequired, EngineError, JoinAnswer,
+    JoinProvider, JoinRequest, ProviderError, RejoinReason, VideoSnapshot, VoiceEngine,
+    app_server_answer,
 };
 pub use listener::{VoiceControl, VoiceListener};
 #[cfg(feature = "tauri")]
@@ -66,11 +100,23 @@ pub use sew_call_client::device::{DevicePlatform, HardwareDeviceKey};
 /// The consent notice in the web kit's words (`ConsentPrompt::title_en`, `text_en`,
 /// `choices_en`), from `sew-proto`.
 pub use sew_proto::recording::{ConsentAsk, ConsentChoice};
+pub use sink::FrameChannel;
+pub use video::{
+    CameraRequest, DecodeFailure, DecodedFormat, DecodedFrame, DecoderSpec, DecoderWake,
+    EncodedVideoFrame, FrameDecoder, FrameHeader, ParentWindow, PreviewRequest, ScreenRequest,
+    TrackSettings, VideoFrames, VideoRecvItem,
+};
 pub use wire::{
     CallState, ConsentArgs, ConsentPrompt, DEFAULT_DEVICE, Device, DeviceChoice, DeviceKeyInfo,
-    DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs, JoinResult, MuteArgs, Participant,
-    PluginEvent, RecordingInfo, RecordingParticipant, SelfMute, SetDeviceArgs, Speaking,
-    StateEvent, StateSnapshot,
+    DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs, JoinOptions, JoinResult, MuteArgs,
+    Participant, PluginEvent, RecordingInfo, RecordingParticipant, SelfMute, SetDeviceArgs,
+    Speaking, StateEvent, StateSnapshot,
+};
+pub use wire::{
+    Camera, CameraArgs, Facing, LocalVideo, LocalVideoState, PermissionState, PreviewAnswer,
+    PreviewArgs, ScreenArgs, ScreenCaps, ScreenKind, ScreenSource, SetVideoDeviceArgs, SinkIdArgs,
+    SinkMode, SinkStats, Tile, VideoCaps, VideoCodec, VideoDevices, VideoPaused, VideoPermissions,
+    VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoSource, VideoTrack,
 };
 
 // On phones the device key is the host's (Builder::device_key_store, or a hardware key):
@@ -105,3 +151,22 @@ pub const COMMANDS: [&str; 8] = [
 /// Sew install (a sign-out) and answers the removed keys; `known_device_keys` lists the keys
 /// the plugin's device store holds.
 pub const DEVICE_KEY_COMMANDS: [&str; 2] = ["forget_server", "known_device_keys"];
+
+/// The video commands, outside `sew-voice:default`: a window gets them with the set
+/// `sew-voice:video` (all thirteen) or each one's own `sew-voice:allow-<command>`. With an engine
+/// without video, `video_caps` answers "nothing" and the others reject `video_unsupported`.
+pub const VIDEO_COMMANDS: [&str; 13] = [
+    "video_caps",
+    "video_devices",
+    "set_video_device",
+    "camera",
+    "screen_sources",
+    "screen",
+    "preview",
+    "video_sink",
+    "video_sink_update",
+    "video_sink_close",
+    "request_keyframe",
+    "camera_permission",
+    "request_camera_permission",
+];

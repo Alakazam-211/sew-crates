@@ -1,8 +1,131 @@
 # Changelog
 
+## 0.5.0 (2026-11-06, Sew 0.8.2)
+
+### Breaking
+
+- `PublishRefused` has a new variant, `NoLease` (a video publication without the lease Sew
+  granted for it), declared before `Downgraded`, so the implicit discriminants of `Downgraded`
+  and `Refused` changed: code that casts the enum to an integer gets other numbers. The enum
+  was already `#[non_exhaustive]`, so a `match` is unaffected.
+
+### Dependencies
+
+- Needs sew-proto, sew-e2ee, sew-lkproto and sew-lk-compat 0.8.2.
+- kessel-audio now comes from crates.io (`kessel-audio = "0.1"`; 0.1.0 has the phone
+  backends): drop its row from your `[patch.crates-io]`. The only rows left are the str0m and
+  dimpl forks. kessel-video stays at 0.1.3 from crates.io.
+- The str0m fork moves to `7faf99d17f34292b5c9f72e67f3d0332cd67c122`, which fixes the
+  bandwidth estimate at the start of a call (video layers no longer start low for a few
+  seconds after joining). A build without the fork's rows gets str0m from crates.io, without
+  the fix until str0m releases it (README, "Known issue").
+
+### Added
+
+- Camera flip: `VideoBridge::switch_camera` closes the old camera before it opens the new one
+  (a phone runs one camera at a time; on iOS the old session was interrupted with
+  `camera_busy` and nothing resumed it). The new camera starts at a keyframe, a pause of the
+  released camera is reported over, and a new camera that fails to open brings the old one
+  back. Neither ends the publication with `camera_lost`.
+- `LocalFrame::facing` (the facing of the camera that captured a self-view or preview frame)
+  and `VideoCapture::camera_facing(device)`.
+- Video capture, with `video-core` (which now also turns on kessel-video's pure-Rust VP8, so
+  every backend can encode VP8): `VideoCapture` over the app's kessel-video backend.
+  - `open_camera(device, constraints)` and `open_screen(ScreenPick, constraints)` answer a
+    running `CameraSource` / `ScreenSource` (a `Capture`: `try_frame`, `try_event` as
+    `CaptureEvent` (`Started`, `Paused(CapturePause)`, `Resumed`, `Ended(CaptureEnd)`, `Error`),
+    `ready` and `wake` for one task over frames and encoder outputs, `constraints` and
+    `set_constraints`, `set_paused`, `content_hint`: `ContentHint::Screen` for screens).
+    Dropping one stops the device. The OS permission is asked only when not yet determined.
+  - Screens: `ScreenPick::Listed(id)` or `ScreenPick::System { parent_window }` (the OS picker;
+    Windows needs the app window's handle); `screen_constraints` (cursor on, the app's own
+    windows left out where the OS allows it); `screen_sources()` lists displays and windows
+    with their thumbnails as 8-bit RGBA PNGs at most 320 px wide (`ScreenChoice`,
+    `thumbnail_png`; the new `png` dependency, pure Rust), each at the size the backend gives
+    (kessel-video 0.1.3's `thumbnail_width` and `thumbnail_height`; none without it).
+  - `CaptureError` refusals carry the plugin's codes (`camera_denied`, `camera_busy`,
+    `camera_not_found`, `screen_unsupported`, `screen_denied`, `picker_cancelled`,
+    `screen_not_found`, `codec_unavailable`, `capture_failed`, ...).
+  - `preview(device)`: the camera outside a call with one encoder at up to 640x360 (VP8, else
+    H.264), no lease and nothing sent; its encoded plaintext frames (`LocalFrame`) come on a
+    `PreviewFrames` channel (`PreviewItem::Frame`, `Ended`, `Failed`); `request_keyframe`;
+    `stop` or drop closes the camera at once.
+- The capture feeds the publish. `VideoBridge` opens its camera through a `VideoCapture`
+  (`VideoBridge::with_capture`, `VideoBridge::capture`; `VideoBridge::new(backend)` makes one):
+  the same constraints, permission and codes as the preview, and one opener holds the camera
+  (`VideoCapture::open_camera` stops a running preview of the same capture first;
+  `stop_preview`, `preview_running`).
+- `VideoBridge::publish_capture(call, source, Capture, temporal_layers)` publishes a camera or
+  screen opened through `VideoCapture` (a screen with the screen content hint, under
+  `self_stream`); `Capture` is a kessel-video `FrameSource` too.
+- `VideoBridge::switch_camera(call, device)` switches the published camera (nothing when it is
+  off); `camera_state`, `camera_device`.
+- Source events in every pipeline (cameras and screens, `publish_source` feeds too):
+  `Paused` stops the frames and keeps the publication, `Resumed` asks every layer for a
+  keyframe, `Ended` unpublishes and releases the lease with the reason as the `LocalVideo`
+  reason (`CaptureEnd::reason`: `user_stopped`, `source_closed`, `camera_lost`,
+  `camera_denied`, `screen_denied`). `VideoBridge::events()` carries them (`SourceNote`).
+- The in-call self-view: `VideoBridge::self_view()` (`SelfViewFrames` of `SelfViewItem::Frame
+  { source, frame: LocalFrame }` and `Ended`): the plaintext output of the camera's `h` layer
+  (else its lowest at 360p or more) and the screen's `q` layer (else its lowest), no second
+  encoder; `self_view_keyframe(source)`. While a self-view is open the source never pauses
+  (except while `pause_camera` holds the camera).
+- `Call::set_video_muted(source, muted)`: mutes or unmutes a published camera or screen at the
+  SFU (`MuteTrackRequest`) while keeping the publication and its lease; sent again after a
+  republish or a reconnect.
+- `VideoBridge::pause_camera(paused)`: the camera's pipeline stops capturing and encoding while
+  paused (a phone app in the background) and, on the return, every encoder makes a keyframe
+  before its first frame. A device switch keeps the pause.
+- On iOS and Android the camera captures at most 720p (1280 x 720 either way round), whatever
+  the policy's camera hint allows.
+- `ClientConfig::video_h264` (`with_video_h264`, `default_video_h264`): the media connection
+  offers H.264 beside VP8 only where this device can show it. Off by default on Linux (the
+  engine has no H.264 decoder there), so the media server never forwards a Linux client an
+  H.264 track it can't show; on elsewhere. A host that decodes H.264 itself turns it on.
+- `VideoPublication::published_mime`: the codec the SFU confirmed in its `TrackPublished`
+  (the track's mime type), so a host can prove which codec it publishes in.
+- `plan_layers` follows the capture's orientation: a hint layer's height is its short side, so
+  a portrait camera (720 x 1280) gets 180 x 320, 360 x 640 and 720 x 1280 rather than 100 x 180,
+  202 x 360 and 404 x 720; the split's bitrate floor goes by the short side too.
+- `local_video` says why a camera or screen went off: `Call::unpublish_video_because(source,
+  release, reason)` and `CameraRequest::with_reason` (an off without one still says
+  `unpublished`); a device switch that publishes again says `camera_switch`; a TrackPublished
+  nobody waited for, `publisher_gone`.
+- `VideoPublication::end(reason)`: a host's own producer that can't go on unpublishes its
+  track and releases the lease, with `reason` as `local_video`'s. The bridge's pipeline ends a
+  publication whose encoders are all lost and none reopens with `encoder_lost` (a source that
+  ends unpublishes with its `CaptureEnd` reason, above). The next `camera {on}` starts again.
+
 ## 0.4.1 (2026-11-06, Sew 0.8.1)
 
 Additive.
+
+- Camera publishing (video stays off by default; the core needs no feature). The frame API:
+  `Call::set_video_lease` (Sew's `self_video` / `self_stream` through `POST
+  /api/v1/me/voice/state`; refusals as `VideoError` codes `video_slots_full`, `media_busy`
+  with `Retry-After`, `media_capacity`, `video_disabled`), `Call::publish_video`
+  (`VideoPublish`: the codec and the layers that opened; the `AddTrackRequest` carries the
+  layers and `simulcast_codecs` naming the codec, through the publish check, which refuses
+  video without its lease as `no_lease`; then a sendonly simulcast `m=video`), the
+  `VideoPublication` handle (`push` each layer's `EncodedVideo`, follow `VideoControl`:
+  keyframes, `Rates`, `Republish`, `Ended`), `Call::unpublish_video`, `Call::set_video_caps`,
+  `Call::media_policy`, `Call::video_stats` and `CallEvent::LocalVideo`. The engine
+  normalises and checks H.264, encrypts per layer with LkGcm, packetises (VP8 with the T field
+  always written, H.264 mode 1), writes a Dependency Descriptor on every packet and answers
+  NACKs over RTX; it passes the SFU's keyframe requests on (one per 300 ms per layer), follows
+  dynacast (`SubscribedQualityUpdate`), splits str0m's bandwidth estimate over the layers with
+  hysteresis (cuts at once, a raise after 3 s with 15% to spare, at most one per 2 s), applies
+  a policy update's caps in place or republishes for a new layer set (the lease kept), and
+  unpublishes when video turns off. A PC gets the video codecs, the DD extension and str0m's
+  BWE only when the join's policy has video on and a camera or screen allowed.
+- `VideoBridge` (feature `video-core`): the camera on through a kessel-video backend: policy,
+  permission, lease, camera, `choose_codec` (VP8 first, else H.264), one encoder per
+  `plan_layers` layer opened from the top down, the publication, and a pipeline thread per
+  publication; device switch and camera off.
+- `e2ee`: `Leases`, `check_publish`, `PublishGuard::prepare_with_leases`,
+  `PublishRefused::NoLease`, `SendGate::seal_video`, `FrameCrypto::seal_video` and
+  `KeySession::encrypt_video` (both default to refusing every frame), `VideoFrameCodec`,
+  `E2eeEvent::MediaPolicy`; the call socket passes `media_policy_updated` on.
 
 - Needs sew-proto, sew-e2ee, sew-lkproto and sew-lk-compat 0.8.1 (no API change there).
 - The TLS crypto provider is the host's. Every TLS connection (signalling, TURN over TLS, the
@@ -41,14 +164,50 @@ Additive.
   lists every key the data directory holds a record of. Also as `device::forget_install` and
   `device::known_device_keys`.
 - New features `video-core` and `video`, off by default: `kessel-video` (K2's cameras, screen
-  capture and video codecs, re-exported as `sew_call_client::kessel_video`), supplied with
-  `[patch.crates-io]` from K2's repository like `kessel-audio`. Calls don't use them yet; with
-  both off, the crate builds and behaves as before.
+  capture and video codecs, re-exported as `sew_call_client::kessel_video`), kessel-video 0.1.1
+  from crates.io (no `[patch.crates-io]` row). With them calls receive video (below); with both
+  off, the crate builds and behaves as before. kessel-video 0.1.1 has its OS backends, the iOS
+  and Android ones included, `apple_pixel_buffer`, and its pure-Rust VP8 encoder and decoder,
+  which its `system` feature, and so `video`, turns on.
 - With `testing` and `video-core`: `FixtureBackend`, a kessel-video backend whose encoders
-  replay pre-encoded VP8 (three temporal layers) and H.264 simulcast streams.
+  replay pre-encoded VP8 (three temporal layers) and H.264 simulcast streams; kessel-video's
+  fake backend has the VP8 encoder and decoder too.
+- Video receive, with `video-core` (or `video`); a build without it negotiates no video and
+  behaves as before, its offer byte for byte.
+  - The PC also offers VP8 and H.264 (Constrained Baseline 42e01f and Constrained High 640c1f,
+    packetization mode 1), each with RTX, NACK, PLI and FIR, and the Dependency Descriptor; the
+    video receive sections the media server asks for are added.
+  - Remote camera and screen tracks: `VideoTrack`, `CallEvent::VideoAdded`, `VideoChanged`
+    (muted, size, layers, codec, `paused: Some(VideoPause::Congestion)` from the server's stream
+    states) and `VideoRemoved`; `Participant::camera` and `Participant::screen`
+    (`VideoTrackView`).
+  - Every video track is disabled at the media server (`UpdateTrackSettings { disabled: true }`)
+    until the host opens a sink: `Call::video_sink(track_sid, VideoSinkSpec)` returns a
+    `VideoSink` (update, request a keyframe, close or drop). The settings follow the union of a
+    track's visible sinks (the largest size; 30 fps for a large tile, 15 for a grid tile;
+    screens above cameras, the active speaker above the others), debounced by 250 ms.
+  - Per track: a reorder buffer (the larger of 150 ms and twice the RTT), the VP8 and H.264
+    depacketisers, decryption with the publisher's key (LkGcm's VP8 and H.264 cases; no
+    plaintext fallback, a failure counted and reported as for audio), and
+    `Call::video_frames()`: `VideoRecvItem::Frame` (encoded plaintext, keyframe flag, RTP time,
+    arrival, the keyframe's coded size), `Added`, `Removed`, `Broken` and `KeyframeNeeded`.
+    A loss or a decrypt failure breaks the track: frames wait for a keyframe and a PLI goes out
+    (at most one per 300 ms; a FIR after 1 s without a keyframe; `video_stalled` after 5 s more,
+    then a PLI a second).
+  - `KeySession::decrypt_video`, `FrameCrypto::open_video` and `RecvGate::open_video` (each
+    refusing by default); the subscribe check admits encrypted video tracks of verified
+    publishers. New `CallCounters` fields for video.
+  - With `testing`: `TestingOverrides::drop_video_packets`.
 - Internally, the VP8 (RFC 7741) and H.264 (RFC 6184 packetization mode 1) packetisers and
   depacketisers, the H.264 access-unit normaliser and the Dependency Descriptor writer the
   video path will use.
+- The call's key state and security code. `CallSecurity` (`state`: `preparing`, `joining`,
+  `active`, `securing`, `recovering`, `device_not_enrolled`, `server_identity_changed`,
+  `unsupported`, `failed` or `left`; `epoch`, `since_ms`, `show_after_ms`, `reason`, and
+  `code`, the active epoch's security code as six groups of five digits, written only while an
+  epoch is active and Sew's policy shows it) is the new `CallEvent::Security` and
+  `CallSnapshot::security`, sent whenever it changes (every new epoch). `E2eeEvent::Security`
+  carries it from a key provider; the built-in MLS keys send it.
 
 ## 0.4.0 (2026-11-05, Sew 0.8.0)
 

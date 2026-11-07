@@ -117,6 +117,11 @@ pub struct Member {
     /// on the self object. Never for guests or link guests; never on standalone installs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
+    /// The account was erased (omitted when false): `display_name` is "Deleted user" (clients
+    /// localise it by this flag), `username` is `erased-<id>` and is not shown, and there is no
+    /// avatar, title, pronouns, email or `external_id`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erased: bool,
 }
 
 /// `external_id` on the client `Member` (listed in [`crate::mgmt::FEATURES`]).

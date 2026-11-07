@@ -1,0 +1,367 @@
+{
+  "$defs": {
+    "EraseKeptKind": {
+      "description": "What a kept row is. The set is open: a kind this build does not know is still kept.",
+      "oneOf": [
+        {
+          "const": "messages",
+          "description": "Messages.",
+          "type": "string"
+        },
+        {
+          "const": "revisions",
+          "description": "Edit history.",
+          "type": "string"
+        },
+        {
+          "const": "reactions",
+          "description": "Reactions.",
+          "type": "string"
+        },
+        {
+          "const": "poll_votes",
+          "description": "Poll votes.",
+          "type": "string"
+        },
+        {
+          "const": "files",
+          "description": "Files.",
+          "type": "string"
+        },
+        {
+          "const": "recordings",
+          "description": "Recordings.",
+          "type": "string"
+        },
+        {
+          "const": "recording_segments",
+          "description": "Speaker segments of recordings.",
+          "type": "string"
+        },
+        {
+          "const": "recording_mixes",
+          "description": "Mixed parts of recordings (they hold other people's audio too).",
+          "type": "string"
+        },
+        {
+          "const": "space_assets",
+          "description": "Space content the person made (emoji, bookmarks, pins, groups).",
+          "type": "string"
+        },
+        {
+          "const": "identity",
+          "description": "A sealed copy of who the person was, kept for a legal hold.",
+          "type": "string"
+        },
+        {
+          "const": "exports",
+          "description": "Export archives made before the erase.",
+          "type": "string"
+        },
+        {
+          "const": "backups",
+          "description": "Backup bundles made before the erase.",
+          "type": "string"
+        },
+        {
+          "const": "audit_rows",
+          "description": "Rows of the append-only audit log.",
+          "type": "string"
+        }
+      ]
+    },
+    "EraseKeptReason": {
+      "description": "Why a row was kept. The set is open: a reason this build does not know is still kept.",
+      "oneOf": [
+        {
+          "const": "legal_hold",
+          "description": "A legal hold covers it; it is erased when the hold lifts.",
+          "type": "string"
+        },
+        {
+          "const": "retention_min",
+          "description": "A keep-at-least policy (reserved; not sent today).",
+          "type": "string"
+        },
+        {
+          "const": "shared_with_others",
+          "description": "It holds other people's content too; it stays.",
+          "type": "string"
+        },
+        {
+          "const": "backup_retention",
+          "description": "It lives in a backup bundle or export archive until that is pruned.",
+          "type": "string"
+        },
+        {
+          "const": "audit_log",
+          "description": "The audit log is append-only.",
+          "type": "string"
+        }
+      ]
+    },
+    "EraseMode": {
+      "description": "What an erase does with the person's content.",
+      "oneOf": [
+        {
+          "const": "anonymise",
+          "description": "Messages, reactions and files stay, attributed to \"Deleted user\".",
+          "type": "string"
+        },
+        {
+          "const": "delete_content",
+          "description": "The person's messages are tombstoned and purged, reactions removed, uploads deleted.",
+          "type": "string"
+        }
+      ]
+    },
+    "EraseState": {
+      "description": "Where an erasure stands.",
+      "oneOf": [
+        {
+          "const": "running",
+          "description": "The account is cut off; the job is still erasing.",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "The pass is done, but some kept rows are pending (a legal hold, backups).",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "Nothing is pending; any rows left are final.",
+          "type": "string"
+        }
+      ]
+    },
+    "MgmtEraseCounts": {
+      "description": "What an erasure erased, by kind. Every key is always present (zeros included).",
+      "properties": {
+        "assistants": {
+          "default": 0,
+          "description": "Pinned assistants erased with the person.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "devices": {
+          "default": 0,
+          "description": "Call devices.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "drafts": {
+          "default": 0,
+          "description": "Drafts.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "default": 0,
+          "description": "Files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forward_snapshots": {
+          "default": 0,
+          "description": "Others' forward snapshots of the person's messages, blanked.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "messages_anonymised": {
+          "default": 0,
+          "description": "Messages now attributed to \"Deleted user\" (`anonymise`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "messages_deleted": {
+          "default": 0,
+          "description": "Messages tombstoned and purged (`delete_content`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "notify_settings": {
+          "default": 0,
+          "description": "Notification settings rows.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "poll_votes": {
+          "default": 0,
+          "description": "Poll votes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profile": {
+          "default": 0,
+          "description": "The profile (1 once scrubbed).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reactions": {
+          "default": 0,
+          "description": "Reactions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "read_positions": {
+          "default": 0,
+          "description": "Read positions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recording_segments": {
+          "default": 0,
+          "description": "The person's segments in shared recordings.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recordings": {
+          "default": 0,
+          "description": "Recordings of only this person.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "saved_items": {
+          "default": 0,
+          "description": "Saved items.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessions": {
+          "default": 0,
+          "description": "Sessions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uploads_pending": {
+          "default": 0,
+          "description": "Pending uploads.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "MgmtEraseKept": {
+      "description": "One kind of row an erasure kept, and why.",
+      "properties": {
+        "count": {
+          "description": "How many.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/EraseKeptKind",
+          "description": "What was kept."
+        },
+        "reason": {
+          "$ref": "#/$defs/EraseKeptReason",
+          "description": "Why."
+        },
+        "until": {
+          "description": "When it is expected to go, when that is known.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "count",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One erasure: what it erased, what it kept and where it stands. `200` of\n`POST /mgmt/v1/principals/erase` and the answer of `GET /mgmt/v1/principals/erase/{job_id}`.",
+  "properties": {
+    "dry_run": {
+      "description": "Whether this is a dry run (nothing was written).",
+      "type": "boolean"
+    },
+    "erased": {
+      "$ref": "#/$defs/MgmtEraseCounts",
+      "description": "What it erased."
+    },
+    "finished_at": {
+      "description": "When it reached `completed` (`null` before).",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "job_id": {
+      "description": "The erasure's id (the status route's `{job_id}`). For a dry run, a fresh id that names\nnothing stored.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "kept": {
+      "description": "What it kept.",
+      "items": {
+        "$ref": "#/$defs/MgmtEraseKept"
+      },
+      "type": "array"
+    },
+    "member_id": {
+      "description": "The erased member (its id stays, as a tombstone).",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "mode": {
+      "$ref": "#/$defs/EraseMode",
+      "description": "The mode that ran."
+    },
+    "pending_until": {
+      "description": "The latest `until` of the pending kept rows, present only when every pending row has\none.",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requested_at": {
+      "description": "When the erase was asked for.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/EraseState",
+      "description": "Where it stands."
+    }
+  },
+  "required": [
+    "job_id",
+    "member_id",
+    "mode",
+    "dry_run",
+    "state",
+    "requested_at",
+    "erased",
+    "kept"
+  ],
+  "title": "MgmtEraseResult",
+  "type": "object"
+}

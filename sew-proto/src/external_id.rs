@@ -17,9 +17,12 @@ use crate::limits::EXTERNAL_ID_MAX_BYTES;
 /// accepted by mgmt provision or the K2 pass), `app:<app_id>` (an App's service owner,
 /// made by Sew; never provisioned and never signs in), `k2:server` (K2's server
 /// service owner, the owner of the server-governed Space; made by Sew, never provisioned, never
-/// signs in). `<uuid>` is lowercase hyphenated 8-4-4-4-12 hex (K2 principal ids are
+/// signs in), `erased:<member_id>` (an erased member's tombstone id, written by Sew when it
+/// erases the account; never accepted as input). `<uuid>` is lowercase hyphenated 8-4-4-4-12
+/// hex (K2 principal ids are
 /// `Uuid::new_v4`; a Connect user's is the never-reused uuid K2 gives each Connect user).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ExternalId {
     /// A K2 person: `k2:principal:<uuid>`. Holds the uuid.
     K2Principal(String),
@@ -53,7 +56,15 @@ pub enum ExternalId {
     /// pass with this `sub` is refused `service_sub_refused`), is never provisioned and is hidden
     /// as a person; mgmt acts as it.
     K2Server,
+    /// An erased member's tombstone id, `erased:<member_id>`. Sew writes it when it erases an
+    /// account (`POST /mgmt/v1/principals/erase`), which frees the member's real external id: a
+    /// later sign-in with that id makes a new member. Provisioning, passes and every mgmt input
+    /// refuse it.
+    Erased(crate::id::Id),
 }
+
+/// The prefix of an erased member's tombstone id.
+pub const ERASED_PREFIX: &str = "erased:";
 
 /// The external id of K2's server service owner.
 pub const K2_SERVER: &str = "k2:server";
@@ -79,7 +90,7 @@ impl fmt::Display for ExternalIdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "invalid external id {:?}: expected k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server, local:<handle>, link:<channel_id>:<base32> or app:<app_id>",
+            "invalid external id {:?}: expected k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server, local:<handle>, link:<channel_id>:<base32>, app:<app_id> or erased:<member_id>",
             self.0
         )
     }
@@ -112,6 +123,11 @@ impl ExternalId {
     /// Box users are never members of App-governed Spaces and never sign in through an App.
     pub fn is_box_user(&self) -> bool {
         matches!(self, ExternalId::K2Owner | ExternalId::K2Connect(_))
+    }
+
+    /// Whether this is an erased member's tombstone id (`erased:<member_id>`).
+    pub fn is_erased(&self) -> bool {
+        matches!(self, ExternalId::Erased(_))
     }
 
     /// The App of an App's service owner (`app:<app_id>`).
@@ -195,6 +211,14 @@ impl FromStr for ExternalId {
                 token: t.to_owned(),
             });
         }
+        if let Some(rest) = s.strip_prefix(ERASED_PREFIX) {
+            let id: crate::id::Id = rest.parse().map_err(|_| err())?;
+            // Canonical form only: the id must print back as given.
+            if id.to_string() != rest {
+                return Err(err());
+            }
+            return Ok(ExternalId::Erased(id));
+        }
         if let Some(rest) = s.strip_prefix(APP_SERVICE_PREFIX) {
             // The App's service owner (an App id has no `:`).
             return if crate::mgmt::is_app_id(rest) {
@@ -220,6 +244,7 @@ impl fmt::Display for ExternalId {
             ExternalId::Link { channel, token } => write!(f, "link:{channel}:{token}"),
             ExternalId::AppService { app_id } => write!(f, "app:{app_id}"),
             ExternalId::K2Server => f.write_str(K2_SERVER),
+            ExternalId::Erased(id) => write!(f, "{ERASED_PREFIX}{id}"),
         }
     }
 }
@@ -250,8 +275,28 @@ impl JsonSchema for ExternalId {
         json_schema!({
             "type": "string",
             "maxLength": 128,
-            "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
-            "description": "An external identity: k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server (K2's server service owner), local:<handle>, link:<channel_id>:<base32> (a meeting link guest) or app:<app_id> (an App's service owner)."
+            "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63}|erased:[1-9][0-9]{0,18})$",
+            "description": "An external identity: k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server (K2's server service owner), local:<handle>, link:<channel_id>:<base32> (a meeting link guest), app:<app_id> (an App's service owner) or erased:<member_id> (an erased member's tombstone id; never accepted as input)."
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn erased_ids_round_trip_in_canonical_form_only() {
+        let e: ExternalId = "erased:48831765147549703".parse().expect("erased id");
+        assert_eq!(
+            e,
+            ExternalId::Erased(crate::id::Id::new_const(48_831_765_147_549_703))
+        );
+        assert!(e.is_erased());
+        assert_eq!(e.to_string(), "erased:48831765147549703");
+        for bad in ["erased:", "erased:0", "erased:01", "erased:x", "erased:1:2"] {
+            assert!(bad.parse::<ExternalId>().is_err(), "{bad}");
+        }
+        assert!(!ExternalId::K2Owner.is_erased());
     }
 }

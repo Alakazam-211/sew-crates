@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-call-details"
+description = "Enables the call_details command without any pre-configured scope."
+commands.allow = ["call_details"]
+
+[[permission]]
+identifier = "deny-call-details"
+description = "Denies the call_details command without any pre-configured scope."
+commands.deny = ["call_details"]

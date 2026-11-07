@@ -13,9 +13,9 @@
     "external_ids": {
       "description": "1–100 distinct principals.",
       "items": {
-        "description": "An external identity: k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server (K2's server service owner), local:<handle>, link:<channel_id>:<base32> (a meeting link guest) or app:<app_id> (an App's service owner).",
+        "description": "An external identity: k2:principal:<uuid>, k2:workspace:<uuid>, k2:connect:<uuid>, k2:owner, k2:server (K2's server service owner), local:<handle>, link:<channel_id>:<base32> (a meeting link guest), app:<app_id> (an App's service owner) or erased:<member_id> (an erased member's tombstone id; never accepted as input).",
         "maxLength": 128,
-        "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63})$",
+        "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63}|erased:[1-9][0-9]{0,18})$",
         "type": "string"
       },
       "type": "array"

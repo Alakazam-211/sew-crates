@@ -239,6 +239,11 @@
           "type": "string"
         },
         {
+          "const": "erase_stuck",
+          "description": "A running account erasure made no progress for 10 minutes (its job is lost, overdue\nor has failed for that long; a wait for an active recording is not stuck).",
+          "type": "string"
+        },
+        {
           "const": "voice_media_down",
           "description": "Voice is enabled and the media engine has been unreachable for more than 60 s.",
           "type": "string"
@@ -463,6 +468,37 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "StatusErasures": {
+      "description": "`status.erasures`: account erasures not yet completed.",
+      "properties": {
+        "oldest_running_age_ms": {
+          "description": "Age of the oldest running erasure since it was requested; absent when none runs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "running": {
+          "description": "Erasures still in their pass (`running`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "waiting": {
+          "description": "Erasures whose pass is done but whose kept rows are pending (`waiting`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "running",
+        "waiting"
+      ],
       "type": "object"
     },
     "StatusExports": {
@@ -1852,6 +1888,17 @@
         }
       ],
       "description": "Restore drills (the backup engine fills it)."
+    },
+    "erasures": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StatusErasures"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Account erasures running and waiting (additive)."
     },
     "exports": {
       "anyOf": [

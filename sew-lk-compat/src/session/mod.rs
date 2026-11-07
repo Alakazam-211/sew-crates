@@ -30,7 +30,8 @@ use sew_lkproto::livekit::signal_response::Message as Msg;
 use sew_lkproto::livekit::{
     AddTrackRequest, ClientConfigSetting, DisconnectReason, IceServer, JoinResponse, LeaveRequest,
     MuteTrackRequest, ParticipantInfo, Ping, SessionDescription, SignalRequest, SignalResponse,
-    SpeakerInfo, TrackInfo, TrackSource, TrackType, encryption, leave_request, request_response,
+    SpeakerInfo, StreamStateInfo, SubscribedQualityUpdate, TrackInfo, TrackSource, TrackType,
+    encryption, leave_request, request_response,
 };
 
 use crate::signal::{CandidateInit, response_kind, trickle_for};
@@ -128,6 +129,17 @@ pub enum SessionEvent {
         reason: i32,
         /// What to do next.
         action: LeaveAction,
+    },
+    /// The server paused or resumed tracks it sends us (`StreamStateUpdate`: a congested
+    /// downlink pauses video, never audio).
+    StreamStates(Vec<StreamStateInfo>),
+    /// The server says which simulcast qualities of our track anyone subscribes to
+    /// (dynacast).
+    SubscribedQuality(SubscribedQualityUpdate),
+    /// The server unpublished one of our tracks.
+    TrackUnpublished {
+        /// Track sid.
+        sid: String,
     },
     /// The server turned down one of our requests.
     Refused {
@@ -279,6 +291,7 @@ impl Session {
                 videos: ms.num_videos,
             }),
             Msg::SpeakersChanged(s) => Outcome::Emit(SessionEvent::Speakers(s.speakers)),
+            Msg::StreamStateUpdate(u) => Outcome::Emit(SessionEvent::StreamStates(u.stream_states)),
             Msg::Mute(mt) => Outcome::Emit(SessionEvent::Muted {
                 sid: mt.sid,
                 muted: mt.muted,
@@ -295,16 +308,18 @@ impl Session {
                 })
             }
             Msg::RequestResponse(_) => Outcome::Handled,
+            // A publisher's notices: the qualities subscribed (dynacast) and an unpublication.
+            Msg::SubscribedQualityUpdate(u) => Outcome::Emit(SessionEvent::SubscribedQuality(u)),
+            Msg::TrackUnpublished(t) => {
+                Outcome::Emit(SessionEvent::TrackUnpublished { sid: t.track_sid })
+            }
             // Room, quality, subscription and codec notices: nothing for a voice client to do.
             Msg::RoomUpdate(_)
             | Msg::RoomMoved(_)
             | Msg::ConnectionQuality(_)
-            | Msg::StreamStateUpdate(_)
-            | Msg::TrackUnpublished(_)
             | Msg::TrackSubscribed(_)
             | Msg::SubscriptionResponse(_)
             | Msg::SubscriptionPermissionUpdate(_)
-            | Msg::SubscribedQualityUpdate(_)
             | Msg::SubscribedAudioCodecUpdate(_) => Outcome::Handled,
             // Data tracks and data blobs are not part of this client.
             Msg::PublishDataTrackResponse(_)
@@ -376,6 +391,12 @@ impl Session {
                 encryption: ENCRYPTION_GCM,
                 ..AddTrackRequest::default()
             })));
+    }
+
+    /// Ask to publish a track described by the caller (video: its layers and simulcast
+    /// codecs). The caller sets `encryption`; [`Session::publish_audio`] is the microphone's.
+    pub fn add_track(&mut self, add: AddTrackRequest) {
+        self.to_send.push_back(request(Req::AddTrack(add)));
     }
 
     fn description(kind: &str, sdp: String, id: u32) -> SessionDescription {

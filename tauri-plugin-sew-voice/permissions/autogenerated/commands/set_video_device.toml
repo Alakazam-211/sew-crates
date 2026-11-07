@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-video-device"
+description = "Enables the set_video_device command without any pre-configured scope."
+commands.allow = ["set_video_device"]
+
+[[permission]]
+identifier = "deny-set-video-device"
+description = "Denies the set_video_device command without any pre-configured scope."
+commands.deny = ["set_video_device"]

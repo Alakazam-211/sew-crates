@@ -4,7 +4,7 @@
 //! 1. **No plaintext mode.** Nothing here has an "unencrypted" switch. An outgoing frame leaves
 //!    only through [`SendGate::seal`], which calls [`FrameCrypto::seal`]; with no active key or
 //!    no verified publication the frame is dropped and counted, never sent.
-//! 2. **Subscribe only verified encrypted tracks** ([`SubscribeGuard`]): an audio track whose
+//! 2. **Subscribe only verified encrypted tracks** ([`SubscribeGuard`]): an audio track (and, with `video-core`, a camera or screen track) whose
 //!    `TrackInfo.encryption` is `GCM` **and** whose publisher identity is bound to a leaf of the
 //!    verified MLS tree (the DS-signed leaf binding table, `lk_identity` = `p_` + base32 of the
 //!    leaf's `join_id`). Anything else is left unsubscribed; an unencrypted track is reported
@@ -12,33 +12,90 @@
 //!    that did not pass, and a frame that fails to decrypt is counted and never played (a frame
 //!    whose key is not installed yet, around a join or a key switch, is counted apart:
 //!    [`KEY_PENDING_GRACE_MS`]).
-//! 3. **Publish only through the checked path** ([`PublishGuard`]): the `AddTrackRequest` asks
-//!    for `GCM`, and the publication counts as encrypted only when the server's
-//!    `TrackPublishedResponse` echoes `GCM`. A downgrade refuses the publication for the rest of
-//!    the call and is reported (`report` route, `engine_encryption_downgrade`).
+//! 3. **Publish only through the checked path** ([`PublishGuard`], [`check_publish`]): the
+//!    `AddTrackRequest` asks for `GCM`, and the publication counts as encrypted only when the
+//!    server's `TrackPublishedResponse` echoes `GCM`. A downgrade refuses the publication for the
+//!    rest of the call and is reported (`report` route, `engine_encryption_downgrade`). Video is
+//!    published only under a lease Sew granted ([`Leases`]: `self_video` for a camera,
+//!    `self_stream` for a screen share); anything else that is not audio is refused.
 //! 4. **No keys in logs**: nothing here logs a frame, a key or an IV; `Debug` prints counts.
 
 use std::fmt;
 
 use sew_e2ee::{EngineAttack, LkIdentity, Slot, UndecryptReason};
-use sew_lkproto::livekit::{AddTrackRequest, TrackInfo, TrackType, encryption};
+use sew_lkproto::livekit::{AddTrackRequest, TrackInfo, TrackSource, TrackType, encryption};
 
-use super::frame::{FrameCrypto, IvParts, OpenError};
+use super::frame::{FrameCrypto, IvParts, OpenError, VideoFrameCodec};
 use super::keys::{MediaKeys, MediaReport, PublishState, lock};
 
 /// Why a publication was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum PublishRefused {
-    /// Voice only: the engine never publishes video, screen share or data.
-    #[error("only an audio track may be published")]
+    /// Neither audio nor video (data tracks, an unknown type or video source): never published.
+    #[error("only an audio track or a leased video track may be published")]
     NotAudio,
+    /// Video without the lease Sew granted for it (`self_video` for a camera, `self_stream`
+    /// for a screen share).
+    #[error("no video lease for this source")]
+    NoLease,
     /// The server answered the publication without `GCM`: the engine downgraded it.
     #[error("the engine downgraded the publication's encryption")]
     Downgraded,
     /// The publication was refused earlier in this call.
     #[error("publication refused earlier in this call")]
     Refused,
+}
+
+/// The video leases this device holds in the call (Sew's `self_video` and `self_stream`,
+/// granted through `POST /api/v1/me/voice/state`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Leases {
+    /// A camera lease (`self_video`).
+    pub camera: bool,
+    /// A screen-share lease (`self_stream`).
+    pub screen: bool,
+}
+
+impl Leases {
+    /// No lease.
+    pub fn none() -> Leases {
+        Leases::default()
+    }
+
+    /// The given leases.
+    pub fn new(camera: bool, screen: bool) -> Leases {
+        Leases { camera, screen }
+    }
+}
+
+/// The static half of the publish check, for every `AddTrackRequest` the engine sends: audio,
+/// or video under its lease (a camera with `self_video`, a screen share with `self_stream`;
+/// [`PublishRefused::NoLease`] otherwise); anything else is [`PublishRefused::NotAudio`]. Sets
+/// `encryption = GCM` whatever the caller put in.
+pub fn check_publish(req: &mut AddTrackRequest, leases: Leases) -> Result<(), PublishRefused> {
+    if req.r#type == TrackType::Video as i32 {
+        let leased = if req.source == TrackSource::Camera as i32 {
+            leases.camera
+        } else if req.source == TrackSource::ScreenShare as i32 {
+            leases.screen
+        } else {
+            false
+        };
+        if !leased {
+            return Err(PublishRefused::NoLease);
+        }
+    } else if req.r#type != TrackType::Audio as i32 {
+        return Err(PublishRefused::NotAudio);
+    }
+    req.encryption = encryption::Type::Gcm as i32;
+    Ok(())
+}
+
+/// Whether a server-confirmed track is one the engine may publish at all (audio or video).
+fn publishable(track: &TrackInfo) -> bool {
+    track.r#type == TrackType::Audio as i32 || track.r#type == TrackType::Video as i32
 }
 
 /// The publish half of the checks (3 above).
@@ -60,17 +117,24 @@ impl<C: FrameCrypto> PublishGuard<C> {
         PublishGuard { keys: keys.clone() }
     }
 
-    /// Checks and completes an `AddTrackRequest` before it is sent: audio only, and
-    /// `encryption = GCM` is set here whatever the caller put in. The publication stays
-    /// unverified (frames dropped) until [`PublishGuard::on_published`].
+    /// Checks and completes an `AddTrackRequest` before it is sent, holding no video lease:
+    /// [`PublishGuard::prepare_with_leases`] with [`Leases::none`].
     pub fn prepare(&self, req: &mut AddTrackRequest) -> Result<(), PublishRefused> {
+        self.prepare_with_leases(req, Leases::none())
+    }
+
+    /// Checks and completes an `AddTrackRequest` before it is sent ([`check_publish`]: audio,
+    /// or video under its lease; `encryption = GCM` is set here whatever the caller put in).
+    /// The publication stays unverified (frames dropped) until [`PublishGuard::on_published`].
+    pub fn prepare_with_leases(
+        &self,
+        req: &mut AddTrackRequest,
+        leases: Leases,
+    ) -> Result<(), PublishRefused> {
         if self.keys.publish_state() == PublishState::Refused {
             return Err(PublishRefused::Refused);
         }
-        if req.r#type != TrackType::Audio as i32 {
-            return Err(PublishRefused::NotAudio);
-        }
-        req.encryption = encryption::Type::Gcm as i32;
+        check_publish(req, leases)?;
         lock(&self.keys.state).publish = PublishState::Unverified;
         Ok(())
     }
@@ -82,7 +146,7 @@ impl<C: FrameCrypto> PublishGuard<C> {
         if s.publish == PublishState::Refused {
             return Err(PublishRefused::Refused);
         }
-        if track.r#type != TrackType::Audio as i32 {
+        if !publishable(track) {
             s.publish = PublishState::Refused;
             return Err(PublishRefused::NotAudio);
         }
@@ -126,7 +190,7 @@ pub enum SubscribeDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SubscribeRefused {
-    /// Not an audio track (voice only).
+    /// Neither an audio track nor (with `video-core`) a video track.
     NotAudio,
     /// `encryption` is not `GCM` (reported as `engine_unencrypted_track`).
     Unencrypted,
@@ -159,7 +223,9 @@ impl<C: FrameCrypto> SubscribeGuard<C> {
         let Ok(id) = LkIdentity::parse(identity) else {
             return SubscribeDecision::Refuse(SubscribeRefused::BadIdentity);
         };
-        if track.r#type != TrackType::Audio as i32 {
+        // Video (camera and screen) only in a build that receives it (`video-core`).
+        let video = crate::pc::VIDEO && track.r#type == TrackType::Video as i32;
+        if track.r#type != TrackType::Audio as i32 && !video {
             return SubscribeDecision::Refuse(SubscribeRefused::NotAudio);
         }
         if track.encryption != encryption::Type::Gcm as i32 {
@@ -247,6 +313,59 @@ impl<C: FrameCrypto> SendGate<C> {
         }
     }
 
+    /// Seals one encoded video frame (`codec`: VP8 or an H.264 access unit with 4-byte start
+    /// codes) of the local layer `ssrc`, or drops it (`None`), exactly as [`SendGate::seal`]
+    /// does for audio: no active slot, a publication not confirmed encrypted, an empty frame,
+    /// or a cipher failure. The IV's send count is per SSRC, so each simulcast layer counts
+    /// its own.
+    pub fn seal_video(
+        &self,
+        codec: VideoFrameCodec,
+        ssrc: u32,
+        rtp_timestamp: u32,
+        frame: &[u8],
+    ) -> Option<Vec<u8>> {
+        let mut guard = lock(&self.keys.state);
+        let s = &mut *guard;
+        if s.publish != PublishState::Verified {
+            s.counters.dropped_unverified_publication += 1;
+            return None;
+        }
+        if frame.is_empty() {
+            s.counters.dropped_seal_failed += 1;
+            return None;
+        }
+        let Some((_, slot, key)) = s.local.as_ref() else {
+            s.counters.dropped_no_key += 1;
+            return None;
+        };
+        let count = match s.send_count.get(&ssrc) {
+            Some(c) => *c,
+            None => u32::from(rand::random::<u16>()),
+        };
+        let iv = IvParts {
+            ssrc,
+            rtp_timestamp,
+            send_count: count,
+        };
+        let mut out = Vec::with_capacity(frame.len() + 64);
+        let r = self
+            .keys
+            .crypto
+            .seal_video(key, slot.get(), codec, iv, frame, &mut out);
+        s.send_count.insert(ssrc, count.wrapping_add(1));
+        match r {
+            Ok(()) if !out.is_empty() => {
+                s.counters.sealed += 1;
+                Some(out)
+            }
+            _ => {
+                s.counters.dropped_seal_failed += 1;
+                None
+            }
+        }
+    }
+
     /// The slot frames are sealed under now (the sender self-check).
     pub fn slot(&self) -> Option<Slot> {
         self.keys.local_slot()
@@ -305,6 +424,27 @@ impl<C: FrameCrypto> RecvGate<C> {
     /// Opens one frame of `sender` (the participant identity of the track's publisher). Only a
     /// decrypted frame comes back; the caller plays nothing else (a loss to the jitter buffer).
     pub fn open(&self, sender: &LkIdentity, frame: &[u8]) -> Result<Vec<u8>, RecvRefused> {
+        self.open_frame(sender, None, frame)
+    }
+
+    /// Opens one video frame of `codec` from `sender`, with the same checks, counters and
+    /// reports as [`RecvGate::open`] (a failing sender is reported once, through
+    /// `MediaReport::Undecryptable`). Only a decrypted frame comes back.
+    pub fn open_video(
+        &self,
+        sender: &LkIdentity,
+        codec: crate::video::VideoCodec,
+        frame: &[u8],
+    ) -> Result<Vec<u8>, RecvRefused> {
+        self.open_frame(sender, Some(codec), frame)
+    }
+
+    fn open_frame(
+        &self,
+        sender: &LkIdentity,
+        video: Option<crate::video::VideoCodec>,
+        frame: &[u8],
+    ) -> Result<Vec<u8>, RecvRefused> {
         let now = (self.clock)();
         let mut guard = lock(&self.keys.state);
         let s = &mut *guard;
@@ -319,7 +459,11 @@ impl<C: FrameCrypto> RecvGate<C> {
                 None => Err(OpenError::NoKey(slot)),
                 Some(key) => {
                     let mut out = Vec::with_capacity(frame.len());
-                    crypto.open(key, frame, &mut out).map(|()| out)
+                    match video {
+                        None => crypto.open(key, frame, &mut out),
+                        Some(codec) => crypto.open_video(key, codec, frame, &mut out),
+                    }
+                    .map(|()| out)
                 }
             },
         };

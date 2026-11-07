@@ -44,6 +44,26 @@
           "type": "string"
         },
         {
+          "const": "member.erase",
+          "description": "A principal's account was erased: deprovisioned, scrubbed and its external id\nmapping cut (`details {erasure_id, mode, sessions_revoked, upgraded?, cascade_of?}`).",
+          "type": "string"
+        },
+        {
+          "const": "member.erase_complete",
+          "description": "An erasure has nothing left pending (`details {erasure_id, erased, kept}`: counts and\nkinds only).",
+          "type": "string"
+        },
+        {
+          "const": "member.erase_preview",
+          "description": "A dry run of an erase (`details {member_id, mode, erased, kept}`: counts only).",
+          "type": "string"
+        },
+        {
+          "const": "member.erase_replayed",
+          "description": "A restored database brought an erased member back; it was erased again at start.",
+          "type": "string"
+        },
+        {
           "const": "principal.relink",
           "description": "A local member got a K2 identity, keeping its member id; details `{from, to}`.",
           "type": "string"

@@ -13,6 +13,19 @@ app's Rust code signs in: it implements `JoinProvider`, which obtains Sew's join
 sends the person's recording consent with the person's own session), so no token ever reaches
 the web view.
 
+Video: thirteen more commands (`video_caps`, `video_devices`, `set_video_device`, `camera`,
+`screen_sources`, `screen`, `preview`, `video_sink`, `video_sink_update`, `video_sink_close`,
+`request_keyframe`, `camera_permission`, `request_camera_permission`) and four events (`sew-voice://video`, `local_video`, `video_devices`,
+`policy`). Each video element gets its frames over its own Tauri raw `Channel` (a 32-byte
+header, then the encoded frame, decrypted in Rust) and decodes them with WebCodecs; keys never
+leave Rust. They are behind the `sew-voice:video` permission set (docs/native-voice-sdk.md §3,
+Video). The engine's video is wired through `VoiceEngine` and `CallHandle` (module `video`);
+an engine without it answers `video_unsupported`. The real engine receives remote video with
+the `video-core` feature; it doesn't publish yet. On phones (`video` and `mobile`) it uses
+kessel-video's iOS and Android backends, follows the app's scene (`VoiceControl::app_scene`),
+tells the app when the call has video (`VoiceListener::video_changed`, for the speaker route)
+and gives native sinks for a picture in picture (`VoiceControl::open_native_sink`).
+
 Not affiliated with or endorsed by LiveKit.
 
 ## Features
@@ -28,6 +41,29 @@ Not affiliated with or endorsed by LiveKit.
   only after `session_activated`. The plugin never configures the session itself
   (docs/native-voice-sdk.md §3b).
 - `audio-core`: the real engine on `kessel-audio`'s null device only, with no system libraries.
+- `video-core` (off by default): the real engine receives the remote cameras and screens
+  (decrypted, checked encoded frames for the sinks, decoded by the webview's WebCodecs;
+  `video_caps.receive`) and opens native sinks (module `native`); with a video backend also
+  the cameras, the screen list, the pre-join `preview`, and the camera and screen publish with
+  the in-call self-view. `video` (off) adds `kessel-video`'s system backends (the camera
+  permission and list; on phones the iOS and Android backends; its decoders are the decoded
+  fallback for a codec the webview can't decode: VP8 in pure Rust, H.264 through VideoToolbox
+  on macOS). `CallClientEngine::with_video_backend` passes another backend, the engine's one
+  for capture, publish, native sinks and the decoded fallback. kessel-video comes from
+  crates.io (no `[patch.crates-io]` row). On macOS and iOS its Apple frameworks link on their
+  own, also when the app links Rust as a static library (Tauri on iOS: Xcode links
+  `libapp.a`): kessel-video writes them into its object code as linker options. Only an app
+  built with `-ignore_auto_link` (or a linker that skips those options) lists them itself:
+  VideoToolbox, CoreMedia, CoreVideo, AVFoundation, CoreFoundation and Foundation.
+- `mobile` (off): sew-call-client's `mobile`, for iOS and Android builds (the pure-Rust
+  DTLS/SRTP provider; with `audio`, the OS's voice processing). It turns on `ios-screen-ring`.
+- `ios-screen-ring` (off; iOS): with `video-core`, the iPhone screen share. The app's broadcast
+  upload extension writes the screen into a `kessel-frame-ring` ring in the App Group container;
+  the plugin publishes it as the call's screen (`VoiceControl::screen_share_ring`,
+  `VoiceListener::screen_share_changed`; module `screen_ring`). kessel-frame-ring is a
+  dependency on iOS only (and Linux, for the tests); elsewhere the feature does nothing.
+  Android's screen share needs no feature: the app hands kessel-video its MediaProjection
+  (docs/native-voice-sdk.md §3b).
 - `keyring-store` (off by default): the device key in the OS credential store. Without it, or
   your own store (`Builder::device_key_store`), the key is a 0600 file under the app's data
   directory. On phones, `Builder::hardware_device_key` keeps it in the Secure Enclave or
@@ -44,8 +80,9 @@ Not affiliated with or endorsed by LiveKit.
 ## Usage
 
 The crate is not published on crates.io yet, because the voice engine it runs,
-`sew-call-client`, is not: the engine waits on dependencies of its own (`sew-e2ee`,
-`kessel-audio`, which you supply, and Alakazam Labs' forks of `str0m` and `dimpl`). Until then,
+`sew-call-client`, is not: the engine waits on dependencies of its own (`sew-e2ee` and
+Alakazam Labs' forks of `str0m` and `dimpl`; `kessel-audio` and `kessel-video` come from
+crates.io). Until then,
 get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository,
 which holds it with the Sew crates it depends on: clone it into your project (for example as
 `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists into your
@@ -56,7 +93,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.4.1"
+tauri-plugin-sew-voice = "0.5.0"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -85,7 +122,8 @@ fn main() {
 
 Allow the plugin in your window's capability (`sew-voice:default` allows all eight commands; one
 permission per command exists too; the two device-key commands, `forget_server` and
-`known_device_keys`, are only in `sew-voice:device-keys` or their own `allow-*`), then from the web view (`window.__TAURI__` needs
+`known_device_keys`, are only in `sew-voice:device-keys` or their own `allow-*`, and the three
+call-detail commands, `call_details`, `ring` and `ring_ended`, in `sew-voice:call-details`), then from the web view (`window.__TAURI__` needs
 `app.withGlobalTauri: true` in `tauri.conf.json`; with a bundler, import `invoke` and `listen`
 from `@tauri-apps/api` instead). `target` is opaque to the plugin: it is handed to your
 `JoinProvider` to say which Sew server (here its host):
@@ -149,6 +187,17 @@ store holds. `forget_server` is refused with `in_call` during a call. It works p
 not per login: every login on the same Sew shares the install id, so call it only once no
 account in your app still uses that install. The same two are webview
 commands behind `sew-voice:device-keys` (docs/native-voice-sdk.md §6).
+
+### Call details (0.4.1)
+
+Beside the frozen events, `sew-voice://security` (the key state and the active epoch's
+security code), `roster` (every media participant with its engine identity and label: `member`,
+`recorder`, `not_in_session`), `quality` (each stats window's connection quality; `lost` while
+reconnecting) and `incoming` (a DM call that rings) give a call UI what a browser call shows.
+`call_details` reads all four for a window opened mid-call; `ring` and `ring_ended` set and clear
+the ring (from Sew's `call_ring`, or a push through `VoiceControl::ring`), and a `join` with the
+ring's `target` and `room` accepts it. Allow them with `sew-voice:call-details`
+(docs/native-voice-sdk.md §3c).
 
 ## Licence
 
