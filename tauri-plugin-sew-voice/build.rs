@@ -4,7 +4,7 @@
 /// The plugin's commands (`plugin:sew-voice|<name>`), frozen with K2 (a change breaks K2's
 /// webview): the eight of `sew-voice:default`, then the two device-key commands, which only an
 /// explicit permission allows, then the three call-detail commands (`sew-voice:call-details`)
-/// and the thirteen video commands (`sew-voice:video`).
+/// and the fourteen video commands (`sew-voice:video`: the thirteen, then the codec setting).
 #[cfg(feature = "tauri")]
 const COMMANDS: &[&str] = &[
     "join",
@@ -33,6 +33,7 @@ const COMMANDS: &[&str] = &[
     "request_keyframe",
     "camera_permission",
     "request_camera_permission",
+    "set_video_codec_preference",
 ];
 
 fn main() {

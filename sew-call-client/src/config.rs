@@ -57,6 +57,10 @@ pub struct ClientConfig {
     /// Linux, which has no H.264 decoder in the engine (kessel-video decodes only VP8 there), so
     /// the media server never sends a Linux client H.264 it can't show. A host that decodes
     /// H.264 itself turns it on with [`ClientConfig::with_video_h264`].
+    ///
+    /// It is an upper bound: once the host declares its decoders
+    /// ([`crate::CallClient::set_video_decode`]), H.264 is offered only if they list it (never
+    /// on Linux), and never under [`crate::VideoCodecPreference::PreferVp8`].
     pub video_h264: bool,
     /// Test-only overrides (feature `testing`).
     #[cfg(feature = "testing")]

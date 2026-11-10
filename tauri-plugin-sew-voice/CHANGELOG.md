@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.5.1 (2026-11-10, Sew 0.8.3)
+
+Additions only: nothing in 0.5.0's API changes or goes away.
+
+### Fixed
+
+- Updates the WebRTC dependencies to current upstream releases (dimpl 0.9, upstream str0m
+  fixes); recommended for everyone. A host that repeats the `[patch.crates-io]` rows moves the
+  str0m rows to `907e050bfa212a23394f4482110acef04cba8fc6` and drops the dimpl row: dimpl 0.9.0
+  comes from crates.io.
+- After a leave, a join is never refused `already_in_call` by the plugin's own engine. The
+  leave reaches the engine through the call's `CallLeaver`, so a camera or screen command
+  waiting on a device (a lid-closed MacBook camera, a camera switch whose new camera is slow to
+  open) no longer holds it up; before, the leave waited for that command, and the next joins
+  were refused until it ended (minutes, or a webview reload). The leave waits at most
+  `real::LEAVE_WAIT` for the engine's answer and never for such a command (it is logged when
+  it still holds the call past `real::TAKE_WAIT`).
+- The real engine's end of a call stops only that call's camera and screen pipelines
+  (`VideoBridge::close_call`): a late teardown never stops the next call's camera.
+- The real engine offers to receive only the video codecs this device can decode: before each
+  join it declares its video backend's OS decoders and the webview's `decode` (below) to the
+  engine (`CallClient::set_video_decode`). VP8 is always offered; H.264 only when one of them
+  decodes it, and never on Linux. Before, every desktop but Linux offered H.264 whatever the
+  webview could decode. Without `decode`, nothing is assumed about the webview.
+- The `video` event's `unsupported` is now set: this device can receive none of the track's
+  codecs (it was always `false`). Before a track's first frame its `codec` is the first of the
+  publisher's codecs this device receives.
+
+### Added
+
+- `join {…, decode?}`: the video codecs the webview decodes (`["vp8", "h264"]`, from its
+  WebCodecs probe), for the engine's receive codecs; `JoinOptions::decode` and
+  `JoinOptions::with_decode` for a native join; `VoiceEngine::join_decoding` (a provided
+  method; the default ignores `decode` and joins).
+- The video codec setting, a per-device user setting: the command `set_video_codec_preference
+  {preference}` (`"automatic"`, the default; `"prefer_h264"`; `"prefer_vp8"`), with its own
+  permission `sew-voice:allow-set-video-codec-preference`, in the `sew-voice:video` set
+  (`VIDEO_CODEC_COMMANDS`). It answers the readback, which `video_caps` now also carries as
+  `codec_preference` (left out by an engine without video publish): `{setting, effective,
+  reason?}`, the codec a camera or screen turned on now publishes in (`"h264"` with a VP8
+  backup, or `"vp8"`) and, only when Prefer H.264 can't apply, why (`"not_detected"`: no usable
+  hardware H.264 encoder found at run time; `"platform"`: no run-time check on Linux, Android or
+  Windows yet, or an iOS before 17.4; `"policy"`: the live call's media policy doesn't allow
+  H.264). `"prefer_vp8"` also stops the device
+  receiving H.264 from its next join. The engine keeps the setting until the process ends:
+  persisting it is the host's job. `VoiceControl::set_video_codec_preference` and
+  `video_codec_preference`, `VoiceService::set_video_codec_preference` and
+  `video_codec_preference`, `VoiceEngine::set_video_codec_preference` and
+  `video_codec_preference` (provided: `video_unsupported`, and no readback), the wire types
+  `SetVideoCodecPreferenceArgs` and `CodecPreferenceInfo`, and sew-call-client's
+  `VideoCodecPreference` and `CodecPreferenceReason`, re-exported.
+- `VoiceEngine::release_calls` (a provided method; the default does nothing): leaves and
+  releases a call the plugin lost hold of. `leave` with no live call calls it, and so does a
+  join the engine refuses `already_in_call` (then joins once more), so a host recovers without
+  a reload. `fake::FakeEngine::strand_call` and `releases` test it.
+- `camera {on}` is refused with `no_frames` (`video_code::NO_FRAMES`) when the camera opened
+  but gave no frame within 2.5 s; nothing is published until the first frame.
+- A camera lost while sending (kessel-video's `DeviceLost`: a Continuity Camera gone) sends
+  the `errors` event `camera_lost`, besides `local_video {camera: "off", reason:
+  "camera_lost"}`; the track is unpublished and the lease released, and the call goes on.
+- `local_video {camera: "paused", reason: "suspended"}` (`video_reason::SUSPENDED`): the
+  camera says it is suspended (a MacBook's lid closed), `on` again when it comes back. It is
+  no error.
+- `camera {on}` without a device, with none chosen, prefers the camera that last gave frames
+  (by its stable id) while it is listed and not suspended; else it opens without an id, which
+  passes over a suspended default (kessel-video 0.1.5).
+
+### Dependencies
+
+- Needs sew-call-client with `CallLeaver`, `Call::local_id`, `VideoBridge::close_call`,
+  `VideoError::NoFrames` and `CapturePause::Suspended`, `CallClient::set_video_decode`, the
+  video codec preference (`VideoCodecPreference`, `effective_publish_codec`,
+  `h264_encode_detection`) and `VideoTrackView::unsupported`, and kessel-video 0.1.5.
+
 ## 0.5.0 (2026-11-06, Sew 0.8.2)
 
 ### Breaking

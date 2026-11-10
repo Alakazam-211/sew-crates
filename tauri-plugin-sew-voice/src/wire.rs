@@ -389,6 +389,10 @@ pub struct JoinOptions {
     /// The camera (a `video_devices` id or `"default"`; `None`: the one `set_video_device`
     /// chose, else the default).
     pub camera_device: Option<String>,
+    /// The video codecs the host's webview decodes (its WebCodecs probe; the `join` command's
+    /// `decode`). The engine offers to receive H.264 only when this or its own OS decoders list
+    /// it, and never on Linux. `None`: nothing is assumed about the webview.
+    pub decode: Option<Vec<VideoCodec>>,
 }
 
 impl JoinOptions {
@@ -397,7 +401,14 @@ impl JoinOptions {
         JoinOptions {
             camera: true,
             camera_device: None,
+            decode: None,
         }
+    }
+
+    /// With the webview's decoders `codecs` ([`JoinOptions::decode`]).
+    pub fn with_decode(mut self, codecs: &[VideoCodec]) -> JoinOptions {
+        self.decode = Some(codecs.to_vec());
+        self
     }
 
     /// With camera `device` (a `video_devices` id or `"default"`).
@@ -794,6 +805,8 @@ impl PluginEvent {
 // ───────────────────────────── video ─────────────────────────────
 
 pub use crate::video::{Tile, VideoCodec};
+/// The per-device video codec setting and why "Prefer H.264" can't apply (sew-call-client's).
+pub use sew_call_client::{CodecPreferenceReason, VideoCodecPreference};
 
 /// The `video_caps` answer: what this device's video can do.
 ///
@@ -938,6 +951,112 @@ pub struct VideoDevices {
 pub struct SetVideoDeviceArgs {
     /// The camera's id, or `"default"`.
     pub camera: String,
+}
+
+/// `set_video_codec_preference`'s arguments: `{preference}`, `"automatic"`, `"prefer_h264"`
+/// or `"prefer_vp8"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct SetVideoCodecPreferenceArgs {
+    /// The setting.
+    pub preference: VideoCodecPreference,
+}
+
+impl SetVideoCodecPreferenceArgs {
+    /// The arguments for `preference`.
+    pub fn new(preference: VideoCodecPreference) -> SetVideoCodecPreferenceArgs {
+        SetVideoCodecPreferenceArgs { preference }
+    }
+}
+
+/// `video_caps.codec_preference`: the per-device video codec setting and what it gives on this
+/// device now.
+///
+/// `{setting, effective, reason?}`: `setting` is `"automatic"`, `"prefer_h264"` or
+/// `"prefer_vp8"`; `effective` the codec a camera or screen turned on now publishes in
+/// (`"h264"`, with a VP8 backup, or `"vp8"`); `reason`, only when "Prefer H.264" can't apply,
+/// says why: `"not_detected"` (the run-time check found no usable hardware H.264 encoder),
+/// `"platform"` (no run-time check on Linux, Android or Windows yet, or an iOS before 17.4,
+/// which can't confirm hardware) or `"policy"` (the live call's media policy doesn't allow
+/// H.264). An engine without video publish has no readback (`video_caps` leaves
+/// `codec_preference` out). The setting lasts until the process ends; persisting it is the
+/// host's job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct CodecPreferenceInfo {
+    /// The setting.
+    pub setting: VideoCodecPreference,
+    /// The codec a camera or screen publishes in now.
+    pub effective: VideoCodec,
+    /// Why "Prefer H.264" can't apply here (written only then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CodecPreferenceReason>,
+}
+
+impl CodecPreferenceInfo {
+    /// The readback of `setting`, publishing in `effective`, for `reason`.
+    pub fn new(
+        setting: VideoCodecPreference,
+        effective: VideoCodec,
+        reason: Option<CodecPreferenceReason>,
+    ) -> CodecPreferenceInfo {
+        CodecPreferenceInfo {
+            setting,
+            effective,
+            reason,
+        }
+    }
+}
+
+/// The `video_caps` command's answer: [`VideoCaps`]' keys and `codec_preference` (left out by
+/// an engine without video publish).
+#[cfg(feature = "tauri")]
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct VideoCapsAnswer {
+    #[serde(flatten)]
+    pub(crate) caps: VideoCaps,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) codec_preference: Option<CodecPreferenceInfo>,
+}
+
+#[cfg(all(test, feature = "tauri"))]
+mod answer_tests {
+    use super::*;
+
+    /// `video_caps`' answer: the caps' keys, then `codec_preference` (without `reason` when the
+    /// preference applies); none without video publish.
+    #[test]
+    fn the_video_caps_answer_carries_the_codec_preference() {
+        let answer = |p| VideoCapsAnswer {
+            caps: VideoCaps::default(),
+            codec_preference: p,
+        };
+        let v = serde_json::to_value(answer(Some(CodecPreferenceInfo::new(
+            VideoCodecPreference::PreferH264,
+            VideoCodec::Vp8,
+            Some(CodecPreferenceReason::Platform),
+        ))))
+        .unwrap_or_default();
+        assert_eq!(v["backend"], "null", "{v}");
+        assert_eq!(
+            v["codec_preference"],
+            serde_json::json!({"setting": "prefer_h264", "effective": "vp8", "reason": "platform"})
+        );
+        let v = serde_json::to_value(answer(Some(CodecPreferenceInfo::new(
+            VideoCodecPreference::Automatic,
+            VideoCodec::H264,
+            None,
+        ))))
+        .unwrap_or_default();
+        assert_eq!(
+            v["codec_preference"],
+            serde_json::json!({"setting": "automatic", "effective": "h264"})
+        );
+        let v = serde_json::to_value(answer(None)).unwrap_or_default();
+        assert!(v.get("codec_preference").is_none(), "{v}");
+    }
 }
 
 /// `camera`'s arguments: `{on, device?}`.
@@ -1227,6 +1346,10 @@ pub mod video_code {
     pub const CAMERA_BUSY: &str = "camera_busy";
     /// No such camera.
     pub const CAMERA_NOT_FOUND: &str = "camera_not_found";
+    /// `camera {on}`: the camera opened but gave no frame within 2.5 s (a MacBook's built-in
+    /// camera with its lid closed, a camera another app froze): nothing was published, the
+    /// camera closed.
+    pub const NO_FRAMES: &str = "no_frames";
     /// Every camera slot of the room is taken.
     pub const VIDEO_SLOTS_FULL: &str = "video_slots_full";
     /// The media server is busy (`detail.retry_after`).
@@ -1266,6 +1389,9 @@ pub mod video_reason {
     pub const BACKGROUND: &str = "background";
     /// Thermal pressure stopped the camera (`paused`).
     pub const THERMAL: &str = "thermal";
+    /// The camera says it is suspended (`paused`): a MacBook's built-in camera with its lid
+    /// closed, a shut lens cover; `on` again when it comes back.
+    pub const SUSPENDED: &str = "suspended";
     /// The OS paused the source for a reason it added later (`paused`).
     pub const PAUSED: &str = "paused";
     /// The person stopped the share from the OS's own UI (`off`).

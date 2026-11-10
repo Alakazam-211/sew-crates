@@ -14,7 +14,12 @@
 //!   `device_events`); after it the lister is polled every 2 s for hot-plug, between calls and
 //!   only while something is subscribed to the device events.
 //! - **One call per app**, as the engine: `Call` sits in an `RwLock<Option<Call>>` because
-//!   `Call::leave(self)` consumes it.
+//!   `Call::leave(self)` consumes it. A leave goes to the engine through the call's
+//!   `CallLeaver`, kept outside that lock, so it never waits for a camera or screen command
+//!   holding the lock while it waits on a device: the engine ends the call and frees the app's
+//!   call slot at once, those commands answer `ended`, and the `Call` is taken when they end
+//!   (logged past [`TAKE_WAIT`]); the leave doesn't wait for that. The engine's answer is
+//!   awaited at most [`LEAVE_WAIT`] (logged when it fires).
 //! - **Recording** (Sew 0.7.3). A join held for the recording notice (`consent_required`) opens
 //!   no microphone: kessel-audio starts when the call first leaves that state (after
 //!   `consent`). The `recording` event is the engine's recording with `recorder_present` from
@@ -37,8 +42,8 @@ use sew_call_client::kessel_audio::{
     self, AudioError, DeviceChoice, DeviceSelection, EngineConfig, ErrorCode, Event as AudioEvent,
 };
 use sew_call_client::{
-    AudioBridge, AudioSession, BridgeLevels, Call, CallClient, CallError, CallRecording, EndReason,
-    SessionEvent,
+    AudioBridge, AudioSession, BridgeLevels, Call, CallClient, CallError, CallLeaver,
+    CallRecording, EndReason, SessionEvent,
 };
 use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
@@ -64,10 +69,18 @@ use crate::engine::{
     AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, EngineError, JoinAnswer,
     JoinProvider, JoinRequest, ProviderError, VoiceEngine,
 };
+use crate::video::VideoCodec;
 use crate::wire::{
     CallState, Device, DeviceChoice as Choice, DeviceList, ErrorInfo, Participant, RecordingInfo,
     Speaking, code, reason,
 };
+
+/// The most a leave waits for the engine's answer (Sew's leave and the engine's own are each
+/// bounded well within it); past it the leave is logged and the plugin goes on.
+pub const LEAVE_WAIT: Duration = Duration::from_secs(12);
+/// A camera or screen command that still holds a left `Call` this long after the leave is
+/// logged (the leave itself never waits for it; the `Call` is taken when the command ends).
+pub const TAKE_WAIT: Duration = Duration::from_secs(2);
 
 /// How often the `speaking` levels are sampled (at most 10 a second).
 pub const SPEAKING_EVERY: Duration = Duration::from_millis(100);
@@ -146,6 +159,9 @@ struct DevState {
     output: Option<String>,
     /// The live call.
     live: Option<Weak<CallShared>>,
+    /// Calls left whose `Call` a command still held at the leave (released by
+    /// [`VoiceEngine::release_calls`], or when that command ends).
+    lingering: Vec<Weak<CallShared>>,
 }
 
 impl DevState {
@@ -429,14 +445,94 @@ fn kept(c: Choice) -> Option<String> {
     }
 }
 
+impl CallClientEngine {
+    /// [`VoiceEngine::video_codec_preference`] with a video backend.
+    #[cfg(feature = "video-core")]
+    fn codec_readback(&self) -> Option<crate::wire::CodecPreferenceInfo> {
+        let setting = self.inner.client.video_codec_preference();
+        let b = self.inner.video.backend()?;
+        let detected = sew_call_client::h264_encode_detection(&b.capabilities());
+        let live = lock(&self.inner.state).live();
+        let h264_allowed = live
+            .and_then(|sh| {
+                let g = sh.call.try_read().ok()?;
+                g.as_ref()?.media_policy()
+            })
+            .is_none_or(|p| p.codecs.contains(&sew_proto::voice::VideoCodec::H264));
+        let (codec, reason) =
+            sew_call_client::effective_publish_codec_under_policy(setting, detected, h264_allowed);
+        let effective = match codec {
+            sew_call_client::VideoCodec::H264 => VideoCodec::H264,
+            _ => VideoCodec::Vp8,
+        };
+        Some(crate::wire::CodecPreferenceInfo::new(
+            setting, effective, reason,
+        ))
+    }
+
+    /// [`VoiceEngine::video_codec_preference`] without video: none.
+    #[cfg(not(feature = "video-core"))]
+    fn codec_readback(&self) -> Option<crate::wire::CodecPreferenceInfo> {
+        None
+    }
+}
+
+impl CallClientEngine {
+    /// The video codecs this engine declares it decodes ([`CallClient::set_video_decode`]):
+    /// its video backend's OS decoders (the capabilities' decode entries, read now) and the
+    /// webview's (`webview`, the join's `decode`). Nothing else is assumed; `CallClient` drops
+    /// H.264 on Linux and under Prefer VP8.
+    fn declared_decode(&self, webview: Option<&[VideoCodec]>) -> Vec<sew_call_client::VideoCodec> {
+        #[cfg(feature = "video-core")]
+        let mut codecs: Vec<VideoCodec> = self
+            .inner
+            .video
+            .backend()
+            .map(|b| crate::kessel::decode_codecs(b.as_ref()))
+            .unwrap_or_default();
+        #[cfg(not(feature = "video-core"))]
+        let mut codecs: Vec<VideoCodec> = Vec::new();
+        codecs.extend(webview.unwrap_or_default());
+        let mut out: Vec<sew_call_client::VideoCodec> = codecs
+            .into_iter()
+            .map(|c| match c {
+                VideoCodec::Vp8 => sew_call_client::VideoCodec::Vp8,
+                VideoCodec::H264 => sew_call_client::VideoCodec::H264,
+            })
+            .collect();
+        out.sort_by_key(|c| c.as_str());
+        out.dedup();
+        out
+    }
+}
+
 impl VoiceEngine for CallClientEngine {
     fn join(
         &self,
         provider: Arc<dyn JoinProvider>,
         req: JoinRequest,
     ) -> BoxFuture<'_, Result<Arc<dyn CallHandle>, EngineError>> {
+        self.join_decoding(provider, req, None)
+    }
+
+    /// The join, declaring what this engine decodes first ([`CallClient::set_video_decode`]:
+    /// its backend's OS decoders and the webview's `decode`), so the call's media connection
+    /// offers to receive only those (VP8 always; H.264 never on Linux).
+    fn join_decoding(
+        &self,
+        provider: Arc<dyn JoinProvider>,
+        req: JoinRequest,
+        decode: Option<Vec<VideoCodec>>,
+    ) -> BoxFuture<'_, Result<Arc<dyn CallHandle>, EngineError>> {
         Box::pin(async move {
             self.use_devices();
+            let declared = self.declared_decode(decode.as_deref());
+            tracing::info!(
+                decode = ?declared,
+                webview = ?decode,
+                "sew-voice: the video codecs this device decodes"
+            );
+            self.inner.client.set_video_decode(&declared);
             let room = Arc::new(Mutex::new(None));
             let recorder: Arc<dyn JoinProvider> = Arc::new(RoomRecorder {
                 inner: provider,
@@ -575,6 +671,26 @@ impl VoiceEngine for CallClientEngine {
         })
     }
 
+    /// Every call the plugin no longer holds (the service calls this with no live call): one
+    /// whose `Call` a command still held at its leave, and one still marked live. Each is left
+    /// through its leaver (the engine frees the app's call slot) and finished.
+    fn release_calls(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let calls: Vec<Arc<CallShared>> = {
+                let mut st = lock(&self.inner.state);
+                let mut calls: Vec<Arc<CallShared>> =
+                    st.lingering.drain(..).filter_map(|w| w.upgrade()).collect();
+                calls.extend(st.live());
+                calls
+            };
+            for sh in calls {
+                tracing::info!("sew-voice: releasing a call the plugin no longer holds");
+                sh.leave_call().await;
+                sh.finish();
+            }
+        })
+    }
+
     /// With `video-core` the engine receives remote video (decoded by the webview's
     /// WebCodecs, or by the decoded fallback's backend: `decode_codecs`); with a video backend
     /// it also has the backend's cameras and screens and publishes them (`publish_codecs`: the
@@ -597,6 +713,23 @@ impl VoiceEngine for CallClientEngine {
         }
     }
 
+    /// The preference is the engine's (`CallClient`'s), so it lasts across calls.
+    fn set_video_codec_preference(
+        &self,
+        pref: crate::wire::VideoCodecPreference,
+    ) -> Result<(), EngineError> {
+        self.inner.client.set_video_codec_preference(pref);
+        Ok(())
+    }
+
+    /// The setting, and (with a video backend) what it gives: `effective_publish_codec` over
+    /// the backend's H.264 encoder check (`h264_encode_detection`), under the live call's media
+    /// policy when there is one. The open of the encoder at a camera's start can still find no
+    /// hardware encoder; the readback is the capabilities' answer. `None` without a backend.
+    fn video_codec_preference(&self) -> Option<crate::wire::CodecPreferenceInfo> {
+        self.codec_readback()
+    }
+
     /// The cameras, the chosen one and the OS permissions, from the video backend.
     #[cfg(feature = "video-core")]
     fn video_devices(&self) -> Result<crate::wire::VideoDevices, EngineError> {
@@ -616,12 +749,23 @@ impl VoiceEngine for CallClientEngine {
         {
             let bridge = inner.video.bridge();
             let device = inner.capture().chosen_camera();
+            let weak = Arc::downgrade(inner);
             rt.spawn(async move {
                 let g = sh.call.read().await;
                 let Some(call) = g.as_ref() else { return };
-                if let Err(e) = bridge.switch_camera(call, device).await {
-                    tracing::warn!(code = e.code(), "sew-voice: the camera did not switch");
-                    sh.send(CallEvent::Error(publish::error(&e).to_info()));
+                match bridge.switch_camera(call, device).await {
+                    Ok(sew_call_client::CameraState::On { .. }) => {
+                        if let Some(inner) = weak.upgrade() {
+                            inner
+                                .capture()
+                                .camera_used(bridge.camera_device().await.as_deref());
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(code = e.code(), "sew-voice: the camera did not switch");
+                        sh.send(CallEvent::Error(publish::error(&e).to_info()));
+                    }
                 }
             });
         }
@@ -762,6 +906,11 @@ impl std::fmt::Debug for RealCall {
 
 struct CallShared {
     call: RwLock<Option<Call>>,
+    /// Leaves the call without the lock above ([`CallShared::leave_call`]).
+    leaver: CallLeaver,
+    /// The call's `Call::local_id` (its video pipelines are closed by it).
+    #[cfg_attr(not(feature = "video-core"), allow(dead_code))]
+    call_id: u64,
     bridge: Mutex<Option<AudioBridge>>,
     /// kessel-audio was started (a held join starts it after the answer; once only).
     audio_started: AtomicBool,
@@ -812,8 +961,14 @@ impl RealCall {
         let call = g
             .as_ref()
             .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
-        let chosen = engine.capture().chosen_camera();
+        let chosen = engine.capture().camera_for_open();
         let done = publish::camera(&bridge, call, &req, chosen, off_reason).await;
+        if done.is_ok() && req.on {
+            // The camera that gave frames: the next open without a choice prefers it.
+            engine
+                .capture()
+                .camera_used(bridge.camera_device().await.as_deref());
+        }
         // The pause takes the call's lock itself.
         drop(g);
         if done.is_ok()
@@ -847,8 +1002,12 @@ impl RealCall {
         } else {
             None
         };
+        let leaver = call.leaver();
+        let call_id = call.local_id();
         let shared = Arc::new(CallShared {
             call: RwLock::new(Some(call)),
+            leaver,
+            call_id,
             audio_started: AtomicBool::new(bridge.is_some()),
             bridge: Mutex::new(bridge),
             recording: Mutex::new((snap.recording.clone(), last.recording.clone())),
@@ -952,10 +1111,7 @@ impl CallShared {
             }
             Err(e) => {
                 self.send(CallEvent::Error(e.clone()));
-                let call = self.call.write().await.take();
-                if let Some(call) = call {
-                    let _ = call.leave().await;
-                }
+                self.leave_call().await;
                 *lock(&self.last) = CallSnapshot {
                     state: CallState::Ended {
                         reason: e.code.clone(),
@@ -1024,14 +1180,57 @@ impl CallShared {
         }
     }
 
+    /// Leaves the engine's call through its leaver, so a camera or screen command holding the
+    /// `Call`'s lock (waiting on a device) never holds the leave up: the engine ends the call
+    /// and frees the app's call slot, and that command then answers `ended`. The engine's
+    /// answer is awaited at most [`LEAVE_WAIT`] (logged when it fires). The `Call` is taken now
+    /// when nothing holds it, else by a task once that command ends (logged when that takes
+    /// longer than [`TAKE_WAIT`]; [`VoiceEngine::release_calls`] can reach it meanwhile).
+    async fn leave_call(self: &Arc<Self>) {
+        // `Ended` only: the call was already over, which is what a leave wants.
+        if tokio::time::timeout(LEAVE_WAIT, self.leaver.leave())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                waited_s = LEAVE_WAIT.as_secs(),
+                "sew-voice: the engine's leave did not answer in time"
+            );
+        }
+        if let Ok(mut g) = self.call.try_write() {
+            drop(g.take());
+            return;
+        }
+        tracing::info!(
+            "sew-voice: a camera or screen command still holds the call that was left; it is taken when that command ends"
+        );
+        if let Some(engine) = self.engine.upgrade() {
+            lock(&engine.state).lingering.push(Arc::downgrade(self));
+        }
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            let began = std::time::Instant::now();
+            let call = me.call.write().await.take();
+            drop(call);
+            if began.elapsed() > TAKE_WAIT {
+                tracing::warn!(
+                    waited_ms = began.elapsed().as_millis() as u64,
+                    "sew-voice: a command held the call that was left this long"
+                );
+            }
+        });
+    }
+
     /// The call is over: close the audio (the microphone) and free the app's call slot.
     fn finish(self: &Arc<Self>) {
         drop(lock(&self.bridge).take());
         self.video.clear();
         #[cfg(feature = "video-core")]
         if let Some(bridge) = self.video_bridge() {
-            // The pipelines stop; the call already took its publications with it.
-            tokio::spawn(async move { bridge.close().await });
+            // This call's pipelines stop (the call already took its publications with it); a
+            // later call's keep running.
+            let id = self.call_id;
+            tokio::spawn(async move { bridge.close_call(id).await });
         }
         if let Some(engine) = self.engine.upgrade() {
             engine.call_over(self);
@@ -1231,11 +1430,7 @@ impl CallHandle for RealCall {
 
     fn leave(&self) -> BoxFuture<'_, Result<(), EngineError>> {
         Box::pin(async move {
-            let call = self.shared.call.write().await.take();
-            if let Some(call) = call {
-                // `Ended` only: the call was already over, which is what a leave wants.
-                let _ = call.leave().await;
-            }
+            self.shared.leave_call().await;
             *lock(&self.shared.last) = CallSnapshot {
                 state: CallState::Ended {
                     reason: reason::LEFT.into(),
@@ -1426,6 +1621,16 @@ async fn source_notes(
             Err(broadcast::error::RecvError::Closed) => return,
         };
         let Some(sh) = shared.upgrade() else { return };
+        if note.source == VideoSource::Camera
+            && note.event == CaptureEvent::Ended(sew_call_client::CaptureEnd::DeviceLost)
+        {
+            // The camera went away while sending (a Continuity Camera gone): unpublished by the
+            // bridge, `local_video` off with `camera_lost` from the engine; the call goes on.
+            sh.send(CallEvent::Error(ErrorInfo::new(
+                crate::wire::video_code::CAMERA_LOST,
+            )));
+            continue;
+        }
         if !matches!(note.event, CaptureEvent::Paused(_) | CaptureEvent::Resumed) {
             continue;
         }
@@ -1931,6 +2136,74 @@ mod tests {
         }
     }
 
+    /// What the engine declares it decodes before a join: its backend's decoders and the
+    /// webview's, nothing assumed; and the codec preference, kept by the client across calls,
+    /// read back over the backend's H.264 encoder check (the fake's H.264 is software: never
+    /// usable, so Prefer H.264 says `not_detected`).
+    #[cfg(feature = "video-core")]
+    #[test]
+    fn the_declared_decoders_and_the_codec_preference() {
+        use crate::wire::{CodecPreferenceReason, VideoCodecPreference};
+        use sew_call_client::VideoCodec as E;
+        let dir = std::env::temp_dir().join("sew-voice-real-codecs");
+        let audio: AudioConfig = Arc::new(|_, _| EngineConfig::default());
+        let bare = CallClientEngine::new(
+            CallClient::with_mls(sew_call_client::ClientConfig::new("sew.test", dir.clone())),
+            Arc::clone(&audio),
+        );
+        assert_eq!(
+            bare.declared_decode(None),
+            Vec::<E>::new(),
+            "nothing assumed"
+        );
+        assert_eq!(
+            bare.declared_decode(Some(&[VideoCodec::H264])),
+            vec![E::H264],
+            "the webview's"
+        );
+        assert_eq!(
+            bare.video_codec_preference(),
+            None,
+            "no backend, no publish"
+        );
+
+        let mut cfg = sew_call_client::kessel_video::fake::FakeConfig::default();
+        cfg.codec = sew_call_client::kessel_video::fake::FakeCodec::None;
+        let vp8_only = sew_call_client::kessel_video::fake::FakeBackend::new(cfg);
+        let engine = CallClientEngine::new(
+            CallClient::with_mls(sew_call_client::ClientConfig::new("sew.test", dir)),
+            audio,
+        )
+        .with_video_backend(vp8_only);
+        assert_eq!(engine.declared_decode(None), vec![E::Vp8], "the backend's");
+        assert_eq!(
+            engine.declared_decode(Some(&[VideoCodec::H264, VideoCodec::Vp8])),
+            vec![E::H264, E::Vp8]
+        );
+        let auto = engine.video_codec_preference().expect("a readback");
+        assert_eq!(
+            (auto.setting, auto.effective, auto.reason),
+            (VideoCodecPreference::Automatic, VideoCodec::Vp8, None)
+        );
+        engine
+            .set_video_codec_preference(VideoCodecPreference::PreferH264)
+            .expect("set");
+        let h264 = engine.video_codec_preference().expect("a readback");
+        assert_eq!(
+            (h264.setting, h264.effective, h264.reason),
+            (
+                VideoCodecPreference::PreferH264,
+                VideoCodec::Vp8,
+                Some(CodecPreferenceReason::NotDetected)
+            )
+        );
+        assert_eq!(
+            engine.inner.client.video_codec_preference(),
+            VideoCodecPreference::PreferH264,
+            "the client keeps it"
+        );
+    }
+
     /// The decoded fallback's decoders: none until a backend is given (nothing in
     /// `decode_codecs`, `decoded_unsupported`), then that backend's (kessel-video's fake: its
     /// pure-Rust VP8 and its own H.264).
@@ -2029,11 +2302,10 @@ mod tests {
         );
     }
 
-    fn rand_suffix() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+    /// A per-run unique suffix for a temp dir: std's randomly seeded hasher, no clock read.
+    fn rand_suffix() -> u64 {
+        use std::hash::BuildHasher as _;
+        std::collections::hash_map::RandomState::new().hash_one(std::process::id())
     }
 
     /// Subscribing to the device events is a first use too, and so is `set_device`.

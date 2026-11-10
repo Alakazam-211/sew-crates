@@ -17,8 +17,9 @@ use crate::details::{CallDetails, IncomingCall, RingEndedArgs};
 use crate::engine::{AppScene, AudioSessionEvent};
 use crate::service::VoiceService;
 use crate::wire::{
-    CameraArgs, ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinOptions, JoinResult, MuteArgs,
-    Participant, PermissionState, RecordingInfo, SelfMute, StateEvent, StateSnapshot,
+    CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinOptions,
+    JoinResult, MuteArgs, Participant, PermissionState, RecordingInfo, SelfMute,
+    SetVideoCodecPreferenceArgs, StateEvent, StateSnapshot, VideoCodecPreference,
 };
 
 /// A native observer of the plugin's call (`Builder::listener`, at most one). The plugin calls
@@ -264,6 +265,28 @@ impl VoiceControl {
     /// 360`). Camera frames are turned upright from the next one. iOS and desktop ignore it.
     pub fn device_orientation(&self, degrees: u32) {
         self.service.device_orientation(degrees);
+    }
+
+    /// Sets this device's video codec preference (the app's "Video codec" setting): a camera
+    /// or screen turned on after it publishes under it, the live call's too; `PreferVp8` also
+    /// stops this device receiving H.264 from its next join. Answers the readback
+    /// ([`VoiceControl::video_codec_preference`]). The engine keeps it until the process ends:
+    /// store it with the app's settings and set it again at start. An engine without video:
+    /// `video_unsupported`.
+    pub async fn set_video_codec_preference(
+        &self,
+        pref: VideoCodecPreference,
+    ) -> Result<CodecPreferenceInfo, ErrorInfo> {
+        self.service
+            .set_video_codec_preference(SetVideoCodecPreferenceArgs::new(pref))
+            .await
+    }
+
+    /// The video codec setting and what it gives here now (`video_caps.codec_preference`:
+    /// the setting, the codec a camera or screen publishes in, and why "Prefer H.264" can't
+    /// apply when it can't); `None` for an engine without video publish.
+    pub async fn video_codec_preference(&self) -> Option<CodecPreferenceInfo> {
+        self.service.video_codec_preference().await.ok().flatten()
     }
 
     /// The camera permission now. Never prompts.

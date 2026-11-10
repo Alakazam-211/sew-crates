@@ -979,7 +979,10 @@ pub struct MediaPolicy {
     pub audio_codecs: Vec<String>,
     /// Video codecs in preference order (never AV1 or H.265; empty with video off).
     pub codecs: Vec<VideoCodec>,
-    /// Always `false`: no backup codecs.
+    /// `true`: a native sender with OS H.264 may publish H.264 with a VP8 backup that the
+    /// engine turns on for subscribers without H.264. Browsers publish one codec. `true` only
+    /// while video is on and `codecs` lists both `vp8` and `h264` (in either order); `false`:
+    /// every client publishes one codec.
     pub backup_codec: bool,
     /// VP9 rules, when VP9 is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]

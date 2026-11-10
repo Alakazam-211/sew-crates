@@ -53,10 +53,10 @@ use crate::video::{
     TrackSettings, VideoCodec, VideoFrames, VideoRecvItem,
 };
 use crate::wire::{
-    CallState, Camera, Device, DeviceChoice, DeviceList, ErrorInfo, Facing, LocalVideo,
-    LocalVideoState, Participant, PermissionState, PluginEvent, RecordingInfo, ScreenCaps,
-    ScreenSource, SelfMute, SinkStats, StateEvent, VideoCaps, VideoDevices, VideoPermissions,
-    VideoTrack, video_code,
+    CallState, Camera, CodecPreferenceInfo, Device, DeviceChoice, DeviceList, ErrorInfo, Facing,
+    LocalVideo, LocalVideoState, Participant, PermissionState, PluginEvent, RecordingInfo,
+    ScreenCaps, ScreenSource, SelfMute, SinkStats, StateEvent, VideoCaps, VideoCodecPreference,
+    VideoDevices, VideoPermissions, VideoTrack, video_code,
 };
 
 /// How many items a fake frame channel holds before `push_video` drops.
@@ -113,6 +113,10 @@ struct FakeVideoEngine {
     orientations: Vec<u32>,
     /// The decoded fallback's decoders ([`FakeEngine::set_video_decoder`]).
     decoder: Option<Opener>,
+    /// Each join's `decode` (the webview's decoders), in order.
+    join_decodes: Vec<Option<Vec<VideoCodec>>>,
+    /// The video codec preference (`set_video_codec_preference`).
+    codec_preference: VideoCodecPreference,
 }
 
 /// Opens a decoder for the fake engine's `video_decoder` (the decoded fallback).
@@ -143,6 +147,11 @@ struct EngineState {
     forgets: Vec<u64>,
     /// The next `forget_server` fails with this.
     next_forget_error: Option<EngineError>,
+    /// A call the plugin lost hold of: joins answer `already_in_call` until
+    /// [`VoiceEngine::release_calls`] ([`FakeEngine::strand_call`]).
+    stranded: bool,
+    /// How many times [`VoiceEngine::release_calls`] ran.
+    releases: usize,
 }
 
 impl Default for FakeEngine {
@@ -166,6 +175,8 @@ impl FakeEngine {
                 device_keys: Vec::new(),
                 forgets: Vec::new(),
                 next_forget_error: None,
+                stranded: false,
+                releases: 0,
             }),
             devices_tx,
             video: Mutex::new(FakeVideoEngine::default()),
@@ -247,6 +258,11 @@ impl FakeEngine {
         decoders
     }
 
+    /// Each join's `decode` (the webview's decoders it passed), in order.
+    pub fn join_decodes(&self) -> Vec<Option<Vec<VideoCodec>>> {
+        lock(&self.video).join_decodes.clone()
+    }
+
     /// Replace the video capabilities.
     pub fn set_video_caps(&self, caps: VideoCaps) {
         lock(&self.video).caps = caps;
@@ -303,6 +319,17 @@ impl FakeEngine {
     /// The next `join` fails with this, before the provider is called.
     pub fn fail_next_join(&self, e: EngineError) {
         lock(&self.state).next_join_error = Some(e);
+    }
+
+    /// The engine holds a call the plugin lost hold of (a leave that could not take it): every
+    /// `join` answers `already_in_call` until [`VoiceEngine::release_calls`] releases it.
+    pub fn strand_call(&self) {
+        lock(&self.state).stranded = true;
+    }
+
+    /// How many times [`VoiceEngine::release_calls`] ran.
+    pub fn releases(&self) -> usize {
+        lock(&self.state).releases
     }
 
     /// Replace the device list (a hot-plug): sends a `devices` change.
@@ -423,6 +450,13 @@ pub fn demo_devices() -> DeviceList {
 }
 
 impl VoiceEngine for FakeEngine {
+    fn release_calls(&self) -> BoxFuture<'_, ()> {
+        let mut s = lock(&self.state);
+        s.stranded = false;
+        s.releases += 1;
+        Box::pin(std::future::ready(()))
+    }
+
     fn join(
         &self,
         provider: Arc<dyn JoinProvider>,
@@ -432,7 +466,12 @@ impl VoiceEngine for FakeEngine {
             let (fail, auto_connect) = {
                 let mut s = lock(&self.state);
                 s.joins.push(req.clone());
-                (s.next_join_error.take(), s.auto_connect)
+                let fail = if s.stranded {
+                    Some(EngineError::failed(crate::wire::code::ALREADY_IN_CALL))
+                } else {
+                    s.next_join_error.take()
+                };
+                (fail, s.auto_connect)
             };
             if let Some(e) = fail {
                 return Err(e);
@@ -531,6 +570,16 @@ impl VoiceEngine for FakeEngine {
         Box::pin(std::future::ready(Ok(keys)))
     }
 
+    fn join_decoding(
+        &self,
+        provider: Arc<dyn JoinProvider>,
+        req: JoinRequest,
+        decode: Option<Vec<VideoCodec>>,
+    ) -> BoxFuture<'_, Result<Arc<dyn CallHandle>, EngineError>> {
+        lock(&self.video).join_decodes.push(decode);
+        self.join(provider, req)
+    }
+
     fn video_caps(&self) -> VideoCaps {
         let v = lock(&self.video);
         if v.enabled {
@@ -538,6 +587,40 @@ impl VoiceEngine for FakeEngine {
         } else {
             VideoCaps::default()
         }
+    }
+
+    fn set_video_codec_preference(&self, pref: VideoCodecPreference) -> Result<(), EngineError> {
+        let mut v = lock(&self.video);
+        if !v.enabled {
+            return Err(no_video());
+        }
+        v.codec_preference = pref;
+        Ok(())
+    }
+
+    /// The setting over the fake's capabilities: H.264 counts as detected when
+    /// `publish_codecs` lists it.
+    fn video_codec_preference(&self) -> Option<CodecPreferenceInfo> {
+        let v = lock(&self.video);
+        if !v.enabled {
+            return None;
+        }
+        let detected = if v.caps.publish_codecs.contains(&VideoCodec::H264) {
+            sew_call_client::H264Detection::Usable
+        } else {
+            sew_call_client::H264Detection::NotDetected
+        };
+        let (codec, reason) =
+            sew_call_client::effective_publish_codec(v.codec_preference, detected);
+        let effective = match codec {
+            sew_call_client::VideoCodec::H264 => VideoCodec::H264,
+            _ => VideoCodec::Vp8,
+        };
+        Some(CodecPreferenceInfo::new(
+            v.codec_preference,
+            effective,
+            reason,
+        ))
     }
 
     fn video_devices(&self) -> Result<VideoDevices, EngineError> {

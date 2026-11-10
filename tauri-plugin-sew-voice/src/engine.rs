@@ -21,9 +21,9 @@ use crate::video::{
     TrackSettings, VideoFrames,
 };
 use crate::wire::{
-    CallState, DeviceChoice, DeviceList, ErrorInfo, LocalVideo, Participant, PermissionState,
-    RecordingInfo, ScreenSource, SinkStats, Speaking, VideoCaps, VideoDevices, VideoTrack,
-    video_code,
+    CallState, CodecPreferenceInfo, DeviceChoice, DeviceList, ErrorInfo, LocalVideo, Participant,
+    PermissionState, RecordingInfo, ScreenSource, SinkStats, Speaking, VideoCaps, VideoCodec,
+    VideoCodecPreference, VideoDevices, VideoTrack, video_code,
 };
 
 /// The answer of a video method an engine doesn't implement.
@@ -400,6 +400,19 @@ pub trait VoiceEngine: Send + Sync + 'static {
         provider: Arc<dyn JoinProvider>,
         req: JoinRequest,
     ) -> BoxFuture<'_, Result<Arc<dyn CallHandle>, EngineError>>;
+    /// [`VoiceEngine::join`] from a host whose webview decodes `decode` (its WebCodecs probe;
+    /// `None`: the host didn't say, and nothing is assumed). The engine offers to receive only
+    /// the codecs it or the webview can decode (VP8 always; H.264 never on Linux), so the media
+    /// server sends it no codec it can't show. The default ignores `decode` and joins.
+    fn join_decoding(
+        &self,
+        provider: Arc<dyn JoinProvider>,
+        req: JoinRequest,
+        decode: Option<Vec<VideoCodec>>,
+    ) -> BoxFuture<'_, Result<Arc<dyn CallHandle>, EngineError>> {
+        let _ = decode;
+        self.join(provider, req)
+    }
     /// The audio devices now.
     fn devices(&self) -> Result<DeviceList, EngineError>;
     /// Switch the input and/or output (`None`: unchanged; [`DeviceChoice::Default`]: the OS
@@ -433,12 +446,32 @@ pub trait VoiceEngine: Send + Sync + 'static {
     fn known_device_keys(&self) -> BoxFuture<'_, Result<Vec<DeviceKeyId>, EngineError>> {
         Box::pin(std::future::ready(Ok(Vec::new())))
     }
+    /// Leaves and releases every call of this engine the plugin no longer holds (the service
+    /// has no live call: a `leave` then, or a join refused `already_in_call`), so a host
+    /// recovers without a reload. It never blocks for long. The default has none.
+    fn release_calls(&self) -> BoxFuture<'_, ()> {
+        Box::pin(std::future::ready(()))
+    }
 
     // ── video (the defaults: an engine without video) ──
 
     /// What this device's video can do. The default: everything off (backend `null`).
     fn video_caps(&self) -> VideoCaps {
         VideoCaps::default()
+    }
+    /// Sets this device's video codec preference for this and later calls: a camera or screen
+    /// turned on after it publishes under it; `PreferVp8` also stops offering to receive H.264
+    /// from the next join. Kept until the process ends (persisting it is the host's job). The
+    /// default: `video_unsupported`.
+    fn set_video_codec_preference(&self, pref: VideoCodecPreference) -> Result<(), EngineError> {
+        let _ = pref;
+        no_video()
+    }
+    /// The video codec setting and what it gives here now (`video_caps.codec_preference`).
+    /// The default: `None`, an engine without video publish (`video_caps` leaves the readback
+    /// out).
+    fn video_codec_preference(&self) -> Option<CodecPreferenceInfo> {
+        None
     }
     /// The cameras, the chosen one and the OS permissions. The default: `video_unsupported`.
     fn video_devices(&self) -> Result<VideoDevices, EngineError> {

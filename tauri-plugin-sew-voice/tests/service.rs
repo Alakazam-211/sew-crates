@@ -233,6 +233,35 @@ async fn a_second_join_is_already_in_call() {
     assert_eq!(w.svc.snapshot().state, CallState::Connected);
 }
 
+/// The engine still holds a call the plugin lost hold of (the slot is `ended`): a `leave`
+/// releases it, and so does a join the engine refuses `already_in_call` (released, then joined
+/// once more), so a host recovers without a reload.
+#[tokio::test]
+async fn a_call_the_plugin_lost_is_released_by_a_leave_or_the_next_join() {
+    let w = world();
+    w.engine.strand_call();
+    w.svc.leave().await.expect("leave with no call");
+    assert_eq!(
+        w.engine.releases(),
+        1,
+        "the leave released the engine's call"
+    );
+    w.svc.join(args()).await.expect("join after the release");
+    assert_eq!(w.engine.joins().len(), 1);
+    w.svc.leave().await.expect("leave");
+
+    w.engine.strand_call();
+    let r = w
+        .svc
+        .join(args())
+        .await
+        .expect("the join releases and joins again");
+    assert_eq!(r.call_id, ROOM);
+    assert_eq!(w.engine.releases(), 2);
+    assert_eq!(w.engine.joins().len(), 3, "refused once, then joined");
+    assert_eq!(w.svc.snapshot().state, CallState::Connected);
+}
+
 #[tokio::test]
 async fn the_engine_ends_the_call() {
     let w = joined().await;

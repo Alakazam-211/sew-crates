@@ -36,6 +36,21 @@
 //! 8. **The end:** [`crate::Call::unpublish_video`] makes the send section inactive (the SFU
 //!    unpublishes the track) and releases the lease when asked. A full reconnect publishes
 //!    again on the new PC; a re-join takes the lease again first.
+//!
+//! **A backup codec** ([`VideoPublish::with_backup`]: an H.264 publication with a VP8 backup):
+//! one `AddTrackRequest` with two `simulcast_codecs` entries, each on its own cid, and two
+//! sendonly `m=video` sections in the same offer (each with its own msid track, rids and
+//! simulcast). Each codec is a lane with its own layers, SSRCs, packetisers and keyframe
+//! state; a frame goes to the lane of its codec. The SFU gives each subscriber the codec its
+//! answer decodes and asks for the backup only while someone gets it: the backup lane reads
+//! only its own `subscribed_codecs` entry, and the producer hears
+//! [`VideoControl::BackupStart`] (open the backup's encoders, the first frame a keyframe),
+//! [`VideoControl::BackupRates`], [`VideoControl::BackupKeyframe`] and
+//! [`VideoControl::BackupStop`] (close them; the section stays negotiated, without RTP). Both
+//! lanes share one bandwidth budget; the backup's lowest layer starts without the raise
+//! hysteresis. One GCM check of the track covers both sections; the same keys seal both lanes
+//! (distinct SSRCs, so no IV repeats). A producer that can't run its backup, or lost its
+//! primary codec, publishes again in one codec ([`VideoPublication::republish_without_backup`]).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -70,7 +85,8 @@ pub(crate) const UNPUBLISHED: &str = "unpublished";
 pub(crate) const PUBLISHER_GONE: &str = "publisher_gone";
 /// How long a publication waits for the SFU's `TrackPublished`.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Keyframe requests for one layer closer than this coalesce.
+/// Keyframe requests for one layer closer than this coalesce while the keyframe asked for
+/// hasn't gone out yet.
 const KEYFRAME_EVERY: Duration = Duration::from_millis(300);
 
 /// LiveKit's mime type of a codec (`video/VP8`, `video/H264`).
@@ -89,7 +105,6 @@ fn frame_codec(c: VideoCodec) -> VideoFrameCodec {
 }
 
 /// The codec of Sew's policy value, if the engine sends it (VP8, H.264).
-#[cfg(feature = "video-core")]
 pub(crate) fn codec_of_policy(c: sew_proto::voice::VideoCodec) -> Option<VideoCodec> {
     match c {
         sew_proto::voice::VideoCodec::Vp8 => Some(VideoCodec::Vp8),
@@ -213,6 +228,27 @@ pub struct VideoPublish {
     pub capture_width: u32,
     /// The capture's height.
     pub capture_height: u32,
+    /// A backup codec beside the primary ([`VideoPublish::with_backup`]); `None`: one codec.
+    pub backup: Option<BackupSpec>,
+}
+
+/// A publication's backup codec ([`VideoPublish::with_backup`]): VP8 beside an H.264 primary,
+/// negotiated at publish and run only while some subscriber needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BackupSpec {
+    /// The backup's codec (VP8).
+    pub codec: VideoCodec,
+    /// Its layers, lowest first (the primary's rids and sizes, or fewer: a phone's stop at
+    /// 360p). Quality LOW/MEDIUM/HIGH by position, as the primary's.
+    pub layers: Vec<LayerSpec>,
+}
+
+impl BackupSpec {
+    /// A backup of `layers` in `codec`.
+    pub fn new(codec: VideoCodec, layers: Vec<LayerSpec>) -> BackupSpec {
+        BackupSpec { codec, layers }
+    }
 }
 
 impl VideoPublish {
@@ -230,7 +266,16 @@ impl VideoPublish {
             layers,
             capture_width,
             capture_height,
+            backup: None,
         }
+    }
+
+    /// With a backup codec: its section is negotiated with the primary's, and the producer
+    /// runs it only between [`VideoControl::BackupStart`] and [`VideoControl::BackupStop`]. A
+    /// backup in the primary's codec, or without layers, is ignored.
+    pub fn with_backup(mut self, backup: BackupSpec) -> VideoPublish {
+        self.backup = Some(backup);
+        self
     }
 }
 
@@ -324,6 +369,19 @@ pub enum VideoControl {
         /// Why.
         reason: String,
     },
+    /// The backup is needed (a subscriber gets it): open its encoders for these layers and send
+    /// its frames (in its codec), the first a keyframe. Only for a publication with a backup.
+    BackupStart(Vec<LayerSpec>),
+    /// Which backup layers run, at what rates (a layer active without an encoder yet: open it,
+    /// from the backup's layers, the first frame a keyframe).
+    BackupRates(Vec<LayerRate>),
+    /// The next frame of this backup layer must be a keyframe.
+    BackupKeyframe {
+        /// The backup layer.
+        rid: String,
+    },
+    /// Nobody needs the backup now: stop its frames and close its encoders.
+    BackupStop,
 }
 
 /// Why a lease or a publication failed: [`VideoError::code`] is the plugin's error code.
@@ -370,6 +428,10 @@ pub enum VideoError {
     /// No such camera.
     #[error("camera_not_found")]
     CameraNotFound,
+    /// The camera opened but gave no frame in time (2.5 s): nothing was published, the camera
+    /// closed and the lease released.
+    #[error("no_frames")]
+    NoFrames,
     /// The source already has a publication.
     #[error("already_published")]
     AlreadyPublished,
@@ -409,6 +471,7 @@ impl VideoError {
             VideoError::CameraDenied => "camera_denied",
             VideoError::CameraBusy => "camera_busy",
             VideoError::CameraNotFound => "camera_not_found",
+            VideoError::NoFrames => "no_frames",
             VideoError::AlreadyPublished => "already_published",
             VideoError::NotPublished => "not_published",
             VideoError::PublishFailed(_) => "publish_failed",
@@ -480,10 +543,24 @@ pub struct VideoSendStats {
     pub keyframes_asked: u64,
     /// The SFU's keyframe requests (PLI and FIR).
     pub sfu_keyframe_requests: u64,
-    /// Republications after a policy change.
+    /// The SFU's keyframe requests per `source/rid` (`source/backup/rid` for a backup's layer;
+    /// a request naming no layer counts on each of its section's layers).
+    pub sfu_keyframe_requests_by_layer: BTreeMap<String, u64>,
+    /// Republications after a policy change (or a fall back to one codec).
     pub republishes: u64,
     /// The latest send-side estimate, bit/s.
     pub estimate_bps: u64,
+    /// Frames sent per codec (`vp8`, `h264`), every source and layer (`frames_sent` keys a
+    /// backup's layers `source/backup/rid`).
+    pub frames_by_codec: BTreeMap<String, u64>,
+    /// Keyframes sent per codec.
+    pub keyframes_by_codec: BTreeMap<String, u64>,
+    /// Times a backup started (some subscriber needed it).
+    pub backup_starts: u64,
+    /// Times a backup stopped (nobody needed it, a republish).
+    pub backup_stops: u64,
+    /// How long the backups have run in all, ms.
+    pub backup_ms: u64,
 }
 
 /// One frame for the engine (the queue between producers and the engine).
@@ -504,6 +581,7 @@ pub struct VideoPublication {
     control: mpsc::UnboundedReceiver<VideoControl>,
     stats: Arc<Mutex<VideoSendStats>>,
     ends: mpsc::UnboundedSender<ProducerEnd>,
+    fallbacks: mpsc::UnboundedSender<ProducerFallback>,
 }
 
 impl VideoPublication {
@@ -558,6 +636,19 @@ impl VideoPublication {
             reason: reason.to_owned(),
         });
     }
+
+    /// The producer can't run its backup (its encoders don't open), or lost its primary
+    /// codec's encoder (the hardware went): the engine publishes the track again in `codec`
+    /// alone with `layers`, under the same lease, so no subscriber is promised a codec that
+    /// never comes. The producer then gets [`VideoControl::Republish`] with those layers and
+    /// sends frames in `codec`.
+    pub fn republish_without_backup(&self, codec: VideoCodec, layers: Vec<LayerSpec>) {
+        let _ = self.fallbacks.send(ProducerFallback {
+            publication: self.id,
+            codec,
+            layers,
+        });
+    }
 }
 
 /// A producer's [`VideoPublication::end`], for the engine.
@@ -565,6 +656,14 @@ impl VideoPublication {
 pub(crate) struct ProducerEnd {
     pub(crate) publication: u64,
     pub(crate) reason: String,
+}
+
+/// A producer's [`VideoPublication::republish_without_backup`], for the engine.
+#[derive(Debug)]
+pub(crate) struct ProducerFallback {
+    pub(crate) publication: u64,
+    pub(crate) codec: VideoCodec,
+    pub(crate) layers: Vec<LayerSpec>,
 }
 
 #[cfg(all(test, feature = "video-core"))]
@@ -593,9 +692,26 @@ impl VideoPublication {
         mpsc::UnboundedSender<VideoControl>,
         mpsc::UnboundedReceiver<ProducerEnd>,
     ) {
+        let (p, rx, ctl, ends, _) = VideoPublication::for_test_with_fallbacks(source);
+        (p, rx, ctl, ends)
+    }
+
+    /// [`VideoPublication::for_test_with_ends`] with the producer's
+    /// [`VideoPublication::republish_without_backup`]s.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn for_test_with_fallbacks(
+        source: VideoSource,
+    ) -> (
+        VideoPublication,
+        mpsc::Receiver<VideoIn>,
+        mpsc::UnboundedSender<VideoControl>,
+        mpsc::UnboundedReceiver<ProducerEnd>,
+        mpsc::UnboundedReceiver<ProducerFallback>,
+    ) {
         let (frames, rx) = mpsc::channel(VIDEO_QUEUE);
         let (ctl, control) = mpsc::unbounded_channel();
         let (ends, ends_rx) = mpsc::unbounded_channel();
+        let (fallbacks, fallbacks_rx) = mpsc::unbounded_channel();
         let p = VideoPublication {
             source,
             id: 1,
@@ -605,8 +721,9 @@ impl VideoPublication {
             control,
             stats: Arc::default(),
             ends,
+            fallbacks,
         };
-        (p, rx, ctl, ends_rx)
+        (p, rx, ctl, ends_rx, fallbacks_rx)
     }
 }
 
@@ -679,6 +796,14 @@ impl VideoCaps {
     }
 }
 
+/// The backup lanes' own caps, on top of [`VideoCaps`] (a phone's thermal steps): at most
+/// this many backup layers (never fewer than one) and this frame rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BackupCaps {
+    pub(crate) max_layers: Option<u8>,
+    pub(crate) max_fps: Option<u32>,
+}
+
 /// The engine's video commands (from the `Call` handle).
 pub(crate) enum VideoCmd {
     Lease {
@@ -698,6 +823,9 @@ pub(crate) enum VideoCmd {
         reply: oneshot::Sender<Result<(), VideoError>>,
     },
     Caps(VideoCaps),
+    /// The bridge's caps for the backup lanes (a phone's thermal steps).
+    #[cfg_attr(not(feature = "video-core"), allow(dead_code))]
+    BackupCaps(BackupCaps),
     /// The source's track muted or unmuted at the SFU (`MuteTrackRequest`), keeping the
     /// publication and its lease (a phone app in the background).
     Mute {
@@ -716,7 +844,7 @@ impl VideoCmd {
             VideoCmd::Publish { reply, .. } => {
                 let _ = reply.send(Err(VideoError::Ended));
             }
-            VideoCmd::Caps(_) | VideoCmd::Mute { .. } => {}
+            VideoCmd::Caps(_) | VideoCmd::BackupCaps(_) | VideoCmd::Mute { .. } => {}
         }
     }
 }
@@ -733,6 +861,13 @@ pub(crate) struct VideoCtl {
 impl VideoCtl {
     pub(crate) fn new(cmd: mpsc::UnboundedSender<crate::call::Cmd>) -> VideoCtl {
         VideoCtl { cmd }
+    }
+
+    /// The backup lanes' caps (a phone's thermal steps).
+    pub(crate) fn backup_caps(&self, caps: BackupCaps) {
+        let _ = self
+            .cmd
+            .send(crate::call::Cmd::Publish(VideoCmd::BackupCaps(caps)));
     }
 
     /// Unpublishes `source` with `reason` and releases its lease.
@@ -765,6 +900,8 @@ pub(crate) enum VideoStep {
     Lease(LeaseDone),
     /// A producer ended its publication ([`VideoPublication::end`]).
     End(ProducerEnd),
+    /// A producer publishes again in one codec ([`VideoPublication::republish_without_backup`]).
+    Fallback(ProducerFallback),
 }
 
 /// The engine's state the publisher works with, borrowed for one call.
@@ -806,12 +943,15 @@ struct Layer {
     /// Frames are dropped until a keyframe (a start, a resume, a new send path).
     need_key: bool,
     last_key_ask: Option<Instant>,
+    /// A keyframe went out since `last_key_ask`: a request now is someone who missed it (a
+    /// subscriber that joined after it), not one more ask for the same keyframe.
+    key_sent_since_ask: bool,
     /// What the producer was told last.
     told: Option<LayerRate>,
 }
 
 impl Layer {
-    fn new(spec: LayerSpec, codec: VideoCodec, first_seq: u64) -> Layer {
+    fn new(spec: LayerSpec, codec: VideoCodec, first_seq: u64, wanted: bool) -> Layer {
         let size = (
             u16::try_from(spec.width).unwrap_or(u16::MAX),
             u16::try_from(spec.height).unwrap_or(u16::MAX),
@@ -834,16 +974,84 @@ impl Layer {
             ssrc: None,
             seq: first_seq,
             pack,
-            wanted: true,
+            wanted,
             rate: None,
             need_key: true,
             last_key_ask: None,
+            key_sent_since_ask: false,
             told: None,
         }
     }
 
     fn active(&self) -> bool {
         self.wanted && self.rate.is_some()
+    }
+}
+
+/// One codec of a publication and its send section: the primary (lane 0, every layer wanted
+/// unless dynacast says otherwise) or the backup (lane 1, VP8, nothing wanted unless its own
+/// `subscribed_codecs` entry enables it; its encoders run only while it is on).
+struct Lane {
+    codec: VideoCodec,
+    /// Its `simulcast_codecs` cid and its send section's msid track.
+    cid: String,
+    mid: Option<String>,
+    pt: Option<u8>,
+    layers: Vec<Layer>,
+    backup: bool,
+    /// The backup runs (`BackupStart` told, no `BackupStop` since).
+    on: bool,
+    /// The backup just started: its lowest wanted layer skips the raise hysteresis until it
+    /// runs.
+    exempt: bool,
+    /// When the backup started.
+    since: Option<Instant>,
+}
+
+impl Lane {
+    fn new(codec: VideoCodec, specs: Vec<LayerSpec>, cid: String, backup: bool) -> Lane {
+        Lane {
+            codec,
+            cid,
+            mid: None,
+            pt: None,
+            layers: specs
+                .into_iter()
+                .map(|l| Layer::new(l, codec, first_seq(), !backup))
+                .collect(),
+            backup,
+            on: false,
+            exempt: false,
+            since: None,
+        }
+    }
+
+    fn rids(&self) -> Vec<String> {
+        self.layers.iter().map(|l| l.spec.rid.clone()).collect()
+    }
+
+    fn video_layers(&self) -> Vec<VideoLayer> {
+        self.layers
+            .iter()
+            .enumerate()
+            .map(|(k, l)| VideoLayer {
+                quality: quality(k),
+                width: l.spec.width,
+                height: l.spec.height,
+                bitrate: l.spec.max_kbps.saturating_mul(1000),
+                rid: l.spec.rid.clone(),
+                ..VideoLayer::default()
+            })
+            .collect()
+    }
+
+    /// No send path (a new publication, a new PC): the next answer sets it.
+    fn reset_send(&mut self) {
+        self.mid = None;
+        self.pt = None;
+        for l in &mut self.layers {
+            l.ssrc = None;
+        }
     }
 }
 
@@ -868,20 +1076,17 @@ type Reply = (
 struct Publication {
     id: u64,
     source: VideoSource,
-    codec: VideoCodec,
     capture: (u32, u32),
-    cid: String,
     state: State,
     track_sid: Option<String>,
-    mid: Option<String>,
-    pt: Option<u8>,
-    layers: Vec<Layer>,
+    /// The primary codec's lane, then the backup's (if any).
+    lanes: Vec<Lane>,
     rtp_base: u32,
     control: mpsc::UnboundedSender<VideoControl>,
     /// The caller's handle, until `TrackPublished` (or a refusal).
     reply: Option<Reply>,
-    /// A republication's old send section, made inactive once the new one is published.
-    replaces: Option<String>,
+    /// A republication's old send sections, made inactive once the new ones are published.
+    replaces: Vec<String>,
     /// The SFU's record of the track, published before the keys started: the keys confirm it
     /// when they do.
     unconfirmed: Option<TrackInfo>,
@@ -895,9 +1100,54 @@ impl Publication {
     }
 
     fn rtp_ts(&self, capture_us: u64) -> u32 {
-        // 90 kHz from the capture clock, from a random base; the same on every layer.
+        // 90 kHz from the capture clock, from a random base; the same on every layer and lane.
         let ticks = capture_us.wrapping_mul(90) / 1000;
         self.rtp_base.wrapping_add(ticks as u32)
+    }
+
+    /// The track's cid (the primary's).
+    fn cid(&self) -> &str {
+        &self.lanes[0].cid
+    }
+
+    /// The primary codec.
+    fn codec(&self) -> VideoCodec {
+        self.lanes[0].codec
+    }
+
+    /// The send sections of every lane.
+    fn take_mids(&mut self) -> Vec<String> {
+        self.lanes.iter_mut().filter_map(|l| l.mid.take()).collect()
+    }
+
+    /// The `AddTrackRequest` before the publish check: the primary's layers, and one
+    /// `simulcast_codecs` entry per lane, each on its own cid (the primary's is the track's).
+    fn add_track(&self) -> AddTrackRequest {
+        let layers = self.lanes[0].video_layers();
+        let (w, h) = self.lanes[0]
+            .layers
+            .last()
+            .map_or((0, 0), |l| (l.spec.width, l.spec.height));
+        AddTrackRequest {
+            cid: self.cid().to_owned(),
+            name: track_name(self.source).to_owned(),
+            r#type: TrackType::Video as i32,
+            source: track_source(self.source) as i32,
+            width: w,
+            height: h,
+            layers,
+            simulcast_codecs: self
+                .lanes
+                .iter()
+                .map(|l| SimulcastCodec {
+                    codec: mime(l.codec).to_owned(),
+                    cid: l.cid.clone(),
+                    layers: l.video_layers(),
+                    ..SimulcastCodec::default()
+                })
+                .collect(),
+            ..AddTrackRequest::default()
+        }
     }
 }
 
@@ -918,6 +1168,69 @@ fn quality(i: usize) -> i32 {
     i.min(2) as i32
 }
 
+/// Whether a `subscribed_codecs` entry's name (`vp8`, `video/VP8`, …) is `codec`.
+fn names_codec(name: &str, codec: VideoCodec) -> bool {
+    let n = name.rsplit('/').next().unwrap_or(name);
+    n.eq_ignore_ascii_case(codec.as_str())
+}
+
+/// Dynacast for one lane: which of its `n` layers anyone wants. The primary reads its own
+/// codec's entry (the deprecated flat list when there is none); a quality not listed counts as
+/// wanted. The backup reads only its own entry: a missing entry or quality is not wanted, and
+/// the flat list is ignored.
+#[allow(deprecated)]
+fn lane_wanted(
+    u: &SubscribedQualityUpdate,
+    codec: VideoCodec,
+    backup: bool,
+    n: usize,
+) -> Vec<bool> {
+    let named = u
+        .subscribed_codecs
+        .iter()
+        .find(|c| names_codec(&c.codec, codec))
+        .map(|c| c.qualities.as_slice());
+    let qualities = match named {
+        Some(q) => q,
+        None if backup => &[],
+        None => u.subscribed_qualities.as_slice(),
+    };
+    (0..n)
+        .map(|k| {
+            let q = qualities.iter().find(|q| q.quality == quality(k));
+            if backup {
+                q.is_some_and(|q| q.enabled)
+            } else {
+                q.is_none_or(|q| q.enabled)
+            }
+        })
+        .collect()
+}
+
+/// The backup's layers for a new primary plan (a tier change): the plan's layers whose rid the
+/// old backup had (a phone's backup stays at its capped rungs), with the old backup's temporal
+/// layers; none left: the plan's lowest.
+pub(crate) fn backup_layers_for(plan: &[LayerSpec], old: &[LayerSpec]) -> Vec<LayerSpec> {
+    let tl = old.first().map_or(1, |l| l.temporal_layers);
+    let mut out: Vec<LayerSpec> = plan
+        .iter()
+        .filter_map(|n| {
+            let o = old.iter().find(|o| o.rid == n.rid)?;
+            let mut l = n.clone();
+            l.temporal_layers = o.temporal_layers;
+            Some(l)
+        })
+        .collect();
+    if out.is_empty()
+        && let Some(l) = plan.first()
+    {
+        let mut l = l.clone();
+        l.temporal_layers = tl;
+        out.push(l);
+    }
+    out
+}
+
 /// The engine's video publications.
 pub(crate) struct Publisher {
     frames_tx: mpsc::Sender<VideoIn>,
@@ -926,6 +1239,8 @@ pub(crate) struct Publisher {
     lease_rx: mpsc::UnboundedReceiver<LeaseDone>,
     ends_tx: mpsc::UnboundedSender<ProducerEnd>,
     ends_rx: mpsc::UnboundedReceiver<ProducerEnd>,
+    fallback_tx: mpsc::UnboundedSender<ProducerFallback>,
+    fallback_rx: mpsc::UnboundedReceiver<ProducerFallback>,
     pubs: Vec<Publication>,
     next_id: u64,
     leases: Leases,
@@ -937,8 +1252,12 @@ pub(crate) struct Publisher {
     estimate: Option<u64>,
     desired: u64,
     caps: VideoCaps,
+    /// The bridge's caps for the backup lanes (a phone's thermal steps).
+    backup_caps: BackupCaps,
     pub(crate) stats: Arc<Mutex<VideoSendStats>>,
     malformed_logged: bool,
+    /// The run time of backups that stopped, ms.
+    backup_done_ms: u64,
 }
 
 impl std::fmt::Debug for Publisher {
@@ -955,6 +1274,7 @@ impl Publisher {
         let (frames_tx, frames_rx) = mpsc::channel(VIDEO_QUEUE);
         let (lease_tx, lease_rx) = mpsc::unbounded_channel();
         let (ends_tx, ends_rx) = mpsc::unbounded_channel();
+        let (fallback_tx, fallback_rx) = mpsc::unbounded_channel();
         Publisher {
             frames_tx,
             frames_rx,
@@ -962,6 +1282,8 @@ impl Publisher {
             lease_rx,
             ends_tx,
             ends_rx,
+            fallback_tx,
+            fallback_rx,
             pubs: Vec::new(),
             next_id: 1,
             leases: Leases::none(),
@@ -971,8 +1293,10 @@ impl Publisher {
             estimate: None,
             desired: 0,
             caps: VideoCaps::default(),
+            backup_caps: BackupCaps::default(),
             stats,
             malformed_logged: false,
+            backup_done_ms: 0,
         }
     }
 
@@ -982,6 +1306,7 @@ impl Publisher {
             Some(f) = self.frames_rx.recv() => VideoStep::Frame(f),
             Some(l) = self.lease_rx.recv() => VideoStep::Lease(l),
             Some(e) = self.ends_rx.recv() => VideoStep::End(e),
+            Some(b) = self.fallback_rx.recv() => VideoStep::Fallback(b),
         }
     }
 
@@ -1021,6 +1346,18 @@ impl Publisher {
         if let Ok(mut s) = self.stats.lock() {
             f(&mut s);
         }
+    }
+
+    /// How long the backups have run in all, up to `now`, ms.
+    fn backup_ms(&self, now: Instant) -> u64 {
+        let running: u64 = self
+            .pubs
+            .iter()
+            .flat_map(|p| &p.lanes)
+            .filter_map(|l| l.since.filter(|_| l.on))
+            .map(|t| now.saturating_duration_since(t).as_millis() as u64)
+            .sum();
+        self.backup_done_ms + running
     }
 
     // -------------------------------------------------------------------------- commands
@@ -1068,6 +1405,12 @@ impl Publisher {
             VideoCmd::Caps(c) => {
                 self.caps = c;
                 self.reallocate(cx);
+            }
+            VideoCmd::BackupCaps(c) => {
+                if c != self.backup_caps {
+                    self.backup_caps = c;
+                    self.reallocate(cx);
+                }
             }
             VideoCmd::Mute { source, muted } => {
                 for p in self.pubs.iter_mut().filter(|p| p.source == source) {
@@ -1135,6 +1478,25 @@ impl Publisher {
         self.lease(api, source, false, None, false);
     }
 
+    /// A producer can't send its backup, or lost its primary codec
+    /// ([`VideoPublication::republish_without_backup`]): the publication is published again in
+    /// one codec with its new layers, under the same lease (the tier-change path).
+    pub(crate) fn on_producer_fallback(&mut self, cx: &mut Ctx<'_>, f: ProducerFallback) {
+        let Some(i) = self.pubs.iter().position(|p| p.id == f.publication) else {
+            return;
+        };
+        if f.layers.is_empty() {
+            return;
+        }
+        let now = cx.now;
+        self.backup_stop(i, now);
+        let p = &mut self.pubs[i];
+        tracing::info!(target: "sew_call_client", source = ?p.source, from = p.codec().as_str(), to = f.codec.as_str(), "video published again in one codec");
+        p.lanes.truncate(1);
+        p.lanes[0].codec = f.codec;
+        self.republish(cx, i, f.layers);
+    }
+
     pub(crate) fn on_lease(&mut self, cx: &mut Ctx<'_>, d: LeaseDone) {
         if d.result.is_ok() {
             self.set_lease(d.source, d.on);
@@ -1197,26 +1559,25 @@ impl Publisher {
         let id = self.next_id;
         self.next_id += 1;
         let (control, control_rx) = mpsc::unbounded_channel();
-        let layers = req
-            .layers
-            .into_iter()
-            .map(|l| Layer::new(l, req.codec, first_seq()))
-            .collect();
+        let mut lanes = vec![Lane::new(req.codec, req.layers, new_cid(req.source), false)];
+        // A backup only in another codec, with layers.
+        if let Some(b) = req
+            .backup
+            .filter(|b| b.codec != req.codec && !b.layers.is_empty())
+        {
+            lanes.push(Lane::new(b.codec, b.layers, new_cid(req.source), true));
+        }
         self.pubs.push(Publication {
             id,
             source: req.source,
-            codec: req.codec,
             capture: (req.capture_width, req.capture_height),
-            cid: new_cid(req.source),
             state: State::Pending,
             track_sid: None,
-            mid: None,
-            pt: None,
-            layers,
+            lanes,
             rtp_base: rand::random(),
             control,
             reply: Some((reply, control_rx)),
-            replaces: None,
+            replaces: Vec::new(),
             unconfirmed: None,
             muted: false,
         });
@@ -1233,39 +1594,7 @@ impl Publisher {
         }
         let leases = self.leases;
         let p = &mut self.pubs[i];
-        let layers: Vec<VideoLayer> = p
-            .layers
-            .iter()
-            .enumerate()
-            .map(|(k, l)| VideoLayer {
-                quality: quality(k),
-                width: l.spec.width,
-                height: l.spec.height,
-                bitrate: l.spec.max_kbps.saturating_mul(1000),
-                rid: l.spec.rid.clone(),
-                ..VideoLayer::default()
-            })
-            .collect();
-        let (w, h) = p
-            .layers
-            .last()
-            .map_or((0, 0), |l| (l.spec.width, l.spec.height));
-        let mut add = AddTrackRequest {
-            cid: p.cid.clone(),
-            name: track_name(p.source).to_owned(),
-            r#type: TrackType::Video as i32,
-            source: track_source(p.source) as i32,
-            width: w,
-            height: h,
-            layers: layers.clone(),
-            simulcast_codecs: vec![SimulcastCodec {
-                codec: mime(p.codec).to_owned(),
-                cid: p.cid.clone(),
-                layers,
-                ..SimulcastCodec::default()
-            }],
-            ..AddTrackRequest::default()
-        };
+        let mut add = p.add_track();
         match check_publish(&mut add, leases) {
             Ok(()) => {
                 cx.session.add_track(add);
@@ -1295,14 +1624,20 @@ impl Publisher {
         }
     }
 
-    /// The end of a publication: its send section goes inactive, the producer is told.
+    /// The end of a publication: its send sections go inactive, the producer is told.
     fn end(&mut self, cx: &mut Ctx<'_>, mut p: Publication, reason: &str) {
         self.alloc.forget(p.id);
-        if let Some(pc) = cx.pc.as_deref_mut() {
-            if let Some(mid) = &p.mid {
-                pc.stop_send(mid);
+        for l in p.lanes.iter_mut().filter(|l| l.on) {
+            l.on = false;
+            if let Some(t) = l.since.take() {
+                self.backup_done_ms += cx.now.saturating_duration_since(t).as_millis() as u64;
             }
-            if let Some(mid) = p.replaces.take() {
+        }
+        if let Some(pc) = cx.pc.as_deref_mut() {
+            for mid in p.take_mids() {
+                pc.stop_send(&mid);
+            }
+            for mid in std::mem::take(&mut p.replaces) {
                 pc.stop_send(&mid);
             }
         }
@@ -1320,6 +1655,75 @@ impl Publisher {
         self.reallocate(cx);
     }
 
+    // -------------------------------------------------------------------------- the backup
+
+    /// The backup of publication `i` starts when some layer of it is wanted (the producer
+    /// opens its encoders, the first frame a keyframe; no signalling) and stops when none is
+    /// (the producer closes them; the section stays negotiated, without RTP).
+    fn backup_transitions(&mut self, i: usize, now: Instant) {
+        let p = &mut self.pubs[i];
+        let Some(b) = p.lanes.get_mut(1) else {
+            return;
+        };
+        let any = b.layers.iter().any(|l| l.wanted);
+        if any && !b.on {
+            b.on = true;
+            b.exempt = true;
+            b.since = Some(now);
+            let mut start = Vec::new();
+            for l in &mut b.layers {
+                l.need_key = true;
+                l.rate = None;
+                l.told = None;
+                if l.wanted {
+                    start.push(l.spec.clone());
+                }
+            }
+            tracing::info!(target: "sew_call_client", source = ?p.source, codec = b.codec.as_str(), layers = start.len(), "the backup starts");
+            p.tell(VideoControl::BackupStart(start));
+            self.stat(|s| s.backup_starts += 1);
+        } else if !any && b.on {
+            self.backup_stop(i, now);
+        }
+    }
+
+    /// The backup of publication `i` stops (if it runs): its encoders close.
+    fn backup_stop(&mut self, i: usize, now: Instant) {
+        let p = &mut self.pubs[i];
+        let Some(b) = p.lanes.get_mut(1).filter(|b| b.on) else {
+            return;
+        };
+        b.on = false;
+        b.exempt = false;
+        for l in &mut b.layers {
+            l.rate = None;
+            l.told = None;
+        }
+        let ran = b
+            .since
+            .take()
+            .map_or(0, |t| now.saturating_duration_since(t).as_millis() as u64);
+        tracing::info!(target: "sew_call_client", source = ?p.source, ran_ms = ran, "the backup stops");
+        p.tell(VideoControl::BackupStop);
+        self.backup_done_ms += ran;
+        let total = self.backup_ms(now);
+        self.stat(|s| {
+            s.backup_stops += 1;
+            s.backup_ms = total;
+        });
+    }
+
+    /// The backup of publication `i` off and not wanted (a new PC, a teardown, a republish):
+    /// dynacast turns it on again.
+    fn backup_reset(&mut self, i: usize, now: Instant) {
+        self.backup_stop(i, now);
+        if let Some(b) = self.pubs[i].lanes.get_mut(1) {
+            for l in &mut b.layers {
+                l.wanted = false;
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------- signalling
 
     /// `TrackPublished` for `cid`: `true` if it was one of ours.
@@ -1329,7 +1733,7 @@ impl Publisher {
         cid: &str,
         track: &TrackInfo,
     ) -> bool {
-        let Some(i) = self.pubs.iter().position(|p| p.cid == cid) else {
+        let Some(i) = self.pubs.iter().position(|p| p.cid() == cid) else {
             return false;
         };
         if !matches!(self.pubs[i].state, State::Requested { .. }) {
@@ -1343,24 +1747,36 @@ impl Publisher {
             None => gcm,
         };
         if !confirmed {
+            // One check for the track covers both codecs: neither section is ever added.
             let p = self.pubs.remove(i);
             self.fail(cx, p, VideoError::Downgraded);
             return true;
         }
         let p = &mut self.pubs[i];
+        if p.lanes.len() > 1
+            && !track.codecs.is_empty()
+            && !track
+                .codecs
+                .iter()
+                .any(|c| names_codec(&c.mime_type, p.lanes[1].codec))
+        {
+            // The SFU kept one codec (a room without backup codecs): no backup section.
+            tracing::info!(target: "sew_call_client", source = ?p.source, "the SFU took no backup codec: one codec");
+            p.lanes.truncate(1);
+        }
         p.unconfirmed = cx.keys.is_none().then(|| track.clone());
         p.track_sid = Some(track.sid.clone());
         p.state = State::Published;
-        p.mid = None;
-        p.pt = None;
-        for l in &mut p.layers {
-            l.ssrc = None;
+        for l in &mut p.lanes {
+            l.reset_send();
         }
-        let rids: Vec<String> = p.layers.iter().map(|l| l.spec.rid.clone()).collect();
         if let Some(pc) = cx.pc.as_deref_mut() {
-            pc.add_send_video(cx.stream, &p.cid, &rids);
+            // Every lane's section in the same offer.
+            for l in &p.lanes {
+                pc.add_send_video(cx.stream, &l.cid, &l.rids());
+            }
         }
-        tracing::info!(target: "sew_call_client", source = ?p.source, codec = p.codec.as_str(), layers = rids.len(), "video published");
+        tracing::info!(target: "sew_call_client", source = ?p.source, codec = p.codec().as_str(), backup = p.lanes.get(1).map(|l| l.codec.as_str()), layers = p.lanes[0].layers.len(), "video published");
         if p.muted {
             // Muted before this (re)publication: the SFU hears it again.
             cx.session.mute(&track.sid, true);
@@ -1383,6 +1799,7 @@ impl Publisher {
                 control,
                 stats: self.stats.clone(),
                 ends: self.ends_tx.clone(),
+                fallbacks: self.fallback_tx.clone(),
             };
             if reply.send(Ok(handle)).is_err() {
                 // The caller is gone: nobody produces frames.
@@ -1401,38 +1818,53 @@ impl Publisher {
         true
     }
 
-    /// After an answer: the send paths of publications whose section is now negotiated.
+    /// After an answer: the send paths of publications whose sections are now negotiated.
     pub(crate) fn on_answer(&mut self, cx: &mut Ctx<'_>) {
         let Some(pc) = cx.pc.as_deref_mut() else {
             return;
+        };
+        // A lane's section: its mid, payload type and one SSRC per layer, once negotiated.
+        let resolve = |pc: &mut Pc, l: &Lane| -> Option<(String, u8, Vec<u32>)> {
+            let mid = pc.mid_for_track(&l.cid)?;
+            let pt = pc.video_pt(&mid, l.codec)?;
+            let ssrcs: Option<Vec<u32>> = l
+                .layers
+                .iter()
+                .map(|x| pc.tx_ssrc_rid(&mid, &x.spec.rid))
+                .collect();
+            Some((mid, pt, ssrcs?))
         };
         let mut live = false;
         for p in &mut self.pubs {
             if p.state != State::Published {
                 continue;
             }
-            let Some(mid) = pc.mid_for_track(&p.cid) else {
+            let Some(primary) = resolve(pc, &p.lanes[0]) else {
                 continue;
             };
-            let Some(pt) = pc.video_pt(&mid, p.codec) else {
-                continue;
-            };
-            let ssrcs: Vec<Option<u32>> = p
-                .layers
-                .iter()
-                .map(|l| pc.tx_ssrc_rid(&mid, &l.spec.rid))
-                .collect();
-            if ssrcs.iter().any(Option::is_none) {
-                continue;
+            let backup = p.lanes.get(1).map(|l| resolve(pc, l));
+            if let Some(None) = backup {
+                // The backup's section was refused (or lost its codec): one codec.
+                tracing::warn!(target: "sew_call_client", source = ?p.source, "the backup's send section was not negotiated: one codec");
+                if let Some(mid) = pc.mid_for_track(&p.lanes[1].cid) {
+                    pc.stop_send(&mid);
+                }
+                if p.lanes[1].on {
+                    p.tell(VideoControl::BackupStop);
+                }
+                p.lanes.truncate(1);
             }
-            for (l, s) in p.layers.iter_mut().zip(ssrcs) {
-                l.ssrc = s;
-                l.need_key = true;
+            let found = std::iter::once(primary).chain(backup.flatten());
+            for (l, (mid, pt, ssrcs)) in p.lanes.iter_mut().zip(found) {
+                for (x, s) in l.layers.iter_mut().zip(ssrcs) {
+                    x.ssrc = Some(s);
+                    x.need_key = true;
+                }
+                l.mid = Some(mid);
+                l.pt = Some(pt);
             }
-            p.mid = Some(mid);
-            p.pt = Some(pt);
             p.state = State::Live;
-            if let Some(old) = p.replaces.take() {
+            for old in std::mem::take(&mut p.replaces) {
                 pc.stop_send(&old);
             }
             live = true;
@@ -1440,14 +1872,13 @@ impl Publisher {
         if live {
             self.reallocate(cx);
             for i in 0..self.pubs.len() {
-                if self.pubs[i].state == State::Live {
-                    let rids: Vec<String> = self.pubs[i]
-                        .layers
-                        .iter()
-                        .map(|l| l.spec.rid.clone())
-                        .collect();
+                if self.pubs[i].state != State::Live {
+                    continue;
+                }
+                for n in 0..self.pubs[i].lanes.len() {
+                    let rids = self.pubs[i].lanes[n].rids();
                     for rid in rids {
-                        self.ask_keyframe(i, &rid, cx.now, true);
+                        self.ask_keyframe(i, n, &rid, cx.now, true);
                     }
                 }
             }
@@ -1455,7 +1886,7 @@ impl Publisher {
     }
 
     /// The keys started: they confirm the publications the SFU confirmed before (a downgrade
-    /// ends the publication).
+    /// ends the publication, both codecs).
     pub(crate) fn on_keys(&mut self, cx: &mut Ctx<'_>) {
         let Some(k) = cx.keys else { return };
         let refused: Vec<usize> = self
@@ -1487,9 +1918,8 @@ impl Publisher {
         self.end(cx, p, "server_unpublished");
     }
 
-    /// Dynacast: the qualities anyone subscribes to (per codec; the old flat list when the
-    /// update names no codec of ours).
-    #[allow(deprecated)]
+    /// Dynacast: the qualities anyone subscribes to, each lane from its own codec's entry
+    /// ([`lane_wanted`]); the backup starts or stops with it.
     pub(crate) fn on_subscribed_quality(&mut self, cx: &mut Ctx<'_>, u: &SubscribedQualityUpdate) {
         if self.policy.as_ref().is_some_and(|p| !p.dynacast) {
             return;
@@ -1501,66 +1931,80 @@ impl Publisher {
         else {
             return;
         };
-        let codec = self.pubs[i].codec;
-        let qualities = u
-            .subscribed_codecs
-            .iter()
-            .find(|c| {
-                let c = c.codec.to_ascii_lowercase();
-                c == codec.as_str() || c == mime(codec).to_ascii_lowercase()
-            })
-            .map(|c| &c.qualities)
-            .unwrap_or(&u.subscribed_qualities);
         let mut changed = false;
-        for (k, l) in self.pubs[i].layers.iter_mut().enumerate() {
-            let wanted = qualities
-                .iter()
-                .find(|q| q.quality == quality(k))
-                .is_none_or(|q| q.enabled);
-            if wanted != l.wanted {
-                l.wanted = wanted;
-                changed = true;
+        for lane in &mut self.pubs[i].lanes {
+            let wanted = lane_wanted(u, lane.codec, lane.backup, lane.layers.len());
+            for (l, w) in lane.layers.iter_mut().zip(wanted) {
+                if w != l.wanted {
+                    l.wanted = w;
+                    changed = true;
+                }
             }
         }
         if changed {
             tracing::debug!(target: "sew_call_client", track = %u.track_sid, "dynacast");
+            self.backup_transitions(i, cx.now);
             self.reallocate(cx);
         }
     }
 
-    /// The SFU's PLI or FIR for one of our layers.
+    /// The SFU's PLI or FIR for one of our layers, matched to the lane by its section's mid,
+    /// then to the layer by rid.
     pub(crate) fn on_keyframe_request(&mut self, now: Instant, mid: &str, rid: Option<&str>) {
-        let Some(i) = self.pubs.iter().position(|p| p.mid.as_deref() == Some(mid)) else {
+        let Some((i, n)) = self.pubs.iter().enumerate().find_map(|(i, p)| {
+            p.lanes
+                .iter()
+                .position(|l| l.mid.as_deref() == Some(mid))
+                .map(|n| (i, n))
+        }) else {
             return;
         };
         self.stat(|s| s.sfu_keyframe_requests += 1);
         let rids: Vec<String> = match rid {
             Some(r) => vec![r.to_owned()],
-            None => self.pubs[i]
-                .layers
-                .iter()
-                .map(|l| l.spec.rid.clone())
-                .collect(),
+            None => self.pubs[i].lanes[n].rids(),
         };
+        let (source, backup) = (self.pubs[i].source, self.pubs[i].lanes[n].backup);
+        for r in &rids {
+            let key = if backup {
+                format!("{}/backup/{r}", source_name(source))
+            } else {
+                format!("{}/{r}", source_name(source))
+            };
+            self.stat(|s| *s.sfu_keyframe_requests_by_layer.entry(key).or_default() += 1);
+        }
         for r in rids {
-            self.ask_keyframe(i, &r, now, false);
+            self.ask_keyframe(i, n, &r, now, false);
         }
     }
 
-    fn ask_keyframe(&mut self, i: usize, rid: &str, now: Instant, force: bool) {
+    fn ask_keyframe(&mut self, i: usize, n: usize, rid: &str, now: Instant, force: bool) {
         let p = &mut self.pubs[i];
-        let Some(l) = p.layers.iter_mut().find(|l| l.spec.rid == rid) else {
+        let Some(lane) = p.lanes.get_mut(n) else {
+            return;
+        };
+        if lane.backup && !lane.on {
+            // No encoder runs: its start makes a keyframe anyway.
+            return;
+        }
+        let backup = lane.backup;
+        let Some(l) = lane.layers.iter_mut().find(|l| l.spec.rid == rid) else {
             return;
         };
         if !force
+            && !l.key_sent_since_ask
             && l.last_key_ask
                 .is_some_and(|t| now.saturating_duration_since(t) < KEYFRAME_EVERY)
         {
             return;
         }
         l.last_key_ask = Some(now);
-        p.tell(VideoControl::Keyframe {
-            rid: rid.to_owned(),
+        l.key_sent_since_ask = false;
+        let rid = rid.to_owned();
+        p.tell(if backup {
+            VideoControl::BackupKeyframe { rid }
+        } else {
+            VideoControl::Keyframe { rid }
         });
         self.stat(|s| s.keyframes_asked += 1);
     }
@@ -1590,77 +2034,100 @@ impl Publisher {
         let Some(policy) = self.policy.clone() else {
             return;
         };
+        // The backup only while the policy allows one (`backup_codec`, dynacast, its codec
+        // listed): otherwise the track is published again without it.
+        let backup_allowed = |c: VideoCodec| {
+            policy.backup_codec
+                && policy.dynacast
+                && policy.codecs.iter().any(|p| codec_of_policy(*p) == Some(c))
+        };
         for i in 0..self.pubs.len() {
             let p = &self.pubs[i];
             let mut plan = plan_layers(hint_of(p.source, &policy), p.capture.0, p.capture.1);
             for l in &mut plan {
-                if let Some(old) = p.layers.iter().find(|o| o.spec.rid == l.rid) {
+                if let Some(old) = p.lanes[0].layers.iter().find(|o| o.spec.rid == l.rid) {
                     l.temporal_layers = old.spec.temporal_layers;
                 }
             }
-            let same = plan.len() == p.layers.len()
-                && plan.iter().zip(&p.layers).all(|(n, o)| {
+            let drop_backup = p.lanes.get(1).is_some_and(|b| !backup_allowed(b.codec));
+            let same = plan.len() == p.lanes[0].layers.len()
+                && plan.iter().zip(&p.lanes[0].layers).all(|(n, o)| {
                     n.rid == o.spec.rid && n.width == o.spec.width && n.height == o.spec.height
                 });
-            if same {
-                // New caps (and frame rate) in place.
+            if same && !drop_backup {
+                // New caps (and frame rate) in place, on both lanes.
                 let p = &mut self.pubs[i];
-                for (n, o) in plan.into_iter().zip(&mut p.layers) {
-                    o.spec.max_kbps = n.max_kbps;
-                    o.spec.fps = n.fps;
+                for lane in &mut p.lanes {
+                    for o in &mut lane.layers {
+                        if let Some(n) = plan.iter().find(|n| n.rid == o.spec.rid) {
+                            o.spec.max_kbps = n.max_kbps;
+                            o.spec.fps = n.fps;
+                        }
+                    }
                 }
                 continue;
+            }
+            if drop_backup {
+                tracing::info!(target: "sew_call_client", source = ?p.source, "the policy no longer allows the backup: one codec");
+                self.backup_stop(i, cx.now);
+                self.pubs[i].lanes.truncate(1);
             }
             self.republish(cx, i, plan);
         }
         self.reallocate(cx);
     }
 
-    /// A tier change: the track again with the new layers, under the same lease. The old send
-    /// section goes inactive once the new one is negotiated; until then the old layers stop.
+    /// A tier change (or a fall back to one codec): the track again with the new layers, under
+    /// the same lease. The old send sections go inactive once the new ones are negotiated;
+    /// until then the old layers stop. The backup (if any) starts off again.
     fn republish(&mut self, cx: &mut Ctx<'_>, i: usize, plan: Vec<LayerSpec>) {
         if plan.is_empty() {
             return;
         }
         self.stat(|s| s.republishes += 1);
+        self.backup_reset(i, cx.now);
         let p = &mut self.pubs[i];
-        tracing::info!(target: "sew_call_client", source = ?p.source, layers = plan.len(), "video republished for the policy");
+        tracing::info!(target: "sew_call_client", source = ?p.source, layers = plan.len(), "video republished");
         self.alloc.forget(p.id);
-        let codec = p.codec;
         p.tell(VideoControl::Republish(plan.clone()));
-        p.replaces = match (p.mid.take(), p.replaces.take()) {
-            (Some(m), None) => Some(m),
-            (Some(m), Some(old)) => {
-                if let Some(pc) = cx.pc.as_deref_mut() {
+        let mids = p.take_mids();
+        if !mids.is_empty() {
+            // The sections before the last republish's (never negotiated) go now.
+            if let Some(pc) = cx.pc.as_deref_mut() {
+                for old in std::mem::take(&mut p.replaces) {
                     pc.stop_send(&old);
                 }
-                Some(m)
             }
-            (None, r) => r,
-        };
-        p.layers = plan
-            .into_iter()
-            .map(|l| Layer::new(l, codec, first_seq()))
-            .collect();
-        p.cid = new_cid(p.source);
+            p.replaces = mids;
+        }
+        let source = p.source;
+        let backup = p.lanes.get(1).map(|b| {
+            let old: Vec<LayerSpec> = b.layers.iter().map(|l| l.spec.clone()).collect();
+            (b.codec, backup_layers_for(&plan, &old))
+        });
+        if let Some((codec, layers)) = backup {
+            p.lanes[1] = Lane::new(codec, layers, new_cid(source), true);
+        }
+        let codec = p.lanes[0].codec;
+        p.lanes[0] = Lane::new(codec, plan, new_cid(source), false);
         p.track_sid = None;
-        p.pt = None;
         self.request(cx, i);
     }
 
     /// A new PC (the first, a full reconnect's): every publication again on it.
     pub(crate) fn on_new_pc(&mut self, cx: &mut Ctx<'_>) {
         for i in 0..self.pubs.len() {
+            self.backup_reset(i, cx.now);
             let p = &mut self.pubs[i];
-            p.mid = None;
-            p.replaces = None;
-            p.pt = None;
+            p.replaces.clear();
             p.track_sid = None;
-            p.cid = new_cid(p.source);
-            for l in &mut p.layers {
-                l.ssrc = None;
-                l.seq = first_seq();
-                l.need_key = true;
+            for lane in &mut p.lanes {
+                lane.reset_send();
+                lane.cid = new_cid(p.source);
+                for l in &mut lane.layers {
+                    l.seq = first_seq();
+                    l.need_key = true;
+                }
             }
             p.state = State::Pending;
             self.alloc.forget(p.id);
@@ -1670,12 +2137,14 @@ impl Publisher {
 
     /// The PC went (teardown): nothing is sent until a new one.
     pub(crate) fn on_teardown(&mut self) {
-        for p in &mut self.pubs {
-            p.mid = None;
-            p.replaces = None;
+        let now = Instant::now();
+        for i in 0..self.pubs.len() {
+            self.backup_reset(i, now);
+            let p = &mut self.pubs[i];
+            p.replaces.clear();
             p.state = State::Pending;
-            for l in &mut p.layers {
-                l.ssrc = None;
+            for lane in &mut p.lanes {
+                lane.reset_send();
             }
         }
     }
@@ -1685,11 +2154,16 @@ impl Publisher {
     pub(crate) fn on_rejoined(&mut self, policy: Option<&MediaPolicy>, api: &LeaseApi) {
         self.joined_with(policy);
         self.leases = Leases::none();
+        let now = Instant::now();
         let mut sources: Vec<VideoSource> = Vec::new();
-        for p in &mut self.pubs {
+        for i in 0..self.pubs.len() {
+            self.backup_reset(i, now);
+            let p = &mut self.pubs[i];
             p.state = State::Pending;
-            p.mid = None;
-            p.replaces = None;
+            p.replaces.clear();
+            for lane in &mut p.lanes {
+                lane.mid = None;
+            }
             if !sources.contains(&p.source) {
                 sources.push(p.source);
             }
@@ -1755,32 +2229,69 @@ impl Publisher {
 
     // -------------------------------------------------------------------------- the split
 
+    /// Every running lane's layers under the caps (the policy's, the host's thermal and power
+    /// caps on both lanes; the backup's own caps on top). The backup keeps at least its lowest
+    /// layer whatever the caps: it is a subscriber's only video.
     fn capped_layers(&self) -> Vec<AllocLayer> {
         let mut out = Vec::new();
         for p in &self.pubs {
             if p.state != State::Live {
                 continue;
             }
-            for (k, l) in p.layers.iter().enumerate() {
-                if self.caps.max_layers.is_some_and(|m| k >= usize::from(m)) {
+            for (n, lane) in p.lanes.iter().enumerate() {
+                if lane.backup && !lane.on {
                     continue;
                 }
-                let max =
-                    u64::from(l.spec.max_kbps) * 1000 * u64::from(self.caps.bitrate_pct) / 100;
-                out.push(AllocLayer {
-                    key: (p.id, k),
-                    screen: p.source == VideoSource::ScreenShare,
-                    max_bps: max.max(10_000),
-                    wanted: l.wanted,
-                    min_bps: super::alloc::min_bitrate_bps(l.spec.height.min(l.spec.width)),
-                });
+                let max_layers = if lane.backup {
+                    let caps = [self.caps.max_layers, self.backup_caps.max_layers];
+                    caps.into_iter().flatten().min().map(|m| m.max(1))
+                } else {
+                    self.caps.max_layers
+                };
+                let lowest_wanted = lane.layers.iter().position(|l| l.wanted);
+                for (k, l) in lane.layers.iter().enumerate() {
+                    if max_layers.is_some_and(|m| k >= usize::from(m)) {
+                        continue;
+                    }
+                    let policy_max = u64::from(l.spec.max_kbps) * 1000;
+                    let mut max = policy_max * u64::from(self.caps.bitrate_pct) / 100;
+                    let min_bps = super::alloc::min_bitrate_bps(l.spec.height.min(l.spec.width));
+                    let lowest = lowest_wanted == Some(k);
+                    if lane.backup && lowest {
+                        // A bitrate cap (heat, low power) never takes the backup's lowest layer
+                        // below its floor: it would pause a subscriber's only video.
+                        max = max.max(policy_max.min(min_bps));
+                    }
+                    out.push(AllocLayer {
+                        key: (p.id, n, k),
+                        screen: p.source == VideoSource::ScreenShare,
+                        max_bps: max.max(10_000),
+                        wanted: l.wanted,
+                        min_bps,
+                        exempt: lane.backup && lane.exempt && lowest,
+                    });
+                }
             }
         }
         out
     }
 
-    /// Runs the split and tells each producer which layers run at what rate; a layer that
-    /// starts again needs a keyframe.
+    /// The frame rate a layer of `lane` runs at under the caps.
+    fn fps_of(&self, lane: &Lane, spec: &LayerSpec) -> u32 {
+        let mut fps = spec.fps;
+        if let Some(m) = self.caps.max_fps {
+            fps = fps.min(m.max(1));
+        }
+        if lane.backup
+            && let Some(m) = self.backup_caps.max_fps
+        {
+            fps = fps.min(m.max(1));
+        }
+        fps
+    }
+
+    /// Runs the split and tells each producer which layers run at what rate (the backup's in
+    /// `BackupRates`, while it runs); a layer that starts again needs a keyframe.
     fn reallocate(&mut self, cx: &mut Ctx<'_>) {
         let layers = self.capped_layers();
         let est = self.estimate.unwrap_or(BWE_INITIAL_BPS);
@@ -1792,46 +2303,74 @@ impl Publisher {
                 pc.set_desired_bitrate(desired);
             }
         }
-        let max_fps = self.caps.max_fps;
-        let mut resumed: Vec<(usize, String)> = Vec::new();
-        for (i, p) in self.pubs.iter_mut().enumerate() {
-            if p.state != State::Live {
+        let mut resumed: Vec<(usize, usize, String)> = Vec::new();
+        let mut tells: Vec<(usize, VideoControl)> = Vec::new();
+        for i in 0..self.pubs.len() {
+            if self.pubs[i].state != State::Live {
                 continue;
             }
-            let mut rates = Vec::new();
-            let mut changed = false;
-            for (k, l) in p.layers.iter_mut().enumerate() {
-                let was = l.active();
-                l.rate = grants.get(&(p.id, k)).copied();
-                let fps = max_fps.map_or(l.spec.fps, |m| l.spec.fps.min(m.max(1)));
-                let rate = LayerRate {
-                    rid: l.spec.rid.clone(),
-                    active: l.active(),
-                    bitrate_bps: l.rate.map_or(0, |r| u32::try_from(r).unwrap_or(u32::MAX)),
-                    fps,
+            let id = self.pubs[i].id;
+            for n in 0..self.pubs[i].lanes.len() {
+                let fps: Vec<u32> = {
+                    let lane = &self.pubs[i].lanes[n];
+                    lane.layers
+                        .iter()
+                        .map(|l| self.fps_of(lane, &l.spec))
+                        .collect()
                 };
-                if l.active() && !was {
-                    l.need_key = true;
-                    resumed.push((i, l.spec.rid.clone()));
+                let lane = &mut self.pubs[i].lanes[n];
+                if lane.backup && !lane.on {
+                    continue;
                 }
-                if l.told.as_ref() != Some(&rate) {
-                    changed = true;
-                    l.told = Some(rate.clone());
+                let mut rates = Vec::new();
+                let mut changed = false;
+                for (k, l) in lane.layers.iter_mut().enumerate() {
+                    let was = l.active();
+                    l.rate = grants.get(&(id, n, k)).copied();
+                    let rate = LayerRate {
+                        rid: l.spec.rid.clone(),
+                        active: l.active(),
+                        bitrate_bps: l.rate.map_or(0, |r| u32::try_from(r).unwrap_or(u32::MAX)),
+                        fps: fps[k],
+                    };
+                    if l.active() && !was {
+                        l.need_key = true;
+                        resumed.push((i, n, l.spec.rid.clone()));
+                    }
+                    if l.told.as_ref() != Some(&rate) {
+                        changed = true;
+                        l.told = Some(rate.clone());
+                    }
+                    rates.push(rate);
                 }
-                rates.push(rate);
-            }
-            if changed {
-                p.tell(VideoControl::Rates(rates));
+                if lane.exempt && lane.layers.iter().any(Layer::active) {
+                    // Its lowest layer runs: the rest follow the hysteresis.
+                    lane.exempt = false;
+                }
+                if changed {
+                    tells.push((
+                        i,
+                        if lane.backup {
+                            VideoControl::BackupRates(rates)
+                        } else {
+                            VideoControl::Rates(rates)
+                        },
+                    ));
+                }
             }
         }
-        for (i, rid) in resumed {
-            self.ask_keyframe(i, &rid, cx.now, true);
+        for (i, c) in tells {
+            self.pubs[i].tell(c);
+        }
+        for (i, n, rid) in resumed {
+            self.ask_keyframe(i, n, &rid, cx.now, true);
         }
     }
 
     // -------------------------------------------------------------------------- frames
 
-    /// One encoded frame from a producer: normalised, encrypted, packetised and written.
+    /// One encoded frame from a producer, to the lane of its codec: normalised, encrypted,
+    /// packetised and written on that lane's section.
     pub(crate) fn on_frame(&mut self, cx: &mut Ctx<'_>, v: VideoIn) {
         let not_sent = |s: &mut VideoSendStats| s.frames_not_sent += 1;
         let Some(i) = self.pubs.iter().position(|p| p.id == v.publication) else {
@@ -1844,18 +2383,28 @@ impl Publisher {
             return;
         };
         let p = &mut self.pubs[i];
-        if p.state != State::Live || !cx.media_up || f.codec != p.codec || f.data.is_empty() {
+        if p.state != State::Live || !cx.media_up || f.data.is_empty() {
             self.stat(not_sent);
             return;
         }
         let ts = p.rtp_ts(f.capture_us);
-        let (Some(mid), Some(pt)) = (p.mid.clone(), p.pt) else {
+        let source = p.source;
+        let Some(lane) = p.lanes.iter_mut().find(|l| l.codec == f.codec) else {
             self.stat(not_sent);
             return;
         };
-        let source = p.source;
-        let codec = p.codec;
-        let Some(l) = p.layers.iter_mut().find(|l| l.spec.rid == f.rid) else {
+        if lane.backup && !lane.on {
+            // Not asked for (or stopped): nothing on the backup's section.
+            self.stat(not_sent);
+            return;
+        }
+        let (Some(mid), Some(pt)) = (lane.mid.clone(), lane.pt) else {
+            self.stat(not_sent);
+            return;
+        };
+        let codec = lane.codec;
+        let backup = lane.backup;
+        let Some(l) = lane.layers.iter_mut().find(|l| l.spec.rid == f.rid) else {
             self.stat(not_sent);
             return;
         };
@@ -1928,15 +2477,32 @@ impl Publisher {
         }
         if f.keyframe {
             l.need_key = false;
+            l.key_sent_since_ask = true;
         }
-        let key = format!("{}/{}", source_name(source), f.rid);
+        let key = if backup {
+            format!("{}/backup/{}", source_name(source), f.rid)
+        } else {
+            format!("{}/{}", source_name(source), f.rid)
+        };
+        let backup_ms = backup.then(|| self.backup_ms(cx.now));
         if let Ok(mut s) = self.stats.lock() {
             if ok {
                 *s.frames_sent.entry(key).or_default() += 1;
+                *s.frames_by_codec
+                    .entry(codec.as_str().to_owned())
+                    .or_default() += 1;
                 s.packets_sent += n;
                 s.keyframes_sent += u64::from(f.keyframe);
+                if f.keyframe {
+                    *s.keyframes_by_codec
+                        .entry(codec.as_str().to_owned())
+                        .or_default() += 1;
+                }
             } else {
                 s.frames_not_sent += 1;
+            }
+            if let Some(ms) = backup_ms {
+                s.backup_ms = ms;
             }
         }
     }
@@ -2063,18 +2629,14 @@ mod tests {
         let p = Publication {
             id: 1,
             source: VideoSource::Camera,
-            codec: VideoCodec::Vp8,
             capture: (1280, 720),
-            cid: "c".into(),
             state: State::Pending,
             track_sid: None,
-            mid: None,
-            pt: None,
-            layers: Vec::new(),
+            lanes: vec![Lane::new(VideoCodec::Vp8, Vec::new(), "c".into(), false)],
             rtp_base: u32::MAX - 10,
             control,
             reply: None,
-            replaces: None,
+            replaces: Vec::new(),
             unconfirmed: None,
             muted: false,
         };
@@ -2084,5 +2646,240 @@ mod tests {
         assert_eq!(quality(0), 0);
         assert_eq!(quality(2), 2);
         assert_eq!(quality(5), 2);
+    }
+
+    fn three() -> Vec<LayerSpec> {
+        vec![
+            LayerSpec::new("q", 320, 180, 150, 30),
+            LayerSpec::new("h", 640, 360, 500, 30),
+            LayerSpec::new("f", 1280, 720, 1700, 30),
+        ]
+    }
+
+    /// A camera publication of H.264 q/h/f with a VP8 backup of `backup` layers.
+    fn with_backup(backup: Vec<LayerSpec>) -> Publication {
+        let (control, _rx) = mpsc::unbounded_channel();
+        Publication {
+            id: 7,
+            source: VideoSource::Camera,
+            capture: (1280, 720),
+            state: State::Pending,
+            track_sid: None,
+            lanes: vec![
+                Lane::new(VideoCodec::H264, three(), "cam-a".into(), false),
+                Lane::new(VideoCodec::Vp8, backup, "cam-b".into(), true),
+            ],
+            rtp_base: 0,
+            control,
+            reply: None,
+            replaces: Vec::new(),
+            unconfirmed: None,
+            muted: false,
+        }
+    }
+
+    #[test]
+    fn a_backup_is_one_add_track_with_two_codecs_on_their_own_cids_under_gcm() {
+        let mut b = three();
+        b.truncate(2);
+        let p = with_backup(b);
+        let mut add = p.add_track();
+        check_publish(&mut add, Leases::new(true, false)).expect("leased");
+        assert_eq!(add.cid, "cam-a");
+        assert_eq!(
+            add.encryption,
+            sew_lkproto::livekit::encryption::Type::Gcm as i32,
+            "one GCM request covers both codecs"
+        );
+        assert_eq!((add.width, add.height), (1280, 720));
+        assert_eq!(add.layers.len(), 3);
+        let codecs: Vec<(&str, &str, Vec<&str>)> = add
+            .simulcast_codecs
+            .iter()
+            .map(|c| {
+                (
+                    c.codec.as_str(),
+                    c.cid.as_str(),
+                    c.layers.iter().map(|l| l.rid.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            codecs,
+            vec![
+                ("video/H264", "cam-a", vec!["q", "h", "f"]),
+                ("video/VP8", "cam-b", vec!["q", "h"]),
+            ]
+        );
+        assert_eq!(add.simulcast_codecs[1].layers[1].quality, 1);
+        // The backup starts with nothing wanted; the primary with everything.
+        assert!(p.lanes[1].layers.iter().all(|l| !l.wanted));
+        assert!(p.lanes[0].layers.iter().all(|l| l.wanted));
+        // Without the lease: refused, both codecs.
+        let mut add = p.add_track();
+        assert_eq!(
+            check_publish(&mut add, Leases::none()),
+            Err(PublishRefused::NoLease)
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn each_lane_reads_its_own_codecs_entry() {
+        use sew_lkproto::livekit::{SubscribedCodec, SubscribedQuality};
+        let q = |quality: i32, enabled: bool| SubscribedQuality { quality, enabled };
+        let entry = |codec: &str, qs: Vec<SubscribedQuality>| SubscribedCodec {
+            codec: codec.to_owned(),
+            qualities: qs,
+        };
+        let update =
+            |codecs: Vec<SubscribedCodec>, flat: Vec<SubscribedQuality>| SubscribedQualityUpdate {
+                track_sid: "TR_x".to_owned(),
+                subscribed_qualities: flat,
+                subscribed_codecs: codecs,
+            };
+        // H.264 subscribers only: the backup stays off; the primary runs what is asked.
+        let u = update(
+            vec![entry("h264", vec![q(0, true), q(1, true), q(2, false)])],
+            vec![],
+        );
+        assert_eq!(
+            lane_wanted(&u, VideoCodec::H264, false, 3),
+            vec![true, true, false]
+        );
+        assert_eq!(
+            lane_wanted(&u, VideoCodec::Vp8, true, 2),
+            vec![false, false]
+        );
+        // A VP8-only subscriber at LOW: the backup's q, named as a mime, any case.
+        let u = update(
+            vec![
+                entry("h264", vec![q(0, false), q(1, false), q(2, false)]),
+                entry("video/vp8", vec![q(0, true), q(1, false)]),
+            ],
+            vec![q(0, true), q(1, true), q(2, true)],
+        );
+        assert_eq!(
+            lane_wanted(&u, VideoCodec::H264, false, 3),
+            vec![false, false, false],
+            "the primary never takes the backup's entry"
+        );
+        assert_eq!(lane_wanted(&u, VideoCodec::Vp8, true, 2), vec![true, false]);
+        // A quality the backup's entry leaves out is not wanted; the primary's counts as wanted.
+        let u = update(
+            vec![
+                entry("H264", vec![q(0, true)]),
+                entry("VP8", vec![q(1, true)]),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            lane_wanted(&u, VideoCodec::H264, false, 3),
+            vec![true, true, true]
+        );
+        assert_eq!(
+            lane_wanted(&u, VideoCodec::Vp8, true, 3),
+            vec![false, true, false]
+        );
+        // No entry for a codec: the primary reads the flat list; the backup ignores it.
+        let u = update(vec![], vec![q(0, true), q(1, false)]);
+        assert_eq!(
+            lane_wanted(&u, VideoCodec::H264, false, 3),
+            vec![true, false, true]
+        );
+        assert_eq!(
+            lane_wanted(&u, VideoCodec::Vp8, true, 3),
+            vec![false, false, false]
+        );
+        assert!(names_codec("video/H264", VideoCodec::H264));
+        assert!(!names_codec("video/VP8", VideoCodec::H264));
+    }
+
+    #[test]
+    fn caps_reach_both_lanes_and_heat_never_stops_the_backup() {
+        let mut pb = Publisher::new(Arc::default());
+        let mut b = three();
+        b.truncate(2);
+        let mut p = with_backup(b);
+        p.state = State::Live;
+        pb.pubs.push(p);
+        let keys = |pb: &Publisher| -> Vec<(u64, usize, usize)> {
+            pb.capped_layers().iter().map(|l| l.key).collect()
+        };
+        // The backup off: only the primary's layers.
+        assert_eq!(keys(&pb), vec![(7, 0, 0), (7, 0, 1), (7, 0, 2)]);
+        pb.pubs[0].lanes[1].on = true;
+        for l in &mut pb.pubs[0].lanes[1].layers {
+            l.wanted = true;
+        }
+        assert_eq!(pb.capped_layers().len(), 5);
+        // The host's caps (heat, low power) on both lanes: one layer each at half the rate,
+        // except the backup's lowest, which keeps its floor.
+        pb.caps = VideoCaps::new(50, Some(1), Some(20));
+        let l = pb.capped_layers();
+        let got: Vec<((u64, usize, usize), u64)> = l.iter().map(|l| (l.key, l.max_bps)).collect();
+        assert_eq!(got, vec![((7, 0, 0), 75_000), ((7, 1, 0), 150_000)]);
+        let (prim, backup) = (&pb.pubs[0].lanes[0], &pb.pubs[0].lanes[1]);
+        assert_eq!(pb.fps_of(prim, &prim.layers[0].spec), 20);
+        assert_eq!(pb.fps_of(backup, &backup.layers[0].spec), 20);
+        // Caps asking for no layer at all: the backup keeps one.
+        pb.caps = VideoCaps::new(100, Some(0), None);
+        assert_eq!(keys(&pb), vec![(7, 1, 0)]);
+        // A phone's thermal steps for the backup alone: Serious one layer, Critical at 15 fps.
+        pb.caps = VideoCaps::none();
+        pb.backup_caps = BackupCaps {
+            max_layers: Some(1),
+            max_fps: Some(15),
+        };
+        assert_eq!(keys(&pb), vec![(7, 0, 0), (7, 0, 1), (7, 0, 2), (7, 1, 0)]);
+        let (prim, backup) = (&pb.pubs[0].lanes[0], &pb.pubs[0].lanes[1]);
+        assert_eq!(pb.fps_of(prim, &prim.layers[0].spec), 30);
+        assert_eq!(pb.fps_of(backup, &backup.layers[0].spec), 15);
+        pb.backup_caps = BackupCaps {
+            max_layers: Some(0),
+            max_fps: None,
+        };
+        assert_eq!(keys(&pb).last(), Some(&(7, 1, 0)), "never zero layers");
+        // Just started: its lowest wanted layer is exempt from the hysteresis.
+        pb.pubs[0].lanes[1].exempt = true;
+        pb.pubs[0].lanes[1].layers[0].wanted = false;
+        pb.backup_caps = BackupCaps::default();
+        let ex: Vec<(u64, usize, usize)> = pb
+            .capped_layers()
+            .iter()
+            .filter(|l| l.exempt)
+            .map(|l| l.key)
+            .collect();
+        assert_eq!(ex, vec![(7, 1, 1)], "the lowest wanted, h here");
+    }
+
+    #[test]
+    fn a_tier_change_keeps_the_backups_rungs() {
+        // A phone's backup (q and h, three temporal layers) after a change to 360p hints.
+        let mut old = three();
+        old.truncate(2);
+        for l in &mut old {
+            l.temporal_layers = 3;
+        }
+        let p = with_backup(old);
+        let old: Vec<LayerSpec> = p.lanes[1].layers.iter().map(|l| l.spec.clone()).collect();
+        let plan = vec![
+            LayerSpec::new("q", 320, 180, 120, 24),
+            LayerSpec::new("h", 640, 360, 400, 24),
+        ];
+        let got = backup_layers_for(&plan, &old);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|l| l.temporal_layers == 3 && l.fps == 24));
+        // A 720p plan for a backup capped at q and h keeps q and h.
+        let got = backup_layers_for(&three(), &old);
+        let rids: Vec<&str> = got.iter().map(|l| l.rid.as_str()).collect();
+        assert_eq!(rids, vec!["q", "h"]);
+        // None of the old rungs left: the plan's lowest.
+        let only_f = vec![LayerSpec::new("f", 1280, 720, 1700, 30)];
+        let got = backup_layers_for(&only_f, &old);
+        assert_eq!(
+            (got.len(), got[0].rid.as_str(), got[0].temporal_layers),
+            (1, "f", 3)
+        );
     }
 }

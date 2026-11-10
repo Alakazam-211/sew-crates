@@ -217,6 +217,7 @@ impl Builder {
                 crate::commands::request_keyframe,
                 crate::commands::camera_permission,
                 crate::commands::request_camera_permission,
+                crate::commands::set_video_codec_preference,
             ])
             .setup(move |app, _api| {
                 let engine = match engine {

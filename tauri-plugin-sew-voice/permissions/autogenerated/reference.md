@@ -498,6 +498,32 @@ Denies the set_device command without any pre-configured scope.
 <tr>
 <td>
 
+`sew-voice:allow-set-video-codec-preference`
+
+</td>
+<td>
+
+Enables the set_video_codec_preference command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-set-video-codec-preference`
+
+</td>
+<td>
+
+Denies the set_video_codec_preference command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `sew-voice:allow-set-video-device`
 
 </td>
@@ -752,7 +778,8 @@ window that needs it.
 The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,
 `set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,
 `video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and
-`request_camera_permission`. The frames reach only the window
+`request_camera_permission`, and the video codec setting `set_video_codec_preference`. The
+frames reach only the window
 that opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call
 window, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs
 `allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and

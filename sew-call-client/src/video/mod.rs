@@ -26,6 +26,7 @@ pub(crate) mod alloc;
 mod bridge;
 #[cfg(feature = "video-core")]
 mod capture;
+pub(crate) mod codec_pref;
 // Its users: the RTP round trips (test + testing, in Sew's tree: `sew_fixtures`) and
 // FixtureBackend (testing + video-core).
 #[cfg(all(
@@ -46,9 +47,10 @@ pub(crate) mod subscribe;
 mod types;
 
 #[cfg(feature = "video-core")]
+#[allow(deprecated)]
 pub use bridge::{
-    CameraRequest, CameraState, SelfViewFrames, SelfViewItem, SourceFeed, SourceNote, VideoBridge,
-    choose_codec,
+    CameraRequest, CameraState, CodecPlan, PlannedCodec, SelfViewFrames, SelfViewItem, SourceFeed,
+    SourceNote, VideoBridge, choose_codec, choose_codecs,
 };
 #[cfg(feature = "video-core")]
 pub use capture::{
@@ -56,16 +58,22 @@ pub use capture::{
     ScreenChoice, ScreenPick, ScreenSource, THUMBNAIL_MAX_WIDTH, VideoCapture, screen_constraints,
     thumbnail_png,
 };
+#[cfg(feature = "video-core")]
+pub use codec_pref::h264_encode_detection;
+pub use codec_pref::{
+    CodecPreferenceReason, H264Detection, VideoCodecPreference, effective_publish_codec,
+    effective_publish_codec_under_policy,
+};
 #[cfg(all(feature = "testing", feature = "video-core"))]
-pub use fixture::{FixtureBackend, FixtureError};
+pub use fixture::{FixtureBackend, FixtureError, FixtureH264, FixtureOptions};
 #[cfg(feature = "video-core")]
 pub use preview::{
     LocalFrame, PREVIEW_BITRATE_BPS, PREVIEW_FPS, PREVIEW_HEIGHT, PREVIEW_QUEUE, PREVIEW_WIDTH,
     Preview, PreviewFrames, PreviewItem, preview_codec,
 };
 pub use publish::{
-    EncodedVideo, LayerRate, LayerSpec, LocalVideo, VideoCaps, VideoControl, VideoError,
-    VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
+    BackupSpec, EncodedVideo, LayerRate, LayerSpec, LocalVideo, VideoCaps, VideoControl,
+    VideoError, VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
 };
 pub use subscribe::{VideoFrameStream, VideoSink};
 pub use types::{

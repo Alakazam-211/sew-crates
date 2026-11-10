@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.3 (2026-11-10)
+
+**0.8.3 is mirror-only, as 0.8.2 was (crates.io stays at 0.8.1); the next crates.io release is
+0.9.0.** It adds nothing to 0.8.2's API: one field's documentation and the example policy.
+
+- `MediaPolicy.backup_codec` can now be `true` (no shape change): a native sender with OS
+  H.264 may publish H.264 with a VP8 backup that the engine turns on for subscribers without
+  H.264. Browsers still publish one codec. It is `true` only while video is on and `codecs`
+  lists both `vp8` and `h264`; the example policy says `true`.
+
 ## 0.8.2 (2026-11-06)
 
 **0.8.2 is mirror-only; it breaks 0.8.1 (crates.io stays at 0.8.1); the next crates.io release is

@@ -604,6 +604,9 @@ pub(crate) enum Cmd {
         reply: oneshot::Sender<()>,
     },
     Leave(oneshot::Sender<()>),
+    /// The [`Call`] handle was dropped without a leave: the engine leaves (whoever else still
+    /// holds its command queue: a video sink, a camera pipeline, a [`CallLeaver`]).
+    Dropped,
     Consent {
         granted: bool,
         notice_version: Option<u32>,
@@ -620,6 +623,8 @@ pub struct CallClient {
     cfg: ClientConfig,
     e2ee: Arc<dyn E2eeProvider>,
     busy: Arc<AtomicBool>,
+    /// The video codec preference and the declared decoders, for every call of this engine.
+    codecs: Arc<crate::video::codec_pref::CodecSettings>,
 }
 
 impl std::fmt::Debug for CallClient {
@@ -638,7 +643,42 @@ impl CallClient {
             cfg,
             e2ee,
             busy: Arc::new(AtomicBool::new(false)),
+            codecs: Arc::default(),
         }
+    }
+
+    /// Sets this device's video codec preference ([`crate::VideoCodecPreference`], a user
+    /// setting) for every call of this engine, the live one included: a camera or screen
+    /// turned on after it publishes under it ([`crate::effective_publish_codec`]).
+    /// [`crate::VideoCodecPreference::PreferVp8`] also stops this device offering to receive
+    /// H.264, from its next join. The engine keeps it until the process ends; persisting it
+    /// across launches is the host's job (store [`CallClient::video_codec_preference`] with
+    /// the app's settings and set it again at start).
+    pub fn set_video_codec_preference(&self, pref: crate::VideoCodecPreference) {
+        self.codecs.set_preference(pref);
+    }
+
+    /// This device's video codec preference ([`CallClient::set_video_codec_preference`];
+    /// [`crate::VideoCodecPreference::Automatic`] until set).
+    pub fn video_codec_preference(&self) -> crate::VideoCodecPreference {
+        self.codecs.preference()
+    }
+
+    /// Declares the video codecs this host can decode, from the next join: the OS decoders its
+    /// kessel-video backend lists (its capabilities' decode entries, a run-time answer) and the
+    /// codecs its webview decodes (a WebCodecs probe). The media connection then offers to
+    /// receive VP8 always and H.264 only if `codecs` lists it, never on Linux and never under
+    /// [`crate::VideoCodecPreference::PreferVp8`]; the media server then sends this device a
+    /// sender's VP8 instead of H.264. Nothing is assumed: list only what was found.
+    ///
+    /// Until a host declares, [`ClientConfig::video_h264`] alone decides, as before.
+    pub fn set_video_decode(&self, codecs: &[crate::VideoCodec]) {
+        self.codecs.set_decode(codecs);
+    }
+
+    /// The codecs [`CallClient::set_video_decode`] declared (sorted, `None` until then).
+    pub fn video_decode(&self) -> Option<Vec<crate::VideoCodec>> {
+        self.codecs.decode()
     }
 
     /// An engine with `cfg` and Sew's MLS call keys ([`crate::e2ee::MlsKeys`]), the device key
@@ -722,6 +762,8 @@ impl CallClient {
             beacon_stopped: AtomicBool::new(false),
             policy: Mutex::new(None),
             video_stats: Arc::new(Mutex::new(crate::video::VideoSendStats::default())),
+            video_codecs: self.codecs.negotiated(self.cfg.video_h264),
+            codec_settings: Arc::clone(&self.codecs),
         });
         if let engine::First::Held(c) = &first {
             // Held before `join` returns: a host that reads the snapshot at once (to decide
@@ -749,9 +791,13 @@ impl CallClient {
             frames: Mutex::new(Some(FrameStream(frames_rx))),
             video: Mutex::new(Some(crate::video::VideoFrameStream(video_rx))),
             next_sink: std::sync::atomic::AtomicU64::new(1),
+            id: NEXT_CALL.fetch_add(1, Ordering::Relaxed),
         })
     }
 }
+
+/// [`Call::local_id`]'s counter.
+static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Clears the app's call slot when the engine task ends.
 pub(crate) struct BusyGuard(Arc<AtomicBool>);
@@ -759,6 +805,36 @@ pub(crate) struct BusyGuard(Arc<AtomicBool>);
 impl Drop for BusyGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Leaves a call without its [`Call`] handle ([`Call::leaver`]). Cloneable; a leave of a call
+/// that is already over answers [`CallError::Ended`].
+#[derive(Clone)]
+pub struct CallLeaver {
+    cmd: mpsc::UnboundedSender<Cmd>,
+    id: u64,
+}
+
+impl std::fmt::Debug for CallLeaver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallLeaver").finish_non_exhaustive()
+    }
+}
+
+impl CallLeaver {
+    /// Leaves, as [`Call::leave`]: when it answers, the app's call slot is free.
+    pub async fn leave(&self) -> Result<(), CallError> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd
+            .send(Cmd::Leave(reply))
+            .map_err(|_| CallError::Ended)?;
+        rx.await.map_err(|_| CallError::Ended)
+    }
+
+    /// The call's [`Call::local_id`].
+    pub fn local_id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -792,6 +868,15 @@ pub struct Call {
     frames: Mutex<Option<FrameStream>>,
     video: Mutex<Option<crate::video::VideoFrameStream>>,
     next_sink: std::sync::atomic::AtomicU64,
+    id: u64,
+}
+
+impl Drop for Call {
+    /// The handle is gone: the engine leaves now, even while a video sink, a camera pipeline
+    /// or a [`CallLeaver`] still holds its command queue (after a leave, nothing happens).
+    fn drop(&mut self) {
+        let _ = self.cmd.send(Cmd::Dropped);
+    }
 }
 
 impl std::fmt::Debug for Call {
@@ -910,13 +995,28 @@ impl Call {
         let _ = self.cmd.send(Cmd::NetworkChanged);
     }
 
-    /// Leaves (Sew's leave with the credential, then the engine's).
+    /// Leaves (Sew's leave with the credential, then the engine's). When it answers, the app's
+    /// call slot is free: a [`CallClient::join`] right after it is never
+    /// [`CallError::AlreadyInCall`]. Dropping the `Call` without it leaves too.
     pub async fn leave(self) -> Result<(), CallError> {
-        let (reply, rx) = oneshot::channel();
-        self.cmd
-            .send(Cmd::Leave(reply))
-            .map_err(|_| CallError::Ended)?;
-        rx.await.map_err(|_| CallError::Ended)
+        self.leaver().leave().await
+    }
+
+    /// A handle that leaves this call from anywhere, without the `Call` itself: for a host that
+    /// keeps the `Call` behind a lock that its camera or screen commands hold while they wait
+    /// on a device, so a leave never waits for them (they get [`CallError::Ended`] or
+    /// [`crate::VideoError::Ended`] once the call is over).
+    pub fn leaver(&self) -> CallLeaver {
+        CallLeaver {
+            cmd: self.cmd.clone(),
+            id: self.id,
+        }
+    }
+
+    /// A number this call alone has in the process (never reused), to tell its video
+    /// pipelines from a later call's (`VideoBridge::close_call`, with `video-core`).
+    pub fn local_id(&self) -> u64 {
+        self.id
     }
 
     /// Queues one encoded frame to send. Never blocks: a full queue drops the frame (and
@@ -945,6 +1045,23 @@ impl Call {
     /// `None`. Without `video-core` the engine negotiates no video and nothing arrives.
     pub fn video_frames(&self) -> Option<crate::video::VideoFrameStream> {
         self.video.lock().ok().and_then(|mut f| f.take())
+    }
+
+    /// The video codecs this call's media connection offers to receive (VP8 first; H.264 only
+    /// when the join's [`CallClient::set_video_decode`] and preference allowed it). Fixed at
+    /// the join; the publish side can send only these too. Empty without `video-core`.
+    pub fn video_codecs(&self) -> Vec<crate::VideoCodec> {
+        if crate::pc::VIDEO {
+            self.shared.video_codecs.codecs()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// This device's video codec preference now ([`CallClient::set_video_codec_preference`]),
+    /// for the publish side when a camera or screen turns on.
+    pub fn video_codec_preference(&self) -> crate::VideoCodecPreference {
+        self.shared.codec_settings.preference()
     }
 
     /// Opens a sink for the remote video track `track_sid` ([`CallEvent::VideoAdded`]): while
@@ -976,6 +1093,13 @@ impl Call {
     /// the latest layer hints (`media_policy_updated`, a move), if the join answer had one.
     pub fn media_policy(&self) -> Option<sew_proto::voice::MediaPolicy> {
         self.shared.policy.lock().ok().and_then(|p| p.clone())
+    }
+
+    /// Whether this call's media connection negotiates H.264 ([`crate::ClientConfig::video_h264`]):
+    /// a sender publishes H.264 only then.
+    #[cfg(feature = "video-core")]
+    pub(crate) fn decodes_h264(&self) -> bool {
+        self.shared.video_codecs.contains(crate::VideoCodec::H264)
     }
 
     /// The send-side video counters.

@@ -4,7 +4,7 @@ resolver = "3"
 members = ["sew-proto", "sew-lkproto", "sew-mls-crypto", "sew-e2ee", "sew-lk-compat", "sew-call-client", "tauri-plugin-sew-voice"]
 
 # The seven crates depend on each other by version; inside this workspace each one is the
-# member of that name. The str0m and dimpl forks are public (MIT / Apache-2.0).
+# member of that name. The str0m fork is public (MIT / Apache-2.0).
 # A [patch] applies only from the workspace root: a consumer repeats these rows in its own
 # root Cargo.toml (see README.md).
 [patch.crates-io]
@@ -14,8 +14,7 @@ sew-mls-crypto = { path = "sew-mls-crypto" }
 sew-e2ee = { path = "sew-e2ee" }
 sew-lk-compat = { path = "sew-lk-compat" }
 sew-call-client = { path = "sew-call-client" }
-str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-is              = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-dimpl          = { git = "https://github.com/Alakazam-211/dimpl", rev = "a3481943e8e3fa270990e7c05a27d015cfbe4d77" }
+str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+is              = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }

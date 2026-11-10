@@ -32,7 +32,7 @@ pub(super) fn media_policy_full() -> MediaPolicy {
         e2ee: "required".into(),
         audio_codecs: vec!["opus".into()],
         codecs: vec![VideoCodec::Vp8, VideoCodec::H264, VideoCodec::Vp9],
-        backup_codec: false,
+        backup_codec: true,
         vp9: Some(Vp9Hint {
             scalability_mode: "L3T3_KEY".into(),
             requires_dd: true,
@@ -69,6 +69,7 @@ fn media_policy_video_off() -> MediaPolicy {
         tier: MediaTier::Critical,
         video_enabled: false,
         codecs: vec![],
+        backup_codec: false,
         vp9: None,
         camera: none.clone(),
         screen: none,

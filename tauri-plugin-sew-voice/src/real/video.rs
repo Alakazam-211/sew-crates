@@ -120,7 +120,7 @@ pub(super) fn tracks(snap: &sew_call_client::CallSnapshot) -> Vec<VideoTrack> {
                     Some(_) => Some(VideoPaused::Congestion),
                     None => None,
                 },
-                unsupported: false,
+                unsupported: v.unsupported,
             });
         }
     }

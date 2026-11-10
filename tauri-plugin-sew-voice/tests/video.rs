@@ -11,10 +11,11 @@ use tauri_plugin_sew_voice::fake::{
 };
 use tauri_plugin_sew_voice::video::{LOCAL_CAMERA, flag, kind};
 use tauri_plugin_sew_voice::{
-    CameraArgs, EncodedVideoFrame, EngineError, FrameHeader, JoinArgs, LocalVideo, LocalVideoState,
-    PreviewArgs, ScreenArgs, ScreenCaps, SetVideoDeviceArgs, SinkIdArgs, SinkStats, Spawn, Tile,
-    TrackSettings, VideoCaps, VideoCodec, VideoRecvItem, VideoSinkArgs, VideoSinkUpdateArgs,
-    VideoSource, VideoTrack, VoiceService,
+    CameraArgs, CodecPreferenceInfo, EncodedVideoFrame, EngineError, FrameHeader, JoinArgs,
+    JoinOptions, LocalVideo, LocalVideoState, PreviewArgs, ScreenArgs, ScreenCaps,
+    SetVideoCodecPreferenceArgs, SetVideoDeviceArgs, SinkIdArgs, SinkStats, Spawn, Tile,
+    TrackSettings, VideoCaps, VideoCodec, VideoCodecPreference, VideoRecvItem, VideoSinkArgs,
+    VideoSinkUpdateArgs, VideoSource, VideoTrack, VoiceService,
 };
 
 const ME: &str = "48831765147549699";
@@ -867,4 +868,99 @@ async fn a_remote_unmute_restarts_at_a_keyframe() {
     push(&call, frame(CAM, VideoCodec::Vp8, true, 3)).await;
     until("the keyframe", || ch.messages().len() == 2).await;
     assert_eq!(ch.frames()[1].0.flags, flag::KEYFRAME | flag::DISCONTINUITY);
+}
+
+/// The video codec setting: `set_video_codec_preference` answers the readback
+/// (`video_caps.codec_preference`), which says why Prefer H.264 can't apply; an engine without
+/// video refuses it and reads back `automatic` with no codec.
+#[tokio::test]
+async fn the_video_codec_preference_is_set_and_read_back() {
+    let bare = world(false);
+    assert_eq!(
+        bare.svc
+            .set_video_codec_preference(SetVideoCodecPreferenceArgs::new(
+                VideoCodecPreference::PreferVp8
+            ))
+            .await
+            .expect_err("no video")
+            .code,
+        "video_unsupported"
+    );
+    assert_eq!(
+        bare.svc.video_codec_preference().await.expect("readback"),
+        None,
+        "no readback without video"
+    );
+
+    let w = world(true);
+    // The demo device publishes H.264: Automatic gives H.264.
+    let auto: CodecPreferenceInfo = w
+        .svc
+        .video_codec_preference()
+        .await
+        .expect("readback")
+        .expect("video");
+    assert_eq!(auto.setting, VideoCodecPreference::Automatic);
+    assert_eq!(auto.effective, VideoCodec::H264);
+    assert_eq!(auto.reason, None);
+    let vp8 = w
+        .svc
+        .set_video_codec_preference(SetVideoCodecPreferenceArgs::new(
+            VideoCodecPreference::PreferVp8,
+        ))
+        .await
+        .expect("set");
+    assert_eq!(
+        serde_json::to_value(vp8).expect("json"),
+        json!({"setting": "prefer_vp8", "effective": "vp8"}),
+        "no reason when the preference applies"
+    );
+    // A device without a usable H.264 encoder: Prefer H.264 says why it publishes VP8.
+    let mut caps = w.svc.video_caps().await.expect("caps");
+    caps.publish_codecs = vec![VideoCodec::Vp8];
+    w.engine.set_video_caps(caps);
+    let h264 = w
+        .svc
+        .set_video_codec_preference(SetVideoCodecPreferenceArgs::new(
+            VideoCodecPreference::PreferH264,
+        ))
+        .await
+        .expect("set");
+    assert_eq!(
+        serde_json::to_value(h264).expect("json"),
+        json!({"setting": "prefer_h264", "effective": "vp8", "reason": "not_detected"})
+    );
+    assert_eq!(
+        w.svc.video_codec_preference().await.expect("readback"),
+        Some(h264),
+        "kept"
+    );
+    // The command's argument.
+    let args: SetVideoCodecPreferenceArgs =
+        serde_json::from_value(json!({"preference": "prefer_h264"})).expect("args");
+    assert_eq!(args.preference, VideoCodecPreference::PreferH264);
+    assert!(
+        serde_json::from_value::<SetVideoCodecPreferenceArgs>(json!({"preference": "h264"}))
+            .is_err()
+    );
+}
+
+/// The join's `decode` (the webview's WebCodecs probe) reaches the engine; a plain join passes
+/// none (nothing assumed about the webview).
+#[tokio::test]
+async fn the_joins_decode_reaches_the_engine() {
+    let w = world(true);
+    w.svc.join(args()).await.expect("join");
+    w.svc.leave().await.expect("leave");
+    w.svc
+        .join_with(
+            args(),
+            JoinOptions::default().with_decode(&[VideoCodec::Vp8, VideoCodec::H264]),
+        )
+        .await
+        .expect("join with decode");
+    assert_eq!(
+        w.engine.join_decodes(),
+        vec![None, Some(vec![VideoCodec::Vp8, VideoCodec::H264])]
+    );
 }

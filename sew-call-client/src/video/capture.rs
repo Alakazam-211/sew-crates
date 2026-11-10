@@ -141,6 +141,10 @@ pub enum CapturePause {
     Thermal,
     /// A reason kessel-video added later.
     Other,
+    /// The camera says it is suspended (macOS and iOS): a MacBook's built-in camera with its
+    /// lid closed, a shut lens cover. Frames come back when it does. (Last, so the other
+    /// variants keep their discriminants.)
+    Suspended,
 }
 
 /// Why a source ended (terminal: drop it, unpublish, release the lease).
@@ -208,6 +212,7 @@ pub(crate) fn map_event(e: SourceEvent) -> Option<CaptureEvent> {
             Interruption::Background => CapturePause::Background,
             Interruption::InUseByAnother => CapturePause::InUseByAnother,
             Interruption::Thermal => CapturePause::Thermal,
+            Interruption::Suspended => CapturePause::Suspended,
             _ => CapturePause::Other,
         }),
         SourceEvent::Resumed => CaptureEvent::Resumed,

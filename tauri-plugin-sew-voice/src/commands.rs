@@ -1,5 +1,5 @@
 //! The Tauri commands: the eight of `sew-voice:default`, the two device-key commands, the
-//! three call-detail commands and the thirteen video commands, each set behind its own
+//! three call-detail commands and the fourteen video commands, each set behind its own
 //! permissions. Each one is a thin call into [`VoiceService`]; the argument names are the JSON
 //! keys the webview sends (`invoke('plugin:sew-voice|join', {target, room, muted, deafened})`,
 //! `invoke('plugin:sew-voice|consent', {granted, notice_version})`: snake_case, as every other
@@ -15,10 +15,11 @@ use crate::service::VoiceService;
 use crate::sink::FrameChannel;
 use crate::video::ParentWindow;
 use crate::wire::{
-    CameraArgs, ConsentArgs, DeviceKeyInfo, DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs,
-    JoinResult, MuteArgs, PermissionState, PreviewAnswer, PreviewArgs, ScreenArgs, ScreenSource,
-    SetDeviceArgs, SetVideoDeviceArgs, SinkIdArgs, SinkStats, StateSnapshot, Tile, VideoCaps,
-    VideoDevices, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
+    CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceKeyInfo, DeviceList, ErrorInfo,
+    ForgetServerArgs, JoinArgs, JoinOptions, JoinResult, MuteArgs, PermissionState, PreviewAnswer,
+    PreviewArgs, ScreenArgs, ScreenSource, SetDeviceArgs, SetVideoCodecPreferenceArgs,
+    SetVideoDeviceArgs, SinkIdArgs, SinkStats, StateSnapshot, Tile, VideoCapsAnswer, VideoCodec,
+    VideoCodecPreference, VideoDevices, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
 };
 
 #[tauri::command]
@@ -28,15 +29,19 @@ pub(crate) async fn join(
     room: String,
     muted: Option<bool>,
     deafened: Option<bool>,
+    decode: Option<Vec<VideoCodec>>,
 ) -> Result<JoinResult, ErrorInfo> {
-    service
-        .join(JoinArgs {
-            target,
-            room,
-            muted,
-            deafened,
-        })
-        .await
+    let args = JoinArgs {
+        target,
+        room,
+        muted,
+        deafened,
+    };
+    let opts = JoinOptions {
+        decode,
+        ..JoinOptions::default()
+    };
+    service.join_with(args, opts).await
 }
 
 #[tauri::command]
@@ -162,8 +167,23 @@ impl FrameChannel for TauriFrameChannel {
 }
 
 #[tauri::command]
-pub(crate) async fn video_caps(service: State<'_, VoiceService>) -> Result<VideoCaps, ErrorInfo> {
-    service.video_caps().await
+pub(crate) async fn video_caps(
+    service: State<'_, VoiceService>,
+) -> Result<VideoCapsAnswer, ErrorInfo> {
+    Ok(VideoCapsAnswer {
+        caps: service.video_caps().await?,
+        codec_preference: service.video_codec_preference().await?,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn set_video_codec_preference(
+    service: State<'_, VoiceService>,
+    preference: VideoCodecPreference,
+) -> Result<CodecPreferenceInfo, ErrorInfo> {
+    service
+        .set_video_codec_preference(SetVideoCodecPreferenceArgs::new(preference))
+        .await
 }
 
 #[tauri::command]

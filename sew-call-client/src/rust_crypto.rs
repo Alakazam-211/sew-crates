@@ -379,7 +379,7 @@ impl DtlsInstance for Instance {
         self.0.handle_timeout(now)
     }
 
-    fn send_application_data(&mut self, data: &[u8]) -> Result<(), DtlsImplError> {
+    fn send_application_data(&mut self, data: &[u8]) -> Result<usize, DtlsImplError> {
         self.0.send_application_data(data)
     }
 

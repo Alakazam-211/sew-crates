@@ -89,8 +89,9 @@ pub struct VideoTrack {
     /// The engine's track sid (`TR_…`).
     pub track_sid: String,
     /// The codec: the negotiated payload type of the track's packets once they arrive, else
-    /// what the publisher's `TrackInfo` says. `None` when neither says yet (a publisher that
-    /// does not name its codec in `TrackInfo` until its first packet).
+    /// the first codec of the publisher's `TrackInfo` (its primary, then its backups) this
+    /// device's media connection receives. `None` when neither says yet (a publisher that does
+    /// not name its codec in `TrackInfo` until its first packet).
     pub codec: Option<VideoCodec>,
     /// The publisher's size, from its `TrackInfo` (0 when it did not say).
     pub width: u32,
@@ -102,6 +103,10 @@ pub struct VideoTrack {
     pub paused: Option<VideoPause>,
     /// The simulcast layers the publisher sends, lowest first.
     pub layers: Vec<VideoLayerInfo>,
+    /// This device can't receive any of the codecs the publisher sends (e.g. an H.264-only
+    /// sender, and this device decodes VP8 only): no frames will come. `codec` is then the
+    /// publisher's primary codec. Cleared by the track's first packet.
+    pub unsupported: bool,
 }
 
 /// One participant's camera or screen in the snapshot ([`crate::Participant::camera`],
@@ -123,6 +128,8 @@ pub struct VideoTrackView {
     pub muted: bool,
     /// The server paused it for this member.
     pub paused: Option<VideoPause>,
+    /// This device can't receive any of the track's codecs ([`VideoTrack::unsupported`]).
+    pub unsupported: bool,
 }
 
 impl VideoTrack {
@@ -136,6 +143,7 @@ impl VideoTrack {
             height: self.height,
             muted: self.muted,
             paused: self.paused,
+            unsupported: self.unsupported,
         }
     }
 }

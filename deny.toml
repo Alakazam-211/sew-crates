@@ -53,5 +53,4 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
   "https://github.com/Alakazam-211/str0m",
-  "https://github.com/Alakazam-211/dimpl",
 ]

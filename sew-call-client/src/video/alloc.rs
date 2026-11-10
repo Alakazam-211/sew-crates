@@ -2,15 +2,19 @@
 //! published screen share and camera.
 //!
 //! - **Budget:** `0.9 × estimate − 48 kbit/s` (the audio's reserve).
-//! - **Order:** screen-share layers first, then the camera's, lowest layer first. Each layer
-//!   gets `min(max, what is left)`; it runs only with at least 60% of its `max` and at least
-//!   its size's floor ([`min_bitrate_bps`]: a 720p layer at 300 kbit/s would only drop
-//!   frames), otherwise it
-//!   and every layer above it in its publication are paused here (apart from a dynacast pause,
-//!   which the caller tracks: a layer nobody wants takes no budget and holds no layer back).
+//! - **Order:** screen-share layers first, then the camera's, lowest layer first. A publication
+//!   with a backup codec has two lanes (the primary, then the backup) in one budget: every
+//!   lane's lowest layer comes first (primary, then backup), then the next layer of each, and
+//!   so on. Each layer gets `min(max, what is left)`; it runs only with at least 60% of its
+//!   `max` and at least its size's floor ([`min_bitrate_bps`]: a 720p layer at 300 kbit/s
+//!   would only drop frames), otherwise it and every layer above it in its lane are paused
+//!   here (apart from a dynacast pause, which the caller tracks: a layer nobody wants takes no
+//!   budget and holds no layer back).
 //! - **Hysteresis:** a cut applies at once. A layer starts again only after the estimate has
 //!   covered it with 15% to spare for 3 s, and at most one raise every 2 s. A publication's
-//!   first split applies at once (the camera does not wait 3 s to start).
+//!   first split applies at once (the camera does not wait 3 s to start), and so does an
+//!   exempt layer (the backup's lowest layer when the backup starts: a subscriber without the
+//!   primary codec waits for nothing else; a primary layer above it is cut first).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -45,8 +49,13 @@ pub(crate) fn min_bitrate_bps(height: u32) -> u64 {
     }
 }
 
-/// A layer: (publication, index from the lowest).
-pub(crate) type Key = (u64, usize);
+/// A layer: (publication, lane: 0 the primary codec, 1 the backup; index from the lowest).
+pub(crate) type Key = (u64, usize, usize);
+
+/// The split's order: screen first, then by publication, layer index, lane.
+fn order_key(l: &AllocLayer) -> (bool, u64, usize, usize) {
+    (!l.screen, l.key.0, l.key.2, l.key.1)
+}
 
 /// One layer as the split sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +69,9 @@ pub(crate) struct AllocLayer {
     pub(crate) wanted: bool,
     /// Its lowest useful rate, bit/s ([`min_bitrate_bps`]).
     pub(crate) min_bps: u64,
+    /// Starts on the next split that gives it 60% of its cap, without the raise hysteresis
+    /// (the backup's lowest wanted layer as the backup starts).
+    pub(crate) exempt: bool,
 }
 
 impl AllocLayer {
@@ -74,17 +86,17 @@ impl AllocLayer {
 /// The split of `available` bit/s over `layers`: the running layers and their rates.
 pub(crate) fn split(layers: &[AllocLayer], available: u64) -> BTreeMap<Key, u64> {
     let mut order: Vec<&AllocLayer> = layers.iter().collect();
-    order.sort_by_key(|l| (!l.screen, l.key.0, l.key.1));
+    order.sort_by_key(|l| order_key(l));
     let mut left = available;
     let mut out = BTreeMap::new();
-    let mut blocked: BTreeSet<u64> = BTreeSet::new();
+    let mut blocked: BTreeSet<(u64, usize)> = BTreeSet::new();
     for l in order {
-        if !l.wanted || blocked.contains(&l.key.0) {
+        if !l.wanted || blocked.contains(&(l.key.0, l.key.1)) {
             continue;
         }
         let give = l.max_bps.min(left);
         if give < l.needs() || give == 0 {
-            blocked.insert(l.key.0);
+            blocked.insert((l.key.0, l.key.1));
             continue;
         }
         left -= give;
@@ -97,16 +109,16 @@ pub(crate) fn split(layers: &[AllocLayer], available: u64) -> BTreeMap<Key, u64>
 /// its full cap and with [`RAISE_MARGIN_PCT`] of it left when it is reached.
 fn margin_fits(layers: &[AllocLayer], available: u64) -> BTreeSet<Key> {
     let mut order: Vec<&AllocLayer> = layers.iter().collect();
-    order.sort_by_key(|l| (!l.screen, l.key.0, l.key.1));
+    order.sort_by_key(|l| order_key(l));
     let mut left = available;
     let mut out = BTreeSet::new();
-    let mut blocked: BTreeSet<u64> = BTreeSet::new();
+    let mut blocked: BTreeSet<(u64, usize)> = BTreeSet::new();
     for l in order {
-        if !l.wanted || blocked.contains(&l.key.0) {
+        if !l.wanted || blocked.contains(&(l.key.0, l.key.1)) {
             continue;
         }
         if left < l.max_bps * RAISE_MARGIN_PCT / 100 || l.max_bps < l.min_bps {
-            blocked.insert(l.key.0);
+            blocked.insert((l.key.0, l.key.1));
             continue;
         }
         left -= l.max_bps;
@@ -165,9 +177,15 @@ impl Allocator {
                 }
             }
         }
+        // An exempt layer the split covers: at once (no hold, no spacing, not a raise).
+        for l in layers.iter().filter(|l| l.exempt && l.wanted) {
+            if target.contains_key(&l.key) && self.running.insert(l.key) {
+                self.fits_since.remove(&l.key);
+            }
+        }
         // Raises: lowest first, one per RAISE_EVERY, each after RAISE_HOLD with the margin.
         let mut sorted: Vec<&AllocLayer> = layers.iter().collect();
-        sorted.sort_by_key(|l| (!l.screen, l.key.0, l.key.1));
+        sorted.sort_by_key(|l| order_key(l));
         for l in sorted {
             if !l.wanted || self.running.contains(&l.key) {
                 self.fits_since.remove(&l.key);
@@ -180,7 +198,9 @@ impl Allocator {
             let since = *self.fits_since.entry(l.key).or_insert(now);
             let below_running = layers
                 .iter()
-                .filter(|o| o.key.0 == l.key.0 && o.key.1 < l.key.1 && o.wanted)
+                .filter(|o| {
+                    o.key.0 == l.key.0 && o.key.1 == l.key.1 && o.key.2 < l.key.2 && o.wanted
+                })
                 .all(|o| self.running.contains(&o.key));
             let spaced = self
                 .last_raise
@@ -223,11 +243,12 @@ mod tests {
         caps.iter()
             .enumerate()
             .map(|(i, m)| AllocLayer {
-                key: (p, i),
+                key: (p, 0, i),
                 screen: false,
                 max_bps: *m,
                 wanted: true,
                 min_bps: 0,
+                exempt: false,
             })
             .collect()
     }
@@ -250,23 +271,26 @@ mod tests {
         }));
         // 300k + 1000k for the screen, then q 150k, h 500k; f would get 300k of 1200k (25%).
         let s = split(&layers, 1_950_000);
-        assert_eq!(s.get(&(2, 0)), Some(&300_000));
-        assert_eq!(s.get(&(2, 1)), Some(&1_000_000));
-        assert_eq!(s.get(&(1, 0)), Some(&Q));
-        assert_eq!(s.get(&(1, 1)), Some(&H));
-        assert_eq!(s.get(&(1, 2)), None);
+        assert_eq!(s.get(&(2, 0, 0)), Some(&300_000));
+        assert_eq!(s.get(&(2, 0, 1)), Some(&1_000_000));
+        assert_eq!(s.get(&(1, 0, 0)), Some(&Q));
+        assert_eq!(s.get(&(1, 0, 1)), Some(&H));
+        assert_eq!(s.get(&(1, 0, 2)), None);
         // h at 60% runs (with less than its cap); below 60% it and f stop.
         let s = split(&cam(1, &[Q, H, F]), Q + 300_000);
-        assert_eq!(s.get(&(1, 1)), Some(&300_000));
+        assert_eq!(s.get(&(1, 0, 1)), Some(&300_000));
         let s = split(&cam(1, &[Q, H, F]), Q + 299_000 + F);
-        assert_eq!(s.get(&(1, 1)), Some(&H));
+        assert_eq!(s.get(&(1, 0, 1)), Some(&H));
         let s = split(&cam(1, &[Q, H, F]), Q + 299_999);
-        assert_eq!(s.keys().copied().collect::<Vec<_>>(), vec![(1, 0)]);
+        assert_eq!(s.keys().copied().collect::<Vec<_>>(), vec![(1, 0, 0)]);
         // An unwanted layer takes nothing and holds nothing back.
         let mut l = cam(1, &[Q, H, F]);
         l[1].wanted = false;
         let s = split(&l, Q + F);
-        assert_eq!(s.keys().copied().collect::<Vec<_>>(), vec![(1, 0), (1, 2)]);
+        assert_eq!(
+            s.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 2)]
+        );
         assert_eq!(budget(1_500_000), 1_302_000);
     }
 
@@ -286,22 +310,25 @@ mod tests {
         // 1.6 Mbit/s for video: f would get 950 kbit/s, 56% of its cap and below 720p's
         // floor: paused, with q and h at their caps.
         let s = split(&layers, 1_600_000);
-        assert_eq!(s.get(&(1, 0)), Some(&150_000));
-        assert_eq!(s.get(&(1, 1)), Some(&500_000));
-        assert_eq!(s.get(&(1, 2)), None, "f paused, not starved");
+        assert_eq!(s.get(&(1, 0, 0)), Some(&150_000));
+        assert_eq!(s.get(&(1, 0, 1)), Some(&500_000));
+        assert_eq!(s.get(&(1, 0, 2)), None, "f paused, not starved");
         // A cap below the floor never runs: f capped at 900 kbit/s gets it all, still paused.
         let mut low = layers.clone();
         low[2].max_bps = 900_000;
-        assert_eq!(split(&low, 5_000_000).get(&(1, 2)), None);
+        assert_eq!(split(&low, 5_000_000).get(&(1, 0, 2)), None);
         // The floor is stricter than 60%: h at 360p needs 400 of its 500 kbit/s.
         let s = split(&layers, 150_000 + 399_000);
-        assert_eq!(s.keys().copied().collect::<Vec<_>>(), vec![(1, 0)]);
+        assert_eq!(s.keys().copied().collect::<Vec<_>>(), vec![(1, 0, 0)]);
         let s = split(&layers, 150_000 + 400_000);
-        assert_eq!(s.get(&(1, 1)), Some(&400_000));
+        assert_eq!(s.get(&(1, 0, 1)), Some(&400_000));
         // A low estimate through the allocator: f is never sent at a starved rate.
         let mut a = Allocator::default();
         let r = a.update(Instant::now(), est(1_600_000), &layers);
-        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![(1, 0), (1, 1)]);
+        assert_eq!(
+            r.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 1)]
+        );
         assert!(r.values().all(|bps| *bps >= MIN_180P_BPS));
     }
 
@@ -315,7 +342,10 @@ mod tests {
         assert_eq!(r.len(), 3);
         // The estimate drops: f goes at once.
         let r = a.update(t0 + Duration::from_millis(100), est(Q + H), &layers);
-        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![(1, 0), (1, 1)]);
+        assert_eq!(
+            r.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 1)]
+        );
         // Back up, without the margin: f stays off however long.
         let t1 = t0 + Duration::from_secs(1);
         let r = a.update(t1, est(Q + H + F), &layers);
@@ -354,6 +384,100 @@ mod tests {
         assert_eq!(r.len(), 2);
         let r = a.update(t1 + RAISE_HOLD + RAISE_EVERY, up, &layers);
         assert_eq!(r.len(), 3);
+    }
+
+    /// A camera with a backup: the primary lane's caps, then the backup's (lane 1).
+    fn with_backup(p: u64, primary: &[u64], backup: &[u64]) -> Vec<AllocLayer> {
+        let mut out = cam(p, primary);
+        out.extend(backup.iter().enumerate().map(|(i, m)| AllocLayer {
+            key: (p, 1, i),
+            screen: false,
+            max_bps: *m,
+            wanted: true,
+            min_bps: 0,
+            exempt: false,
+        }));
+        out
+    }
+
+    #[test]
+    fn both_lanes_share_one_budget_every_lowest_layer_first() {
+        // Primary q h f, backup q h: q, backup q, h, backup h, f.
+        let layers = with_backup(1, &[Q, H, F], &[Q, H]);
+        let s = split(&layers, Q + Q + H + H + F);
+        assert_eq!(s.len(), 5);
+        // Short of f: f is the one left out.
+        let s = split(&layers, Q + Q + H + H);
+        assert_eq!(
+            s.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)]
+        );
+        // Room for both lowest layers and h: the backup's q comes before the primary's h.
+        let s = split(&layers, Q + Q + H);
+        assert_eq!(
+            s.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 1), (1, 1, 0)]
+        );
+        let s = split(&layers, Q + Q + 100_000);
+        assert_eq!(
+            s.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 1, 0)],
+            "the primary's h gets 100k of 500k: paused; the backup's q runs"
+        );
+        // A lane that stops holds back only its own layers: the backup's q, its cap below its
+        // floor, never runs and takes nothing; the primary's h still runs.
+        let mut l = with_backup(1, &[Q, H], &[400_000, H]);
+        l[2].min_bps = 450_000;
+        let s = split(&l, Q + H + 400_000);
+        assert_eq!(
+            s.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 1)],
+            "the backup's q stops the backup lane only"
+        );
+    }
+
+    #[test]
+    fn the_backups_lowest_layer_starts_at_once_and_cuts_the_primarys_top() {
+        let t0 = Instant::now();
+        let mut a = Allocator::default();
+        // The primary runs q h f on an estimate that just covers them.
+        let primary = cam(1, &[Q, H, F]);
+        let e = est(Q + H + F);
+        assert_eq!(a.update(t0, e, &primary).len(), 3);
+        // The backup starts (q and h wanted, q exempt): the next split runs its q at once and
+        // cuts the primary's f; its h waits for the hysteresis.
+        let mut layers = with_backup(1, &[Q, H, F], &[Q, H]);
+        layers[3].exempt = true;
+        let t1 = t0 + Duration::from_secs(10);
+        let r = a.update(t1, e, &layers);
+        assert_eq!(
+            r.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 1), (1, 1, 0)]
+        );
+        // Without the exemption the backup's q would wait 3 s (and the margin).
+        let mut b = Allocator::default();
+        assert_eq!(b.update(t0, e, &primary).len(), 3);
+        let plain = with_backup(1, &[Q, H, F], &[Q, H]);
+        let r = b.update(t1, e, &plain);
+        assert!(!r.contains_key(&(1, 1, 0)), "{r:?}");
+        // The backup's h with room: only after RAISE_HOLD with the margin.
+        layers[3].exempt = false;
+        let up = est((Q + H + F + Q + H) * 2);
+        let t2 = t1 + Duration::from_secs(1);
+        assert!(!a.update(t2, up, &layers).contains_key(&(1, 1, 1)));
+        let r = a.update(t2 + RAISE_HOLD, up, &layers);
+        assert!(
+            r.contains_key(&(1, 1, 1)) || r.contains_key(&(1, 0, 2)),
+            "{r:?}"
+        );
+        let r = a.update(t2 + RAISE_HOLD + RAISE_EVERY, up, &layers);
+        assert_eq!(r.len(), 5, "{r:?}");
+        // An exempt layer the budget can't cover at 60% does not run.
+        let mut c = Allocator::default();
+        let mut tight = with_backup(1, &[Q], &[Q]);
+        tight[1].exempt = true;
+        let r = c.update(t0, est(Q + Q / 2), &tight);
+        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![(1, 0, 0)]);
     }
 
     #[test]

@@ -54,13 +54,13 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.8.2 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.8.2 | Apache-2.0 |
-| `sew-mls-crypto` | 0.8.2 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.8.2 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.8.2 | Apache-2.0 |
-| `sew-call-client` | 0.5.0 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.5.0 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.8.3 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.8.3 | Apache-2.0 |
+| `sew-mls-crypto` | 0.8.3 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.8.3 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.8.3 | Apache-2.0 |
+| `sew-call-client` | 0.5.1 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.5.1 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
@@ -92,16 +92,15 @@ sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }
 sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }
 sew-call-client = { path = "third_party/sew-crates/sew-call-client" }
 tauri-plugin-sew-voice = { path = "third_party/sew-crates/tauri-plugin-sew-voice" }
-str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-is              = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "7faf99d17f34292b5c9f72e67f3d0332cd67c122" }
-dimpl          = { git = "https://github.com/Alakazam-211/dimpl", rev = "a3481943e8e3fa270990e7c05a27d015cfbe4d77" }
+str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+is              = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
 ```
 
-The `str0m`, `str0m-proto`, `is`, `str0m-aws-lc-rs` and `dimpl` rows are Alakazam Labs'
-public forks of `str0m` (the WebRTC stack; `is` is one of its crates) and `dimpl` (its
-DTLS), which the voice engine needs.
+The `str0m`, `str0m-proto`, `is` and `str0m-aws-lc-rs` rows are Alakazam Labs' public
+fork of `str0m` (the WebRTC stack; `is` is one of its crates), which the voice engine needs.
+Its DTLS, `dimpl`, comes from crates.io.
 
 **kessel-audio** and **kessel-video** (K2's audio and video pipelines, MIT OR Apache-2.0) come
 from crates.io and need no row.

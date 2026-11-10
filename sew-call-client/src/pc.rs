@@ -24,6 +24,7 @@ use str0m::rtp::{ExtensionValues, RtpWrite};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 
 use crate::transport::{Datagram, LocalCandidate, LocalKind};
+use crate::video::codec_pref::CodecSet;
 
 /// One received RTP packet.
 #[derive(Clone, Debug, PartialEq)]
@@ -170,6 +171,8 @@ pub(crate) struct Pc {
     pub(crate) errors: u64,
     /// The local candidates added (a network change invalidates them).
     locals: Vec<Candidate>,
+    /// The video codecs every video section offers (`Pc::new_with`'s `video_decode`).
+    video_codecs: CodecSet,
 }
 
 impl std::fmt::Debug for Pc {
@@ -189,21 +192,24 @@ fn ice_candidate(l: &LocalCandidate) -> Option<Candidate> {
 }
 
 impl Pc {
-    /// A PC with the transport's local candidates.
+    /// A PC with the transport's local candidates (VP8 and H.264 offered).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(locals: &[LocalCandidate], now: Instant) -> Pc {
-        Pc::new_with(locals, now, false, true)
+        Pc::new_with(locals, now, false, CodecSet::ALL)
     }
 
     /// A PC with the transport's local candidates; `send_video` (with `video-core`): the call
     /// may publish video (the join's policy has video on and a camera or screen allowed), so
-    /// str0m's send-side bandwidth estimator is on too; `h264`: H.264 is negotiated beside VP8
-    /// ([`crate::ClientConfig::video_h264`]), else every video section is VP8 only.
+    /// str0m's send-side bandwidth estimator is on too; `video_decode`: the video codecs this
+    /// device can decode (VP8 always; H.264 only when the host declared a decoder for it and
+    /// the preference allows it, never on Linux: `CodecSet::negotiated`). Every video section
+    /// offers exactly these, so the media server never forwards this device a codec it can't
+    /// show. str0m's codec config is one for the whole PC: a send section offers the same set.
     pub(crate) fn new_with(
         locals: &[LocalCandidate],
         now: Instant,
         send_video: bool,
-        h264: bool,
+        video_decode: CodecSet,
     ) -> Pc {
         let cfg = RtcConfig::new()
             .set_crypto_provider(provider())
@@ -212,7 +218,11 @@ impl Pc {
             .clear_codecs()
             .enable_opus(true, false)
             .set_stats_interval(Some(Duration::from_secs(1)));
-        let mut cfg = if VIDEO { video_config(cfg, h264) } else { cfg };
+        let mut cfg = if VIDEO {
+            video_config(cfg, video_decode)
+        } else {
+            cfg
+        };
         if VIDEO && send_video {
             cfg = cfg.enable_bwe(Some(Bitrate::bps(BWE_INITIAL_BPS)));
         }
@@ -239,7 +249,14 @@ impl Pc {
             fed: None,
             errors: 0,
             locals: added,
+            video_codecs: video_decode,
         }
+    }
+
+    /// The video codecs this PC's video sections offer (VP8 always).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn video_codecs(&self) -> CodecSet {
+        self.video_codecs
     }
 
     /// A network change: the old transport's local candidates are invalidated (their
@@ -731,13 +748,14 @@ const DD_URI: &str =
 const H264_PTS: [(u8, u8, u32); 2] = [(108, 109, 0x42e01f), (112, 113, 0x640c1f)];
 
 /// The codecs and the extension video adds to the PC: VP8 (str0m's default, with RTX), with
-/// `h264` the two H.264 profiles (each with RTX), NACK, PLI and FIR feedback on all of them
-/// (str0m's default for video codecs), and the Dependency Descriptor. mid, rid, repaired-rid,
-/// TWCC and abs-send-time are in str0m's standard extension map already. Without `h264` the
-/// receive sections offer VP8 only, so the media server never forwards this client H.264.
-fn video_config(cfg: RtcConfig, h264: bool) -> RtcConfig {
+/// H.264 in `codecs` the two H.264 profiles (each with RTX), NACK, PLI and FIR feedback on all
+/// of them (str0m's default for video codecs), and the Dependency Descriptor. mid, rid,
+/// repaired-rid, TWCC and abs-send-time are in str0m's standard extension map already. Without
+/// H.264 the receive sections offer VP8 only, so the media server never forwards this client
+/// H.264.
+fn video_config(cfg: RtcConfig, codecs: CodecSet) -> RtcConfig {
     let mut cfg = cfg.enable_vp8(true);
-    if h264 {
+    if codecs.contains(crate::video::VideoCodec::H264) {
         for (pt, rtx, profile_level_id) in H264_PTS {
             cfg.codec_config()
                 .add_h264(pt.into(), Some(rtx.into()), true, profile_level_id);
@@ -936,7 +954,7 @@ mod tests {
             addr: "127.0.0.1:40000".parse().unwrap(),
             kind: LocalKind::Host,
         }];
-        let mut pc = Pc::new_with(&locals, now, true, true);
+        let mut pc = Pc::new_with(&locals, now, true, CodecSet::ALL);
         // Two layers opened (q, h): only theirs are offered.
         pc.add_send_video("PA_me", "cam-1", &["q".to_owned(), "h".to_owned()]);
         let (sdp, _) = pc.negotiate().unwrap();
@@ -961,6 +979,52 @@ mod tests {
     }
 
     #[test]
+    fn a_backup_codec_is_a_second_send_section_in_the_same_offer() {
+        if !VIDEO {
+            return;
+        }
+        let now = Instant::now();
+        let locals = [LocalCandidate {
+            addr: "127.0.0.1:40000".parse().unwrap(),
+            kind: LocalKind::Host,
+        }];
+        let mut pc = Pc::new_with(&locals, now, true, CodecSet::ALL);
+        pc.add_send_video(
+            "PA_me",
+            "cam-a",
+            &["q".to_owned(), "h".to_owned(), "f".to_owned()],
+        );
+        pc.add_send_video("PA_me", "cam-b", &["q".to_owned(), "h".to_owned()]);
+        let (sdp, _) = pc.negotiate().unwrap();
+        assert_eq!(sdp.matches("m=video").count(), 2, "{sdp}");
+        let at = sdp
+            .match_indices("m=video")
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        let (primary, backup) = (&sdp[at[0]..at[1]], &sdp[at[1]..]);
+        for want in [
+            "a=sendonly",
+            "a=msid:PA_me cam-a",
+            "a=simulcast:send q;h;f",
+            "a=rid:f send",
+        ] {
+            assert!(primary.contains(want), "{want}: {primary}");
+        }
+        for want in [
+            "a=sendonly",
+            "a=msid:PA_me cam-b",
+            "a=simulcast:send q;h",
+            "VP8/90000",
+        ] {
+            assert!(backup.contains(want), "{want}: {backup}");
+        }
+        assert!(!backup.contains("a=rid:f"), "{backup}");
+        let (a, b) = (pc.mid_for_track("cam-a"), pc.mid_for_track("cam-b"));
+        assert!(a.is_some() && b.is_some() && a != b, "{a:?} {b:?}");
+        assert!(pc.negotiate().is_none(), "one offer for both");
+    }
+
+    #[test]
     fn without_h264_the_receive_sections_offer_vp8_only() {
         if !VIDEO {
             return;
@@ -970,7 +1034,8 @@ mod tests {
             addr: "127.0.0.1:40000".parse().unwrap(),
             kind: LocalKind::Host,
         }];
-        let mut pc = Pc::new_with(&locals, now, false, false);
+        let mut pc = Pc::new_with(&locals, now, false, CodecSet::VP8_ONLY);
+        assert_eq!(pc.video_codecs(), CodecSet::VP8_ONLY);
         pc.add_send_audio("PA_me", "mic-1");
         pc.add_recv_video(2);
         let (sdp, _) = pc.negotiate().unwrap();
@@ -985,6 +1050,44 @@ mod tests {
             // VP8 and its RTX: two payload types.
             assert_eq!(line.split(' ').skip(3).count(), 2, "{line}");
         }
+    }
+
+    /// The receive sections offer the declared decoders: H.264 only when declared and not
+    /// under Prefer VP8, and on Linux never.
+    #[test]
+    fn the_offer_follows_the_declared_decoders_and_the_preference() {
+        use crate::video::codec_pref::CodecSettings;
+        use crate::{VideoCodec, VideoCodecPreference};
+        if !VIDEO {
+            return;
+        }
+        let now = Instant::now();
+        let locals = [LocalCandidate {
+            addr: "127.0.0.1:40000".parse().unwrap(),
+            kind: LocalKind::Host,
+        }];
+        let offers_h264 = |set: CodecSet| {
+            let mut pc = Pc::new_with(&locals, now, false, set);
+            pc.add_send_audio("PA_me", "mic-1");
+            pc.add_recv_video(1);
+            let (sdp, _) = pc.negotiate().unwrap();
+            let video = sdp[sdp.find("m=video").unwrap()..].to_owned();
+            assert!(video.contains("VP8/90000"), "{video}");
+            video.contains("H264/90000")
+        };
+        let s = CodecSettings::default();
+        s.set_decode(&[VideoCodec::Vp8]);
+        assert!(
+            !offers_h264(s.negotiated(true)),
+            "no H.264 decoder declared"
+        );
+        s.set_decode(&[VideoCodec::Vp8, VideoCodec::H264]);
+        assert_eq!(offers_h264(s.negotiated(true)), !cfg!(target_os = "linux"));
+        s.set_preference(VideoCodecPreference::PreferVp8);
+        assert!(
+            !offers_h264(s.negotiated(true)),
+            "Prefer VP8 receives VP8 only"
+        );
     }
 
     #[test]

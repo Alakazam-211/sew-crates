@@ -177,6 +177,11 @@ pub(crate) struct Shared {
     pub(crate) policy: Mutex<Option<sew_proto::voice::MediaPolicy>>,
     /// The send-side video counters ([`crate::Call::video_stats`]).
     pub(crate) video_stats: Arc<Mutex<crate::video::VideoSendStats>>,
+    /// The video codecs the call's media connections offer, fixed at the join
+    /// ([`crate::Call::video_codecs`]).
+    pub(crate) video_codecs: crate::video::codec_pref::CodecSet,
+    /// The engine's codec preference, live ([`crate::Call::video_codec_preference`]).
+    pub(crate) codec_settings: Arc<crate::video::codec_pref::CodecSettings>,
 }
 
 impl Shared {
@@ -235,7 +240,9 @@ struct Parts {
     video_tx: mpsc::Sender<VideoRecvItem>,
     /// The video receive side (its sinks outlive a hold).
     video: Subscriptions,
-    busy: BusyGuard,
+    /// The app's call slot: released the moment the call is over (before a leave answers),
+    /// never later than the engine's teardown.
+    busy: Option<BusyGuard>,
     counters: CallCounters,
     vpub: Publisher,
 }
@@ -245,6 +252,7 @@ pub(crate) fn spawn(s: Start) -> Result<(), String> {
     let tls = crate::config::tls_config(&s.cfg).map_err(|e| format!("TLS: {e}"))?;
     let http = api::http_client(&tls)?;
     let vpub = Publisher::new(s.shared.video_stats.clone());
+    let video_codecs = s.shared.video_codecs;
     let parts = Parts {
         cfg: s.cfg,
         tls,
@@ -257,8 +265,8 @@ pub(crate) fn spawn(s: Start) -> Result<(), String> {
         push_rx: s.push_rx,
         frames_tx: s.frames_tx,
         video_tx: s.video_tx,
-        video: Subscriptions::new(Instant::now()),
-        busy: s.busy,
+        video: Subscriptions::new(Instant::now()).decoding(video_codecs),
+        busy: Some(s.busy),
         counters: CallCounters::default(),
         vpub,
     };
@@ -312,12 +320,15 @@ async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
                 }
             };
             match cmd {
-                None => {
+                None | Some(Cmd::Dropped) => {
                     held_end(p, EndReason::Left);
+                    p.busy = None;
                     return None;
                 }
                 Some(Cmd::Leave(reply)) => {
                     held_end(p, EndReason::Left);
+                    // The slot is free before the leave answers.
+                    p.busy = None;
                     let _ = reply.send(());
                     return None;
                 }
@@ -528,7 +539,7 @@ impl Engine {
             video_tx: p.video_tx,
             video: p.video,
             video_refused: std::collections::HashSet::new(),
-            _busy: p.busy,
+            busy: p.busy,
             held: None,
             recording: None,
             channel,
@@ -619,7 +630,7 @@ impl Engine {
             frames_tx,
             video_tx,
             video,
-            _busy: busy,
+            busy,
             counters,
             held,
             mut vpub,
@@ -722,7 +733,8 @@ struct Engine {
     video: Subscriptions,
     /// Video tracks the keys refused (unsubscribed once).
     video_refused: std::collections::HashSet<String>,
-    _busy: BusyGuard,
+    /// The app's call slot (see [`Parts::busy`]).
+    busy: Option<BusyGuard>,
     /// A re-join was refused for the recording notice: the loop stops and the call holds.
     held: Option<Box<ConsentRequired>>,
     /// The call's active recording as Sew said it last (this member's own view).
@@ -954,7 +966,7 @@ impl Engine {
             };
             let now = Instant::now();
             match step {
-                Step::Cmd(None) => {
+                Step::Cmd(None | Some(Cmd::Dropped)) => {
                     // The Call handle is gone without a leave: leave.
                     self.leave().await;
                 }
@@ -968,6 +980,9 @@ impl Engine {
                 }
                 Step::Cmd(Some(Cmd::Leave(reply))) => {
                     self.leave().await;
+                    // The slot is free before the leave answers: a join right after it is
+                    // never `already_in_call`.
+                    self.busy = None;
                     let _ = reply.send(());
                 }
                 Step::Cmd(Some(Cmd::NetworkChanged)) => self.network_changed(now),
@@ -995,6 +1010,11 @@ impl Engine {
                 Step::Publish(VideoStep::Lease(d)) => {
                     let mut cx = video_cx!(self, now);
                     self.vpub.on_lease(&mut cx, d);
+                    self.negotiate();
+                }
+                Step::Publish(VideoStep::Fallback(f)) => {
+                    let mut cx = video_cx!(self, now);
+                    self.vpub.on_producer_fallback(&mut cx, f);
                     self.negotiate();
                 }
                 Step::Cmd(Some(Cmd::Consent {
@@ -1094,6 +1114,11 @@ impl Engine {
                 self.next_snapshot = now + SPEAKING_EVERY;
                 self.snapshot_update();
             }
+        }
+        if self.held.is_none() {
+            // Over (a leave, a kick, a lost admit, an error): the app's slot is free now, not
+            // once the engine's parts are dropped.
+            self.busy = None;
         }
     }
 
@@ -1835,8 +1860,12 @@ impl Engine {
         if let Some(l) = self.link.take() {
             l.close().await;
         }
-        if let Some(k) = self.keys.take() {
-            k.close().await;
+        if let Some(k) = self.keys.take()
+            && tokio::time::timeout(LEAVE_TIMEOUT, k.close())
+                .await
+                .is_err()
+        {
+            tracing::warn!(target: "sew_call_client", "the call keys did not close in time; the call ends without them");
         }
         self.recording = None;
         self.sync_recording_view();
@@ -2691,7 +2720,7 @@ impl Engine {
                     t.local_candidates(),
                     now,
                     self.vpub.may_send(),
-                    self.cfg.video_h264,
+                    self.shared.video_codecs,
                 );
                 pc.handle_timeout(now);
                 self.transport = Some(t);

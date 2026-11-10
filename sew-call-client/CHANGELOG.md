@@ -1,5 +1,144 @@
 # Changelog
 
+## 0.5.1 (2026-11-10, Sew 0.8.3)
+
+Additions only: nothing in 0.5.0's API changes or goes away.
+
+### Fixed
+
+- Updates the WebRTC dependencies to current upstream releases (dimpl 0.9, upstream str0m
+  fixes); recommended for everyone. A host that repeats the `[patch.crates-io]` rows moves the
+  str0m rows to `907e050bfa212a23394f4482110acef04cba8fc6` and drops the dimpl row: dimpl 0.9.0
+  comes from crates.io.
+- A publication no longer drops the media server's keyframe request for a layer whose last
+  asked-for keyframe has already gone out (within 300 ms of that ask): such a request comes from
+  a subscriber that joined after it, which before waited for the server's next request (up to
+  its 0.5–1 s throttle) for its first frame.
+- A camera switch (`VideoBridge::switch_camera`, a front/back flip) puts its keyframe on the new
+  camera's first frame. Before, it asked the encoders for a keyframe as the new camera came in,
+  and a threaded encoder could put it on the old camera's last frame, still waiting in it: the
+  new camera's frames then went out as deltas of another picture until the next keyframe.
+- A leave frees the app's call slot whatever the camera did. The slot is released the moment
+  the call is over (a leave, a kick, a lost admit, an engine error), before `Call::leave`
+  answers, so a `CallClient::join` right after it is never `already_in_call`; before, it was
+  released only once the engine's parts were dropped, after the answer.
+- Dropping a `Call` without a leave leaves now, even while a video sink, a camera pipeline or
+  a `CallLeaver` still holds the engine's command queue (before, the call lived on until the
+  last of them was gone).
+- A camera pipeline's stop waits at most 2 s: a camera whose close blocks on the OS (a
+  suspended or lost device) finishes closing on its own thread instead of holding up
+  `VideoBridge::set_camera`, `switch_camera` or `close`.
+- The engine's leave no longer waits without bound for the call keys to close (at most 3 s,
+  logged).
+- A device offers to receive only the video codecs it can decode, once its host declares them
+  with the new `CallClient::set_video_decode`: VP8 always, H.264 only if the host lists an H.264
+  decoder (its kessel-video backend's OS decoders, its webview's WebCodecs probe), and never on
+  Linux. Before, every native but Linux offered H.264 whatever it could decode, so the media
+  server could send it H.264 it could not show. A host that declares nothing keeps
+  `ClientConfig::video_h264` alone, as before.
+
+### Added
+
+- `VideoSendStats::sfu_keyframe_requests_by_layer`: the media server's keyframe requests per
+  layer.
+- `FixtureBackend::vp8_failures_left` (feature `testing`): how many of `fail_vp8_opens`'s
+  failures are still to come.
+- `Call::leaver` and `CallLeaver`: leave a call without the `Call` handle, for a host that
+  keeps the `Call` behind a lock its camera or screen commands hold while they wait on a
+  device. Those commands then answer `ended`.
+- `Call::local_id` (and `CallLeaver::local_id`), and `VideoBridge::close_call`: stops only
+  that call's video pipelines, so a late teardown of a call that was left never stops the next
+  call's camera. A pipeline of an earlier call found by `set_camera`, `switch_camera` or a
+  publish is stopped first.
+- A camera must give its first frame within 2.5 s of opening, or `set_camera` (and a switch's
+  new camera) is refused with the new `VideoError::NoFrames` (`no_frames`): the camera closed,
+  the lease released, nothing published. The camera track is published only after its first
+  frame (before, after its first `Started` or 3 s).
+- The video codec preference, a per-device user setting: `VideoCodecPreference` (`Automatic`,
+  the default; `PreferH264`; `PreferVp8`), set with `CallClient::set_video_codec_preference`
+  and read back with `CallClient::video_codec_preference` and `Call::video_codec_preference`.
+  The engine keeps it for every call until the process ends; persisting it is the host's job.
+  `PreferVp8` also stops the device offering to receive H.264, from its next join.
+- `effective_publish_codec(preference, detection)` and
+  `effective_publish_codec_under_policy(preference, detection, h264_allowed)`: the codec a
+  camera or screen publishes in, and `CodecPreferenceReason` (`not_detected`, `platform`,
+  `policy`) when Prefer H.264 can't apply. `H264Detection` (`Usable`, `NotDetected`,
+  `Unconfirmed`, `NoPlatformCheck`) is the run-time check of the OS's hardware H.264 encoder;
+  with `video-core`, `h264_encode_detection` reads it from a kessel-video backend's
+  capabilities (a hardware encode entry; no check on Linux, Android or Windows yet; an iOS
+  before 17.4 is `Unconfirmed`) and `H264Detection::from_session` from an opened encoder.
+  Nothing assumes H.264 from the platform.
+- `CallClient::set_video_decode` and `CallClient::video_decode`: the codecs the host can
+  decode, from the next join (above). `Call::video_codecs`: the codecs a call's media
+  connection offers.
+- `VideoTrack::unsupported` and `VideoTrackView::unsupported`: this device can receive none of
+  the track's codecs. Before a track's first packet, `VideoTrack::codec` is now the first of the
+  publisher's codecs (its primary, then its backups) that this device receives; after it, the
+  packets' codec, as before.
+- `CapturePause::Suspended`: kessel-video's `Interruption::Suspended` (a MacBook's built-in
+  camera with its lid closed, a shut lens cover) is a pause, `Resumed` when the camera comes
+  back; before, it was `CapturePause::Other`.
+
+- `choose_codecs` with `CodecPlan` and `PlannedCodec` (`video-core`): what a native sender
+  publishes in, under the call's policy and this device's codecs. H.264 counts only when it is
+  usable: the backend lists an H.264 encoder run by the hardware, the encoders open
+  hardware-only, and each opened session reports the hardware (a session that reports software,
+  or can't tell, as on an iOS before 17.4, is refused). Only macOS and iOS publish H.264; Linux
+  never does, and Android and Windows publish VP8 only for now. `CodecPlan::reason` says why.
+- A backup codec for a publication (the frame API): `VideoPublish::with_backup` with
+  `BackupSpec` (VP8 beside an H.264 primary). One `AddTrackRequest` names both codecs, each on
+  its own cid, and both send sections go in the same offer; each codec has its own layers,
+  SSRCs and keyframe state, and a frame goes to the lane of its codec. The backup reads only
+  its own `subscribed_codecs` entry and runs only while some subscriber gets it: the new
+  `VideoControl::BackupStart`, `BackupRates`, `BackupKeyframe` and `BackupStop` tell the
+  producer (a host that asks for no backup never sees them). Both codecs share one bandwidth
+  budget, every lowest layer first; the backup's lowest layer starts without the raise
+  hysteresis (the primary's top layer is cut first). The backup is dropped when the SFU keeps
+  one codec or the policy no longer allows it (`backup_codec`, dynacast, VP8 listed).
+- `VideoBridge` publishes the codec plan: on a device with usable H.264 (and a policy with
+  `backup_codec`), H.264 with the VP8 backup's layers (the same rids and sizes as the primary).
+  The backup's encoders open only on `BackupStart` and close on `BackupStop`; each captured
+  frame goes to its active encoders too. A backup encoder that doesn't open is tried again once
+  after a second; failing again, the camera or screen is published again in VP8 alone under
+  the same lease (no VP8 encoder: `encoder_lost`). An H.264 encoder that doesn't open on the
+  hardware at publish makes it VP8 alone; a hardware H.264 encoder lost mid-call (its reopen
+  failing) is published again in VP8 alone, and H.264 isn't tried again in that call.
+  `CameraState::On`'s codec is the one published now.
+- One capture feeds both codecs: the primary's encoders take each frame as it comes (a native
+  buffer for a hardware encoder); the backup's take CPU planes converted once per frame, at its
+  largest running layer's size (none while it doesn't run). On a phone the backup stops at
+  360p, `Serious` thermal pressure keeps only its lowest layer and `Critical` runs that layer
+  at 15 fps. Heat never stops the backup: it keeps its lowest layer whatever the caps, and a
+  bitrate cap never takes that layer below its floor.
+- `VideoPublication::republish_without_backup`: a producer that can't run its backup, or lost
+  its primary codec's encoder, has the track published again in one codec, under the same
+  lease.
+- `VideoSendStats::frames_by_codec`, `keyframes_by_codec`, `backup_starts`, `backup_stops` and
+  `backup_ms`; a backup layer's frames count in `frames_sent` as `source/backup/rid`.
+- `FixtureBackend::load_with` with `FixtureOptions` and `FixtureH264` (`testing`): the
+  fixture's H.264 encoder as a hardware one, one whose hardware open fails, or one whose session
+  reports software or nothing; `encoder_opens`, `encoders_open`, `lose_h264` and
+  `fail_vp8_opens`.
+
+### Changed
+
+- A camera or screen publishes H.264 only from a hardware OS encoder. With a policy that lists
+  H.264 alone, a device whose only H.264 encoder is software (macOS's software VideoToolbox
+  entry, a virtual machine) is now refused with `codec_unavailable`; before, `choose_codec` took
+  any H.264 encoder. The bridge opens H.264 encoders hardware-only.
+- `FixtureBackend`'s software H.264 encoder refuses a hardware-only open, as an OS's does.
+
+### Deprecated
+
+- `choose_codec`: it keeps its signature and meaning; `VideoBridge` uses `choose_codecs`.
+
+### Dependencies
+
+- kessel-video 0.1.5: a camera that goes away ends its source with `DeviceLost` on macOS and
+  iOS (`camera_lost`: unpublished, the call goes on), the camera list says which cameras are
+  suspended (`CameraInfo::suspended`), an open with no id passes over a suspended default, and
+  a source's drop never waits on the thread that sends its events.
+
 ## 0.5.0 (2026-11-06, Sew 0.8.2)
 
 ### Breaking

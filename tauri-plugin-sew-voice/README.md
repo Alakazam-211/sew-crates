@@ -13,18 +13,28 @@ app's Rust code signs in: it implements `JoinProvider`, which obtains Sew's join
 sends the person's recording consent with the person's own session), so no token ever reaches
 the web view.
 
-Video: thirteen more commands (`video_caps`, `video_devices`, `set_video_device`, `camera`,
+Video: fourteen more commands (`video_caps`, `video_devices`, `set_video_device`, `camera`,
 `screen_sources`, `screen`, `preview`, `video_sink`, `video_sink_update`, `video_sink_close`,
-`request_keyframe`, `camera_permission`, `request_camera_permission`) and four events (`sew-voice://video`, `local_video`, `video_devices`,
+`request_keyframe`, `camera_permission`, `request_camera_permission`,
+`set_video_codec_preference`) and four events (`sew-voice://video`, `local_video`, `video_devices`,
 `policy`). Each video element gets its frames over its own Tauri raw `Channel` (a 32-byte
 header, then the encoded frame, decrypted in Rust) and decodes them with WebCodecs; keys never
 leave Rust. They are behind the `sew-voice:video` permission set (docs/native-voice-sdk.md §3,
 Video). The engine's video is wired through `VoiceEngine` and `CallHandle` (module `video`);
-an engine without it answers `video_unsupported`. The real engine receives remote video with
-the `video-core` feature; it doesn't publish yet. On phones (`video` and `mobile`) it uses
+an engine without it answers `video_unsupported`. With the `video-core` feature the real
+engine receives remote video and publishes the camera and the screen share (sew-call-client's
+`VideoBridge`), with this device's self-view on `local:camera` and `local:screen`. On phones (`video` and `mobile`) it uses
 kessel-video's iOS and Android backends, follows the app's scene (`VoiceControl::app_scene`),
 tells the app when the call has video (`VoiceListener::video_changed`, for the speaker route)
 and gives native sinks for a picture in picture (`VoiceControl::open_native_sink`).
+
+Video codecs: pass the webview's WebCodecs probe as `join`'s `decode` (`["vp8", "h264"]`); the
+engine then offers to receive only what this device decodes (VP8 always, H.264 only when the
+webview or the OS decoders do, never on Linux). `set_video_codec_preference {preference}`
+(`automatic`, `prefer_h264`, `prefer_vp8`) is a per-device user setting, read back in
+`video_caps.codec_preference` with the codec it gives here and the reason when Prefer H.264
+can't apply. H.264 is only ever the OS's hardware encoder, found at run time. The plugin keeps
+the setting until the app quits: store it with the app's settings and set it again at start.
 
 Not affiliated with or endorsed by LiveKit.
 
@@ -81,7 +91,7 @@ Not affiliated with or endorsed by LiveKit.
 
 The crate is not published on crates.io yet, because the voice engine it runs,
 `sew-call-client`, is not: the engine waits on dependencies of its own (`sew-e2ee` and
-Alakazam Labs' forks of `str0m` and `dimpl`; `kessel-audio` and `kessel-video` come from
+Alakazam Labs' fork of `str0m`; `kessel-audio` and `kessel-video` come from
 crates.io). Until then,
 get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository,
 which holds it with the Sew crates it depends on: clone it into your project (for example as
@@ -93,7 +103,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.5.0"
+tauri-plugin-sew-voice = "0.5.1"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"

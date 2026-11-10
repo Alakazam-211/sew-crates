@@ -57,12 +57,12 @@ use crate::video::{
     VideoFrames, decoded_fit, is_local_track,
 };
 use crate::wire::{
-    CallState, CameraArgs, ConsentArgs, DeviceChoice, DeviceList, ErrorInfo, JoinArgs, JoinOptions,
-    JoinResult, LocalVideo, LocalVideoState, MuteArgs, Participant, PermissionState, PluginEvent,
-    PreviewAnswer, PreviewArgs, RecordingInfo, ScreenArgs, ScreenSource, SelfMute, SetDeviceArgs,
-    SetVideoDeviceArgs, SinkIdArgs, SinkMode, Speaking, StateEvent, StateSnapshot, VideoCaps,
-    VideoDevices, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoTrack, code, reason,
-    video_code,
+    CallState, CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceChoice, DeviceList, ErrorInfo,
+    JoinArgs, JoinOptions, JoinResult, LocalVideo, LocalVideoState, MuteArgs, Participant,
+    PermissionState, PluginEvent, PreviewAnswer, PreviewArgs, RecordingInfo, ScreenArgs,
+    ScreenSource, SelfMute, SetDeviceArgs, SetVideoCodecPreferenceArgs, SetVideoDeviceArgs,
+    SinkIdArgs, SinkMode, Speaking, StateEvent, StateSnapshot, VideoCaps, VideoDevices,
+    VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoTrack, code, reason, video_code,
 };
 
 /// The `speaking` event's floor: at most 10 a second.
@@ -299,7 +299,9 @@ impl VoiceService {
         lock(&self.inner.slot)
     }
 
-    /// `join {target, room, muted?, deafened?}` → `{call_id}`.
+    /// `join {target, room, muted?, deafened?, decode?}` → `{call_id}`. `decode` (the
+    /// `join` command's, here [`JoinOptions::decode`] through [`VoiceService::join_with`]):
+    /// the video codecs the webview decodes, from its WebCodecs probe.
     pub async fn join(&self, args: JoinArgs) -> Result<JoinResult, ErrorInfo> {
         self.join_with(args, JoinOptions::default()).await
     }
@@ -354,11 +356,29 @@ impl VoiceService {
             slot.generation
         };
 
-        let joined = self
+        let mut joined = self
             .inner
             .engine
-            .join(Arc::clone(&self.inner.provider), req)
+            .join_decoding(
+                Arc::clone(&self.inner.provider),
+                req.clone(),
+                opts.decode.clone(),
+            )
             .await;
+        if joined
+            .as_ref()
+            .is_err_and(|e| e.to_info().code == code::ALREADY_IN_CALL)
+        {
+            // The service has no live call, so the engine's is one the plugin lost hold of (a
+            // leave that could not take it): released, then the join once more.
+            tracing::warn!("sew-voice: the engine still had a call; released, joining again");
+            self.inner.engine.release_calls().await;
+            joined = self
+                .inner
+                .engine
+                .join_decoding(Arc::clone(&self.inner.provider), req, opts.decode.clone())
+                .await;
+        }
 
         let mut slot = self.lock();
         if slot.generation != generation {
@@ -446,9 +466,17 @@ impl VoiceService {
         Ok(JoinResult { call_id })
     }
 
-    /// `leave`. With no call it does nothing. The state is `ended {reason: "left"}` at once;
-    /// if Sew's leave then fails, an `errors` event says so (the call is gone either way).
+    /// `leave`. With no call it releases any call the engine still holds that the plugin lost
+    /// hold of ([`VoiceEngine::release_calls`]), and nothing more. The state is
+    /// `ended {reason: "left"}` at once; if Sew's leave then fails, an `errors` event says so
+    /// (the call is gone either way).
     pub async fn leave(&self) -> Result<(), ErrorInfo> {
+        if !self.lock().state.is_live() {
+            // No call here, but the engine may still hold one the plugin lost hold of: a leave
+            // releases it too, so the next join is never `already_in_call`.
+            self.inner.engine.release_calls().await;
+            return Ok(());
+        }
         let call = {
             let mut slot = self.lock();
             if !slot.state.is_live() {
@@ -693,6 +721,35 @@ impl VoiceService {
     /// `video_caps` → what this device's video can do.
     pub async fn video_caps(&self) -> Result<VideoCaps, ErrorInfo> {
         Ok(self.inner.engine.video_caps())
+    }
+
+    /// `video_caps.codec_preference` → the video codec setting and what it gives here now;
+    /// `None` for an engine without video publish.
+    pub async fn video_codec_preference(&self) -> Result<Option<CodecPreferenceInfo>, ErrorInfo> {
+        Ok(self.inner.engine.video_codec_preference())
+    }
+
+    /// `set_video_codec_preference {preference}`: this device's video codec setting, for a
+    /// camera or screen turned on after it (the live call's too) and every later call;
+    /// `prefer_vp8` also stops this device receiving H.264 from its next join. It answers the
+    /// readback (`video_caps.codec_preference`). The engine keeps it until the process ends;
+    /// persisting it is the host's job. An engine without video: `video_unsupported`.
+    pub async fn set_video_codec_preference(
+        &self,
+        args: SetVideoCodecPreferenceArgs,
+    ) -> Result<CodecPreferenceInfo, ErrorInfo> {
+        tracing::info!(
+            preference = args.preference.as_str(),
+            "sew-voice: video codec preference"
+        );
+        self.inner
+            .engine
+            .set_video_codec_preference(args.preference)
+            .map_err(|e| e.to_info())?;
+        self.inner
+            .engine
+            .video_codec_preference()
+            .ok_or_else(|| ErrorInfo::new(video_code::VIDEO_UNSUPPORTED))
     }
 
     /// `video_devices` → the cameras, the chosen one and the OS permissions.

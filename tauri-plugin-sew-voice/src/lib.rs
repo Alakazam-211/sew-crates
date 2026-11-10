@@ -34,8 +34,8 @@
 //! keyring backend. It has no Swift or Kotlin of its own: on mobile it registers exactly as on
 //! desktop (`.plugin(Builder::new(provider).build())` in the app's mobile entry point).
 //!
-//! **Video.** Eleven more commands ([`VIDEO_COMMANDS`], the `sew-voice:video`
-//! permission set) and four events (`sew-voice://video`, `local_video`, `video_devices`,
+//! **Video.** More commands ([`VIDEO_COMMANDS`] and the codec setting's
+//! [`VIDEO_CODEC_COMMANDS`], the `sew-voice:video` permission set) and four events (`sew-voice://video`, `local_video`, `video_devices`,
 //! `policy`). Remote and self-view frames reach the webview over a Tauri raw `Channel` per
 //! element, a 32-byte header ([`video::FrameHeader`]) then the encoded frame, decoded by the
 //! webview's WebCodecs; keys never leave Rust. The engine side is in [`video`]: every video
@@ -113,10 +113,12 @@ pub use wire::{
     Speaking, StateEvent, StateSnapshot,
 };
 pub use wire::{
-    Camera, CameraArgs, Facing, LocalVideo, LocalVideoState, PermissionState, PreviewAnswer,
-    PreviewArgs, ScreenArgs, ScreenCaps, ScreenKind, ScreenSource, SetVideoDeviceArgs, SinkIdArgs,
-    SinkMode, SinkStats, Tile, VideoCaps, VideoCodec, VideoDevices, VideoPaused, VideoPermissions,
-    VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoSource, VideoTrack,
+    Camera, CameraArgs, CodecPreferenceInfo, CodecPreferenceReason, Facing, LocalVideo,
+    LocalVideoState, PermissionState, PreviewAnswer, PreviewArgs, ScreenArgs, ScreenCaps,
+    ScreenKind, ScreenSource, SetVideoCodecPreferenceArgs, SetVideoDeviceArgs, SinkIdArgs,
+    SinkMode, SinkStats, Tile, VideoCaps, VideoCodec, VideoCodecPreference, VideoDevices,
+    VideoPaused, VideoPermissions, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
+    VideoSource, VideoTrack,
 };
 
 // On phones the device key is the host's (Builder::device_key_store, or a hardware key):
@@ -153,7 +155,8 @@ pub const COMMANDS: [&str; 8] = [
 pub const DEVICE_KEY_COMMANDS: [&str; 2] = ["forget_server", "known_device_keys"];
 
 /// The video commands, outside `sew-voice:default`: a window gets them with the set
-/// `sew-voice:video` (all thirteen) or each one's own `sew-voice:allow-<command>`. With an engine
+/// `sew-voice:video` (all thirteen, and [`VIDEO_CODEC_COMMANDS`]) or each one's own
+/// `sew-voice:allow-<command>`. With an engine
 /// without video, `video_caps` answers "nothing" and the others reject `video_unsupported`.
 pub const VIDEO_COMMANDS: [&str; 13] = [
     "video_caps",
@@ -170,3 +173,11 @@ pub const VIDEO_COMMANDS: [&str; 13] = [
     "camera_permission",
     "request_camera_permission",
 ];
+
+/// The video codec setting's command, in the `sew-voice:video` set after [`VIDEO_COMMANDS`]
+/// (its own permission `sew-voice:allow-set-video-codec-preference`):
+/// `set_video_codec_preference {preference}` (`"automatic"`, `"prefer_h264"`, `"prefer_vp8"`)
+/// sets this device's video codec preference and answers `video_caps.codec_preference`
+/// (`{setting, effective, reason}`). The engine keeps it until the process ends; persisting it
+/// is the host's job.
+pub const VIDEO_CODEC_COMMANDS: [&str; 1] = ["set_video_codec_preference"];

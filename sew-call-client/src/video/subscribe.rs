@@ -16,6 +16,7 @@ use sew_lkproto::livekit::{
 };
 use tokio::sync::mpsc;
 
+use super::codec_pref::CodecSet;
 use super::keyframe::{KeyframeAsk, KeyframeLimiter};
 use super::reorder::{Pushed, Reorder};
 use super::rtp::h264::H264Depacketizer;
@@ -220,6 +221,8 @@ struct Track {
     kf: KeyframeLimiter,
     sent: Option<Settings>,
     settings_due: Option<Instant>,
+    /// A packet arrived: `info.codec` is its payload type's, no longer `TrackInfo`'s.
+    codec_from_pt: bool,
 }
 
 impl Track {
@@ -235,6 +238,7 @@ impl Track {
             kf: KeyframeLimiter::new(),
             sent: None,
             settings_due: None,
+            codec_from_pt: false,
         }
     }
 
@@ -271,13 +275,30 @@ fn source_of(t: &TrackInfo) -> Option<VideoSource> {
     })
 }
 
-/// The codec a publisher's `TrackInfo` names (its mime type, else its first codec's).
-pub(crate) fn codec_of(t: &TrackInfo) -> Option<VideoCodec> {
-    VideoCodec::from_mime(&t.mime_type).or_else(|| {
-        t.codecs
-            .iter()
-            .find_map(|c| VideoCodec::from_mime(&c.mime_type))
-    })
+/// The codecs a publisher's `TrackInfo` names, in its order: its mime type (the primary), then
+/// each of its `codecs` (the primary and the backups), once each.
+fn codecs_of(t: &TrackInfo) -> Vec<VideoCodec> {
+    let mut v = Vec::new();
+    let named =
+        std::iter::once(t.mime_type.as_str()).chain(t.codecs.iter().map(|c| c.mime_type.as_str()));
+    for c in named.filter_map(VideoCodec::from_mime) {
+        if !v.contains(&c) {
+            v.push(c);
+        }
+    }
+    v
+}
+
+/// The codec a subscriber with the media connection's codecs `decode` sees before the first
+/// packet, and whether it can receive none of them (`unsupported`): the first of the
+/// publisher's codecs in `decode`, else (none of them) the primary, `unsupported`. `(None,
+/// false)` when `TrackInfo` names no codec.
+fn codec_for(t: &TrackInfo, decode: CodecSet) -> (Option<VideoCodec>, bool) {
+    let named = codecs_of(t);
+    match named.iter().find(|c| decode.contains(**c)) {
+        Some(c) => (Some(*c), false),
+        None => (named.first().copied(), !named.is_empty()),
+    }
 }
 
 /// The publisher's layers: its codec's (`TrackInfo.codecs`), else the older `layers` field.
@@ -325,6 +346,8 @@ pub(crate) struct Subscriptions {
     sinks: HashMap<u64, (String, VideoSinkSpec)>,
     /// Participant sids speaking now (the server's speaker list).
     speaking: HashSet<String>,
+    /// The codecs the media connection receives (`TrackInfo`'s codecs are matched to it).
+    decode: CodecSet,
 }
 
 impl Subscriptions {
@@ -335,7 +358,14 @@ impl Subscriptions {
             next_id: 1,
             sinks: HashMap::new(),
             speaking: HashSet::new(),
+            decode: CodecSet::ALL,
         }
+    }
+
+    /// The same, for a media connection that receives `decode` only.
+    pub(crate) fn decoding(mut self, decode: CodecSet) -> Subscriptions {
+        self.decode = decode;
+        self
     }
 
     /// A participant's camera and screen for the snapshot.
@@ -361,6 +391,7 @@ impl Subscriptions {
         out: &mut Out,
     ) {
         let mut live = HashSet::new();
+        let decode = self.decode;
         for p in remotes.values() {
             for t in &p.tracks {
                 let Some(source) = source_of(t) else {
@@ -372,18 +403,20 @@ impl Subscriptions {
                     None => {
                         let id = self.next_id;
                         self.next_id += 1;
+                        let (codec, unsupported) = codec_for(t, decode);
                         let info = VideoTrack {
                             id,
                             identity: p.identity.clone(),
                             member_id,
                             source,
                             track_sid: t.sid.clone(),
-                            codec: codec_of(t),
+                            codec,
                             width: t.width,
                             height: t.height,
                             muted: t.muted,
                             paused: None,
                             layers: layers_of(t),
+                            unsupported,
                         };
                         out.events.push(CallEvent::VideoAdded(info.clone()));
                         // No video flows to a member who shows no tile.
@@ -404,8 +437,12 @@ impl Subscriptions {
                         info.width = t.width;
                         info.height = t.height;
                         info.layers = layers_of(t);
-                        if info.codec.is_none() {
-                            info.codec = codec_of(t);
+                        if !track.codec_from_pt {
+                            // Before the first packet: the publisher's codecs may change (a
+                            // backup added).
+                            let (codec, unsupported) = codec_for(t, decode);
+                            info.codec = codec.or(info.codec);
+                            info.unsupported = unsupported;
                         }
                         track.participant_sid = p.sid.clone();
                         if info != track.info {
@@ -626,9 +663,11 @@ impl Subscriptions {
             counters.video_packets_unwanted += 1;
             return;
         };
-        if t.info.codec != Some(codec) {
-            // The negotiated payload type says what the publisher sends.
+        t.codec_from_pt = true;
+        if t.info.codec != Some(codec) || t.info.unsupported {
+            // The negotiated payload type says what the publisher sends (and that it arrives).
             t.info.codec = Some(codec);
+            t.info.unsupported = false;
             out.events.push(CallEvent::VideoChanged(t.info.clone()));
         }
         if !t.flowing {
@@ -1152,5 +1191,129 @@ mod tests {
             &mut c,
         );
         assert_eq!(frames(&out), 1, "the keyframe restarts the track");
+    }
+
+    /// A camera whose `TrackInfo` names `primary`, then `codecs` (the simulcast codecs).
+    fn camera_in(sid: &str, primary: &str, codecs: &[&str]) -> TrackInfo {
+        let mut t = camera(sid, false);
+        t.mime_type = primary.to_owned();
+        t.codecs = codecs
+            .iter()
+            .map(|m| sew_lkproto::livekit::SimulcastCodecInfo {
+                mime_type: (*m).to_owned(),
+                ..Default::default()
+            })
+            .collect();
+        t
+    }
+
+    #[test]
+    fn the_codec_before_the_first_packet_is_the_first_one_this_device_receives() {
+        let both = camera_in("TR_c", "video/H264", &["video/H264", "video/VP8"]);
+        let h264_only = camera_in("TR_c", "video/H264", &["video/H264"]);
+        let named_none = camera_in("TR_c", "", &[]);
+        assert_eq!(
+            codecs_of(&both),
+            vec![VideoCodec::H264, VideoCodec::Vp8],
+            "the primary first, each once"
+        );
+        assert_eq!(
+            codec_for(&both, CodecSet::ALL),
+            (Some(VideoCodec::H264), false)
+        );
+        assert_eq!(
+            codec_for(&both, CodecSet::VP8_ONLY),
+            (Some(VideoCodec::Vp8), false),
+            "the VP8 backup"
+        );
+        assert_eq!(
+            codec_for(&h264_only, CodecSet::VP8_ONLY),
+            (Some(VideoCodec::H264), true),
+            "nothing this device receives"
+        );
+        assert_eq!(
+            codec_for(&h264_only, CodecSet::ALL),
+            (Some(VideoCodec::H264), false)
+        );
+        assert_eq!(codec_for(&named_none, CodecSet::VP8_ONLY), (None, false));
+    }
+
+    #[test]
+    fn a_track_this_device_cannot_receive_is_unsupported_until_a_packet_arrives() {
+        let t0 = Instant::now();
+        let mut s = Subscriptions::new(t0).decoding(CodecSet::VP8_ONLY);
+        let mut out = Out::default();
+        let h264_only = camera_in("TR_c", "video/H264", &["video/H264"]);
+        s.roster(t0, &roster(vec![h264_only]), &HashMap::new(), &mut out);
+        assert!(
+            matches!(&out.events[..], [CallEvent::VideoAdded(v)]
+                if v.codec == Some(VideoCodec::H264) && v.unsupported),
+            "{:?}",
+            out.events
+        );
+        assert!(s.views("p_a").0.is_some_and(|v| v.unsupported));
+        // The publisher adds a VP8 backup: the track turns to VP8, no longer unsupported.
+        let mut out = Out::default();
+        let both = camera_in("TR_c", "video/H264", &["video/H264", "video/VP8"]);
+        s.roster(t0, &roster(vec![both]), &HashMap::new(), &mut out);
+        assert!(
+            matches!(&out.events[..], [CallEvent::VideoChanged(v)]
+                if v.codec == Some(VideoCodec::Vp8) && !v.unsupported),
+            "{:?}",
+            out.events
+        );
+        // And back: H.264 only again is unsupported again (no packet yet).
+        let mut out = Out::default();
+        let h264_only = camera_in("TR_c", "video/H264", &["video/H264"]);
+        s.roster(
+            t0,
+            &roster(vec![h264_only.clone()]),
+            &HashMap::new(),
+            &mut out,
+        );
+        assert!(
+            matches!(&out.events[..], [CallEvent::VideoChanged(v)] if v.unsupported),
+            "{:?}",
+            out.events
+        );
+        // A packet arrives (its payload type is one the connection negotiated): its codec,
+        // supported, and later rosters no longer move it.
+        let mut out = Out::default();
+        let mut c = CallCounters::default();
+        let r = vp8_packet(1, true);
+        s.on_rtp(
+            t0,
+            "TR_c",
+            "p_a",
+            &r,
+            VideoCodec::Vp8,
+            &EchoKeys,
+            &mut c,
+            &mut out,
+        );
+        assert!(
+            matches!(&out.events[..], [CallEvent::VideoChanged(v)]
+                if v.codec == Some(VideoCodec::Vp8) && !v.unsupported),
+            "{:?}",
+            out.events
+        );
+        let mut out = Out::default();
+        s.roster(t0, &roster(vec![h264_only]), &HashMap::new(), &mut out);
+        assert!(out.events.is_empty(), "{:?}", out.events);
+    }
+
+    #[test]
+    fn with_h264_received_an_h264_primary_is_shown_as_h264() {
+        let t0 = Instant::now();
+        let mut s = Subscriptions::new(t0).decoding(CodecSet::ALL);
+        let mut out = Out::default();
+        let both = camera_in("TR_c", "video/H264", &["video/H264", "video/VP8"]);
+        s.roster(t0, &roster(vec![both]), &HashMap::new(), &mut out);
+        assert!(
+            matches!(&out.events[..], [CallEvent::VideoAdded(v)]
+                if v.codec == Some(VideoCodec::H264) && !v.unsupported),
+            "{:?}",
+            out.events
+        );
     }
 }

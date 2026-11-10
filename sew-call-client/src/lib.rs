@@ -56,9 +56,9 @@ pub use audio::{
     AUDIO_BACKEND, AudioBridge, AudioBridgeError, AudioSession, BridgeLevels, SessionEvent,
 };
 pub use call::{
-    Call, CallClient, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallRecording,
-    CallSecurity, CallSnapshot, CallState, EndReason, FrameSender, FrameStream, OpusFrame,
-    Participant, RecordingConsent, RecordingMember, RecvItem, RecvOpus, Speaking,
+    Call, CallClient, CallCounters, CallError, CallErrorEvent, CallEvent, CallLeaver, CallMoved,
+    CallRecording, CallSecurity, CallSnapshot, CallState, EndReason, FrameSender, FrameStream,
+    OpusFrame, Participant, RecordingConsent, RecordingMember, RecvItem, RecvOpus, Speaking,
 };
 #[cfg(feature = "testing")]
 pub use config::TestingOverrides;
@@ -82,12 +82,21 @@ pub use stats::{
     BeaconOutcome, BeforeFirstWindow, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals,
     StatsWindow,
 };
+/// The per-device video codec preference and the run-time H.264 check it rests on.
+#[cfg(feature = "video-core")]
+pub use video::h264_encode_detection;
+/// Video publishing: the engine's frame API ([`Call::publish_video`]) and its types.
+pub use video::{
+    BackupSpec, EncodedVideo, LayerRate, LayerSpec, LocalVideo, VideoCaps, VideoControl,
+    VideoError, VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
+};
 /// The video bridge: a kessel-video backend's cameras, screens and encoders into a call, with
 /// the in-call self-view.
 #[cfg(feature = "video-core")]
+#[allow(deprecated)]
 pub use video::{
-    CameraRequest, CameraState, SelfViewFrames, SelfViewItem, SourceFeed, SourceNote, VideoBridge,
-    choose_codec,
+    CameraRequest, CameraState, CodecPlan, PlannedCodec, SelfViewFrames, SelfViewItem, SourceFeed,
+    SourceNote, VideoBridge, choose_codec, choose_codecs,
 };
 /// Video capture (`video-core`): cameras, screens, the OS picker, screen thumbnails and the
 /// pre-join preview over a kessel-video backend, as the sources the publish side takes.
@@ -98,14 +107,13 @@ pub use video::{
     Preview, PreviewFrames, PreviewItem, ScreenChoice, ScreenPick, ScreenSource,
     THUMBNAIL_MAX_WIDTH, VideoCapture, preview_codec, screen_constraints, thumbnail_png,
 };
-/// Video publishing: the engine's frame API ([`Call::publish_video`]) and its types.
 pub use video::{
-    EncodedVideo, LayerRate, LayerSpec, LocalVideo, VideoCaps, VideoControl, VideoError,
-    VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
+    CodecPreferenceReason, H264Detection, VideoCodecPreference, effective_publish_codec,
+    effective_publish_codec_under_policy,
 };
 /// A kessel-video backend replaying pre-encoded VP8 and H.264 simulcast streams (test only).
 #[cfg(all(feature = "testing", feature = "video-core"))]
-pub use video::{FixtureBackend, FixtureError};
+pub use video::{FixtureBackend, FixtureError, FixtureH264, FixtureOptions};
 pub use video::{
     VideoCodec, VideoFrame, VideoFrameStream, VideoLayerInfo, VideoPause, VideoRecvItem, VideoSink,
     VideoSinkSpec, VideoSource, VideoTrack, VideoTrackView,

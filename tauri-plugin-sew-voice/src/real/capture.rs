@@ -61,6 +61,8 @@ struct Shared {
     capture: Mutex<Option<VideoCapture>>,
     /// The camera chosen with `set_video_device` (`None`: the OS default).
     camera: Mutex<Option<String>>,
+    /// The camera that last gave frames to a camera publish (its stable `CameraInfo::id`).
+    last_used: Mutex<Option<String>>,
     preview: Mutex<Option<Preview>>,
     devices_tx: broadcast::Sender<VideoDevices>,
     watching: AtomicBool,
@@ -143,8 +145,19 @@ pub(crate) fn screen_pick(source: Option<&str>, parent: Option<ParentWindow>) ->
     }
 }
 
+/// The camera an open without an id takes (kessel-video's rule): the default, else the first,
+/// unless it is suspended; then the first that isn't; with every one suspended, the default.
+fn default_camera(cams: &[kessel_video::CameraInfo]) -> Option<&kessel_video::CameraInfo> {
+    let def = cams.iter().find(|c| c.is_default).or(cams.first())?;
+    if !def.suspended {
+        return Some(def);
+    }
+    Some(cams.iter().find(|c| !c.suspended).unwrap_or(def))
+}
+
 /// `local_video` after a camera's or screen's event (`None`: no change to tell). Paused:
-/// `hidden`, `background`, `thermal`, `camera_busy` (another app took the camera); resumed:
+/// `hidden`, `background`, `thermal`, `suspended` (a lid-closed MacBook camera), `camera_busy`
+/// (another app took the camera); resumed:
 /// back `on`; ended: `off` with `user_stopped`, `source_closed`, `camera_lost`, or
 /// `camera_denied` / `screen_denied` for a permission revoked while sending.
 pub(crate) fn local_video_after(
@@ -160,6 +173,7 @@ pub(crate) fn local_video_after(
                 CapturePause::Hidden => video_reason::HIDDEN,
                 CapturePause::Background => video_reason::BACKGROUND,
                 CapturePause::Thermal => video_reason::THERMAL,
+                CapturePause::Suspended => video_reason::SUSPENDED,
                 CapturePause::InUseByAnother => video_code::CAMERA_BUSY,
                 _ => video_reason::PAUSED,
             }),
@@ -220,6 +234,7 @@ impl EngineCapture {
             shared: Arc::new(Shared {
                 capture: Mutex::new(None),
                 camera: Mutex::new(None),
+                last_used: Mutex::new(None),
                 preview: Mutex::new(None),
                 devices_tx,
                 watching: AtomicBool::new(false),
@@ -249,6 +264,35 @@ impl EngineCapture {
     /// The camera chosen with `set_video_device` (`None`: the OS default).
     pub(super) fn chosen_camera(&self) -> Option<String> {
         lock(&self.shared.camera).clone()
+    }
+
+    /// The camera a `camera {on}` without a device opens: the chosen one; else the camera that
+    /// last gave frames, while it is listed and not suspended; else `None`, an open without an
+    /// id (kessel-video passes over a suspended default, a lid-closed MacBook's camera).
+    pub(super) fn camera_for_open(&self) -> Option<String> {
+        if let Some(id) = self.chosen_camera() {
+            return Some(id);
+        }
+        let last = lock(&self.shared.last_used).clone()?;
+        let cap = self.capture()?;
+        cap.cameras()
+            .iter()
+            .any(|c| c.id == last && !c.suspended)
+            .then_some(last)
+    }
+
+    /// A camera publish got frames from `device` (`None`: the open without an id, which took
+    /// the default, or the first camera that isn't suspended): kept as the last used.
+    pub(super) fn camera_used(&self, device: Option<&str>) {
+        let id = match device {
+            Some(id) => Some(id.to_owned()),
+            None => self
+                .capture()
+                .and_then(|cap| default_camera(&cap.cameras()).map(|c| c.id.clone())),
+        };
+        if id.is_some() {
+            *lock(&self.shared.last_used) = id;
+        }
     }
 
     /// `video_caps`: receive is always on (`video-core`); camera, screen and the publish

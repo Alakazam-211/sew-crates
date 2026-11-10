@@ -803,7 +803,7 @@
           "type": "array"
         },
         "backup_codec": {
-          "description": "Always `false`: no backup codecs.",
+          "description": "`true`: a native sender with OS H.264 may publish H.264 with a VP8 backup that the\nengine turns on for subscribers without H.264. Browsers publish one codec. `true` only\nwhile video is on and `codecs` lists both `vp8` and `h264` (in either order); `false`:\nevery client publishes one codec.",
           "type": "boolean"
         },
         "camera": {

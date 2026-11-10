@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3 (2026-11-10)
+
+- The version follows Sew 0.8.3. No API or behaviour change.
+
 ## 0.8.2 (2026-11-06)
 
 - `Session::add_track` sends a caller-built `AddTrackRequest` (a video track's layers and

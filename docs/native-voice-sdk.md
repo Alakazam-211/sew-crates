@@ -23,7 +23,7 @@ tauri-plugin-sew-voice = { git = "…", tag = "…" }   # vendored or mirrored; 
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
 `sew-proto`, `sew-e2ee`, `sew-mls-crypto`), and through it on K2's `kessel-audio` and
-`kessel-video` (both from crates.io) and Sew's str0m and dimpl forks. Cargo applies `[patch]` only from the workspace you build, so copy the plugin's
+`kessel-video` (both from crates.io) and Sew's str0m fork (dimpl comes from crates.io). Cargo applies `[patch]` only from the workspace you build, so copy the plugin's
 `[patch.crates-io]` block (the end of its `Cargo.toml`) into your app's workspace root. The
 packaged crates (`scripts/package-public-crates.sh`, published read-only as `sew-crates`) carry a
 README with the same rows. Linux builds need ALSA's development files (`libasound2-dev`; Arch:
@@ -226,8 +226,8 @@ Commands are invoked as `plugin:sew-voice|<name>`. Every command rejects with `{
 
 | Command | Arguments | Answer |
 |---|---|---|
-| `join` | `{target, room, muted?, deafened?}` | `{call_id}`. One call per app: a second `join` while one is live rejects with `already_in_call` |
-| `leave` | — | `null`. The state goes `ended {reason: "left"}` at once. A no-op with no call. If Sew's leave fails, an `errors` event says so |
+| `join` | `{target, room, muted?, deafened?, decode?}` | `{call_id}`. One call per app: a second `join` while one is live rejects with `already_in_call`. `decode`: the video codecs the webview decodes (its WebCodecs probe, `["vp8", "h264"]`); the engine offers to receive only what it or the webview decodes (VP8 always; H.264 never on Linux). Without it nothing is assumed about the webview |
+| `leave` | — | `null`. The state goes `ended {reason: "left"}` at once. A no-op with no call. If Sew's leave fails, an `errors` event says so. It never waits on a camera or screen command that waits on a device (a slow or suspended camera), and a `join` right after it is never refused `already_in_call` |
 | `mute` | `{muted?, deafened?}` (at least one) | `null`. Deafened implies muted; un-deafening returns `muted` to its value before the deafen. `not_in_call` with no call |
 | `devices` | — | `{inputs: [{id, name, default}], outputs: [...], input, output}` (`input`/`output`: `null` = the OS default) |
 | `set_device` | `{input?, output?}` (at least one): a device id, or `"default"` for the OS default (followed when it changes later; `devices` then says `null`). An absent or `null` direction stays as it is | `null`. Hot-swaps the stream without leaving the call. On an input, it resolves while the OS permission prompt is up and rejects `mic_denied` once the microphone was refused (§5) |
@@ -320,7 +320,7 @@ await voice("mute", { muted: true });
 
 ### Video
 
-Thirteen more commands show and send video. They are not in `sew-voice:default`: give the call
+Fourteen more commands show and send video. They are not in `sew-voice:default`: give the call
 window `sew-voice:video` (§4). An engine without video answers `video_caps` with
 everything off, and the other commands reject `video_unsupported`; the voice payloads never
 change (no `video`, `local_video` or `policy` in `state` while there is
@@ -328,10 +328,10 @@ none).
 
 | Command | Arguments | Answer |
 |---|---|---|
-| `video_caps` | — | `{camera, screen: {supported, system_picker, list, windows}, publish_codecs: ["vp8", "h264"], decode_codecs, receive, self_view, live_switch, backend}`. `self_view`: the `local:camera` and `local:screen` sinks are fed during a call (the published camera's and screen's own layers) as well as by `preview`; `false` or missing: only `preview` feeds `local:camera`. `live_switch`: `set_video_device` switches a camera that is being published now; `false` or missing: the choice applies at the next `camera {on}`. `decode_codecs` are the engine's own decoders; the webview's are its WebCodecs probe. `receive`: the engine receives remote cameras and screens for the sinks (the plugin's `video-core`); missing in an older plugin's answer |
+| `video_caps` | — | `{camera, screen: {supported, system_picker, list, windows}, publish_codecs: ["vp8", "h264"], decode_codecs, receive, self_view, live_switch, backend}`. `self_view`: the `local:camera` and `local:screen` sinks are fed during a call (the published camera's and screen's own layers) as well as by `preview`; `false` or missing: only `preview` feeds `local:camera`. `live_switch`: `set_video_device` switches a camera that is being published now; `false` or missing: the choice applies at the next `camera {on}`. `decode_codecs` are the engine's own decoders; the webview's are its WebCodecs probe. `receive`: the engine receives remote cameras and screens for the sinks (the plugin's `video-core`); missing in an older plugin's answer. `publish_backup` and `codec_preference`: see "Codec choice and the VP8 backup" below (missing in an older plugin's answer) |
 | `video_devices` | — | `{cameras: [{id, name, facing, default}], camera, permission: {camera, screen}}`. `facing`: `front`, `back`, `external`, `unknown`. `camera`: the chosen one (`null`: the OS default). Each permission is `"granted"`, `"denied"` (the OS's restricted state too), `"prompt"` (the OS will ask) or `"unsupported"` (no such capture on this OS or in this build: screen capture on Linux without the portal or libpipewire, a build without video) |
 | `set_video_device` | `{camera}`: an id or `"default"` | `null`. Switches a live camera without a republish (when `video_caps.live_switch`); kept for the next call or preview (a running preview keeps its camera until `preview` is called again). Rejects `camera_not_found` (`detail.camera`) |
-| `camera` | `{on, device?}` | `null` once publishing (or off). Rejects `video_unsupported` (no camera here: checked first, before the permission), `not_in_call`, `video_not_allowed`, `video_disabled`, `camera_permission_denied` and `camera_permission_not_determined` (the plugin never prompts: below), `camera_denied` (the OS refused the device itself), `camera_busy`, `camera_not_found`, `video_slots_full`, `media_busy` (`detail.retry_after`), `media_capacity`, `codec_unavailable` |
+| `camera` | `{on, device?}` | `null` once publishing (or off). Rejects `video_unsupported` (no camera here: checked first, before the permission), `not_in_call`, `video_not_allowed`, `video_disabled`, `camera_permission_denied` and `camera_permission_not_determined` (the plugin never prompts: below), `camera_denied` (the OS refused the device itself), `camera_busy`, `camera_not_found`, `no_frames` (the camera opened but gave no frame within 2.5 s: closed, nothing published), `video_slots_full`, `media_busy` (`detail.retry_after`), `media_capacity`, `codec_unavailable`. Without `device` and with none chosen, it prefers the camera that last gave frames while it is listed and not suspended, else the OS default (a suspended default is passed over). The track is published from the camera's first frame |
 | `screen_sources` | — | `[{id, kind: "display" \| "window", title, app?, width, height, thumbnail_png?}]` (`thumbnail_png`: an 8-bit RGBA PNG at most 320 px wide, aspect kept, base64 with the standard alphabet and no `data:` prefix; absent when the OS gives no preview). `[]` where only the OS picker exists. Rejects `screen_unsupported`, `screen_denied` |
 | `screen` | `{on, source?}` | `null` once publishing (or off). Without `source`, the OS picker (on Windows its parent is the calling window). The share runs at most 1080p15 (lower when `policy.screen` says so) with the screen content hint, under the `self_stream` lease. Rejects as `camera`, plus `screen_denied`, `screen_slots_full`, `picker_cancelled`, `screen_unsupported` (no screen capture here: Linux without the xdg portal or libpipewire, phones; or no OS picker and no `source`), `screen_not_found` (the listed `source` is gone) |
 | `preview` | `{on, device?}` | `{sink_track: "local:camera"}`. The camera before or outside a call (a pre-join check): one encoder at up to 640x360 (the camera's aspect kept; VP8, kessel-video's pure-Rust encoder), nothing sent, no lease. The camera opens only on this command, never on its own between calls, and only with the OS permission granted (the plugin never prompts); `{on: false}` (or a new `preview`) closes it at once (the light goes off). One opener holds the camera: `camera {on}` takes it over from the preview (the `local:camera` sinks go on from the call's own keyframe), and `preview {on}` while the camera is published opens nothing (the call's self-view already feeds `local:camera`). Rejects `camera_permission_denied` and `camera_permission_not_determined` as `camera`, `camera_denied`, `camera_busy`, `camera_not_found`, `codec_unavailable`, `video_unsupported` (no camera here) |
@@ -339,6 +339,7 @@ none).
 | `video_sink_update` | `{sink_id, width?, height?, visible?, tile?, stats?: {decoded, dropped, freezes, freeze_ms}}` | `null`. `stats` are cumulative since the sink opened (every 1–10 s is fine). Rejects `unknown_sink` |
 | `video_sink_close` | `{sink_id}` | `null` (also for a sink already closed). With no sink left, the track is turned off at the media server again |
 | `request_keyframe` | `{sink_id}` | `null`. The webview's decoder failed or fell behind: the sink sends nothing until the next keyframe, and the sender is asked for one (rate-limited). Rejects `unknown_sink` |
+| `set_video_codec_preference` | `{preference}`: `"automatic"` (the default: H.264 where this device's OS has a usable hardware encoder, found at run time, else VP8), `"prefer_h264"` (H.264 only where that check passes; otherwise VP8, with the reason), `"prefer_vp8"` | `video_caps.codec_preference`. A per-device user setting for every camera or screen turned on after it (the live call's too); `"prefer_vp8"` also stops this device receiving H.264 from its next join. Its own permission, `sew-voice:allow-set-video-codec-preference`. The plugin keeps it until the app quits: store it with the app's settings and set it again at start. Rejects `video_unsupported` without video |
 | `camera_permission` | — | `"granted"`, `"denied"`, `"prompt"` or `"unsupported"` (a build or an engine without a video backend). Never prompts |
 | `request_camera_permission` | — | the same, after the OS prompt when it was `"prompt"` (iOS, macOS). On Android ask for CAMERA with Tauri's permission API first (it needs an Activity callback); this then reports the state without a prompt |
 
@@ -363,7 +364,7 @@ calls `request_camera_permission` first (on Android after its own CAMERA request
 6. There is no `pick_screen` command: `screen {on: true}` without `source` opens the OS picker,
    and the plugin passes the Windows window handle itself.
 7. `video_caps` always exists, even in a plugin or engine without video, which answers
-   `{camera: false, screen: {supported: false, system_picker: false, list: false, windows: false}, publish_codecs: [], decode_codecs: [], receive: false, self_view: false, live_switch: false, backend: "null"}`.
+   `{camera: false, screen: {supported: false, system_picker: false, list: false, windows: false}, publish_codecs: [], decode_codecs: [], receive: false, self_view: false, live_switch: false, backend: "null"}` (no `codec_preference`).
    An older plugin lacks the command: treat a rejection as "no video". A field an older
    plugin doesn't send (`receive`, `self_view`, `live_switch`) reads as `false`.
 8. Every (re)start of frames begins at a keyframe with the discontinuity flag: a sink opening,
@@ -378,7 +379,7 @@ say something, so a window opened mid-call can draw everything.
 | Event | Payload |
 |---|---|
 | `sew-voice://video` | the whole list on any change: `[{member_id, is_self, source: "camera" \| "screen", track, codec, width, height, muted, paused: null \| "congestion" \| "background" \| "policy", unsupported?}]` (`unsupported` only when `true`) |
-| `sew-voice://local_video` | `{camera: "off" \| "asking" \| "on" \| "paused", screen: same, reason?}`. `reason`: a reject code, `hidden` (a shared window is minimised: `paused`, the share stays), `background`, `thermal`, `user_stopped` (stopped from the OS's own UI), `source_closed` (the shared window closed or the display went away), `camera_lost`, `camera_denied` / `screen_denied` (the OS permission was revoked while sending) or `video_disabled` |
+| `sew-voice://local_video` | `{camera: "off" \| "asking" \| "on" \| "paused", screen: same, reason?}`. `reason`: a reject code, `hidden` (a shared window is minimised: `paused`, the share stays), `background`, `thermal`, `user_stopped` (stopped from the OS's own UI), `source_closed` (the shared window closed or the display went away), `suspended` (`paused`: the camera says it is suspended, as a MacBook's built-in camera with the lid closed; `on` again when it comes back; no error), `camera_lost` (`off`: the camera went away; the track is unpublished, the lease released and the call goes on), `camera_denied` / `screen_denied` (the OS permission was revoked while sending) or `video_disabled` |
 | `sew-voice://video_devices` | the `video_devices` answer, on hot-plug or a `set_video_device` |
 | `sew-voice://policy` | the room's media policy (Sew's `MediaPolicy`, as the join answer has it), when Sew changes it |
 | `sew-voice://errors` | as for voice. Video adds `video_stalled`, `encoder_lost` and `camera_lost` |
@@ -403,14 +404,71 @@ code, such as `os` or `invalid`) for a camera or screen failure none of the code
 | `camera_busy` | `camera`, `preview`, `local_video.reason` | another app holds the camera (as a reason: it took it, `paused`) |
 | `camera_not_found` | `camera`, `preview`, `set_video_device` | no such camera (`detail.camera` for `set_video_device`) |
 | `camera_lost` | `local_video.reason`, `errors` | the camera went away while sending |
+| `no_frames` | `camera` | the camera opened but gave no frame within 2.5 s (closed, the lease released, nothing published) |
 | `screen_unsupported` | `screen`, `screen_sources` | no screen capture here, or no OS picker and no `source` |
 | `picker_cancelled` | `screen` | the person cancelled the OS picker |
 | `screen_not_found` | `screen` | the listed `source` is gone |
 | `encoder_lost` | `preview` (its channel), `errors` | an encoder failed and could not be reopened |
 | `capture_failed` | any capture | a camera or screen failure none of the codes says; `detail.error` is the video backend's own code (`os`, `invalid`, …) |
 | `decoded_unsupported`, `decoded_tiles_full`, `unknown_track`, `unknown_sink` | `video_sink`, `video_sink_update`, `request_keyframe` | the sinks' refusals (above) |
-| `hidden`, `background`, `thermal`, `paused` | `local_video.reason` (`paused`) | a shared window is minimised or hidden; the app went to the background; thermal pressure; another pause. The track stays; back, every layer restarts on a keyframe |
+| `hidden`, `background`, `thermal`, `suspended`, `paused` | `local_video.reason` (`paused`) | a shared window is minimised or hidden; the app went to the background; thermal pressure; the camera is suspended (a laptop lid closed); another pause. The track stays; back, every layer restarts on a keyframe |
 | `user_stopped`, `source_closed`, `unpublished` | `local_video.reason` (`off`) | stopped from the OS's own UI; the shared window or display went away; turned off by `camera` / `screen` |
+
+**Codec choice and the VP8 backup.** What a device publishes follows the media policy and what
+this device can do, checked at run time (never assumed from the OS):
+
+- **H.264 with a VP8 backup** when the policy's `backup_codec` is `true` (the server's
+  `[voice.video] backup_codec`, on by default, with both `vp8` and `h264` listed in either
+  order), dynacast is on, and this device has a usable OS H.264 encoder: a hardware encoder that
+  is listed, opens hardware-only, and reports hardware once open. Today that is macOS and iOS
+  (VideoToolbox); Android and Windows publish VP8 only for now; Linux always publishes VP8 only.
+  The backup's m-line is negotiated with the publish, and its VP8 encoders run only while the
+  media server says some subscriber needs VP8 (a Linux client, a browser without H.264). It
+  never stops for heat while a VP8-only subscriber depends on it; on phones it is capped at
+  360p.
+- **One codec otherwise**, as before: VP8 when it is listed and there is an encoder, else H.264
+  when it is listed and usable, else `codec_unavailable`. `backup_codec: false` is exactly this.
+- **Browsers** always publish one codec, the first of `codecs` they can send, and never a
+  backup. With `h264` listed first, a subscriber that can't decode H.264 (the Linux native
+  client) can't see them; with `codecs = ["h264"]` it can't see anyone (Sew's media engine
+  operator guide, "Linux clients and H.264").
+
+`video_caps.publish_codecs` lists what this device can publish, in the order it would use them
+(`["h264", "vp8"]` on the H.264 path), and `video_caps.publish_backup` is `true` when it would
+add the VP8 backup under a policy that allows one.
+
+**The device's codec setting.** `VoiceControl::set_video_codec_preference(pref)` takes
+`Automatic` (the default: H.264 with the backup where detection passes, else VP8),
+`PreferH264` (the same: it takes effect only where detection passes, otherwise VP8) or
+`PreferVp8` (always honoured: VP8 only, no backup needed; the device also stops offering to
+receive H.264 from its next join, so every sender reaches it in VP8). The webview's command is
+`set_video_codec_preference {preference}` (its own permission,
+`sew-voice:allow-set-video-codec-preference`, in `sew-voice:video`); it answers the readback
+below. Keep it per device, in the app's device settings ("Video codec"); the plugin keeps it
+until the app quits, so set it again at start. `video_caps.codec_preference` reads it back as `{setting, effective, reason?}`: `setting`
+(`"automatic"`, `"prefer_h264"`, `"prefer_vp8"`), `effective` the codec it gives on this device
+(`"h264"`, with the backup, or `"vp8"`) and, only when Prefer H.264 can't apply, `reason`:
+`"not_detected"` (no usable hardware H.264 encoder found at run time), `"platform"` (no run-time
+check on Linux, Android or Windows yet, or an iOS before 17.4) or `"policy"` (the live call's
+policy doesn't allow H.264). An engine without video publish leaves `codec_preference` out.
+`effective` is what the backend's capabilities say; the encoder's hardware-only open when the
+camera turns on is the last word. A change applies from the next camera or screen publish.
+Every H.264 sender carries the VP8 backup, whatever the setting.
+
+**What a device receives.** A subscriber gets the codec its answer can decode: H.264 when it
+can, else the sender's VP8 backup. So the `codec` of a `video` entry is the codec **this
+device** receives, and two devices can see one track in different codecs; it can change during
+a call (the entry is sent again). A native offers H.264 only when the engine's video backend
+decodes it or the webview said it does: pass the webview's WebCodecs probe as the join's
+optional `decode` field (`@sew/voice` does this); without it only the engine's own decoders
+count. Linux offers VP8 only, whatever the webview says. `unsupported` is set only when this
+device can decode none of the track's codecs.
+
+**The frame API.** A host that drives encoders itself (`Call::publish_video` without the
+bridge) asks for the backup with `VideoPublish::with_backup`. It then gets `VideoControl`
+`BackupStart(layers)` when the backup is needed (open VP8 encoders for those layers, first
+frame a keyframe), `BackupRates`, `BackupKeyframe { rid }` and `BackupStop` (stop and close
+them). A host that never calls `with_backup` never sees these.
 
 **Frames.** Each `video_sink` gets its own Tauri raw `Channel` (`new Channel()` from
 `@tauri-apps/api/core`, or `window.__TAURI__.core.Channel`); its `onmessage` receives one
@@ -1201,13 +1259,13 @@ HTML/JS, with no bundler and no npm.
 4. **Bundles.** `cargo tauri build` needs the full icon set: `cargo tauri icon your-icon.png`
    writes it into `src-tauri/icons/`, and you then list the files in `bundle.icon`.
 
-The example isn't part of Sew's CI gate. `scripts/check-tauri-voice.sh` builds and tests the
-plugin and the example in a k2 compute job (Ubuntu 24.04 nodes have WebKitGTK 2.52):
+The example isn't part of Sew's CI gate. To build and test the plugin and the example yourself
+(on Linux with the WebKitGTK 4.1 and ALSA development files, e.g. Ubuntu's
+`libwebkit2gtk-4.1-dev` and `libasound2-dev`):
 
 ```sh
-k2 compute run --os linux --sha HEAD --cpus 8 --mem 16G \
-  --needs rust@1.95.0,sys:pkg-config,sys:libwebkit2gtk-4.1-dev,sys:libasound2-dev -- \
-  bash scripts/linux/compute-job.sh run -- bash scripts/check-tauri-voice.sh
+cargo test --manifest-path crates/tauri-plugin-sew-voice/Cargo.toml --locked
+cargo build --manifest-path examples/tauri-voice-example/src-tauri/Cargo.toml --locked
 ```
 
 ### On a phone

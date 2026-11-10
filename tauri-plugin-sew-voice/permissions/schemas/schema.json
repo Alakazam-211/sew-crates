@@ -511,6 +511,18 @@
           "markdownDescription": "Denies the set_device command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_video_codec_preference command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-video-codec-preference",
+          "markdownDescription": "Enables the set_video_codec_preference command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_video_codec_preference command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-video-codec-preference",
+          "markdownDescription": "Denies the set_video_codec_preference command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_video_device command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-video-device",
@@ -625,10 +637,10 @@
           "markdownDescription": "The device-key commands, for a window that signs the person out: `forget_server` (deletes the\ndevices of one Sew install, the hardware keys included, and answers the removed keys) and\n`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant\nit, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the\nwindow that needs it.\n\n#### This permission set includes:\n\n- `allow-forget-server`\n- `allow-known-device-keys`"
         },
         {
-          "description": "The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,\n`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,\n`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and\n`request_camera_permission`. The frames reach only the window\nthat opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call\nwindow, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs\n`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and\n`allow-request-keyframe`). The OS asks for the camera and screen recording itself.\n\n#### This permission set includes:\n\n- `allow-video-caps`\n- `allow-video-devices`\n- `allow-set-video-device`\n- `allow-camera`\n- `allow-screen-sources`\n- `allow-screen`\n- `allow-preview`\n- `allow-video-sink`\n- `allow-video-sink-update`\n- `allow-video-sink-close`\n- `allow-request-keyframe`\n- `allow-camera-permission`\n- `allow-request-camera-permission`",
+          "description": "The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,\n`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,\n`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and\n`request_camera_permission`, and the video codec setting `set_video_codec_preference`. The\nframes reach only the window\nthat opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call\nwindow, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs\n`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and\n`allow-request-keyframe`). The OS asks for the camera and screen recording itself.\n\n#### This permission set includes:\n\n- `allow-video-caps`\n- `allow-video-devices`\n- `allow-set-video-device`\n- `allow-camera`\n- `allow-screen-sources`\n- `allow-screen`\n- `allow-preview`\n- `allow-video-sink`\n- `allow-video-sink-update`\n- `allow-video-sink-close`\n- `allow-request-keyframe`\n- `allow-camera-permission`\n- `allow-request-camera-permission`\n- `allow-set-video-codec-preference`",
           "type": "string",
           "const": "video",
-          "markdownDescription": "The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,\n`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,\n`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and\n`request_camera_permission`. The frames reach only the window\nthat opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call\nwindow, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs\n`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and\n`allow-request-keyframe`). The OS asks for the camera and screen recording itself.\n\n#### This permission set includes:\n\n- `allow-video-caps`\n- `allow-video-devices`\n- `allow-set-video-device`\n- `allow-camera`\n- `allow-screen-sources`\n- `allow-screen`\n- `allow-preview`\n- `allow-video-sink`\n- `allow-video-sink-update`\n- `allow-video-sink-close`\n- `allow-request-keyframe`\n- `allow-camera-permission`\n- `allow-request-camera-permission`"
+          "markdownDescription": "The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,\n`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,\n`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and\n`request_camera_permission`, and the video codec setting `set_video_codec_preference`. The\nframes reach only the window\nthat opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call\nwindow, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs\n`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and\n`allow-request-keyframe`). The OS asks for the camera and screen recording itself.\n\n#### This permission set includes:\n\n- `allow-video-caps`\n- `allow-video-devices`\n- `allow-set-video-device`\n- `allow-camera`\n- `allow-screen-sources`\n- `allow-screen`\n- `allow-preview`\n- `allow-video-sink`\n- `allow-video-sink-update`\n- `allow-video-sink-close`\n- `allow-request-keyframe`\n- `allow-camera-permission`\n- `allow-request-camera-permission`\n- `allow-set-video-codec-preference`"
         }
       ]
     }

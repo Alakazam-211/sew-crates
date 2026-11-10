@@ -13,10 +13,15 @@
 //!   VP8 frames report their temporal layer when the encoder was asked for three.
 //! - One camera, which delivers blank frames at the asked size and rate. No decoders, no
 //!   screens.
+//! - The H.264 encoder is listed as software by default (and refuses a hardware-only open, as
+//!   an OS's software encoder does); [`FixtureBackend::load_with`] makes it a hardware one, or
+//!   one whose hardware open fails or whose session reports software. It counts each codec's
+//!   opens and live encoders, can lose every live H.264 session ([`FixtureBackend::lose_h264`])
+//!   and fail the next VP8 opens ([`FixtureBackend::fail_vp8_opens`]).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -24,9 +29,9 @@ use kessel_video::{
     Bytes, CameraInfo, Capabilities, CaptureConstraints, CaptureMode, CodecCapability,
     CodecDirection, DecoderConfig, Done, EncodeOptions, EncodedFrame, EncoderConfig, EncoderInfo,
     EncoderStats, EventHub, EventRx, Facing, FrameSource, H264Capability, H264Level, H264Profile,
-    Implementation, LayerInfo, Permission, PickOptions, PixelFormat, Rates, ScreenSelection,
-    ScreenSourceInfo, SourceEvent, SourceStats, VideoBackend, VideoCodec, VideoDecoder,
-    VideoEncoder, VideoError, VideoFrame, Wake,
+    ImplPreference, Implementation, LayerInfo, Permission, PickOptions, PixelFormat, Rates,
+    ScreenSelection, ScreenSourceInfo, SourceEvent, SourceStats, VideoBackend, VideoCodec,
+    VideoDecoder, VideoEncoder, VideoError, VideoFrame, Wake,
 };
 
 use super::container::{h264_access_units, ivf_frames};
@@ -83,11 +88,66 @@ impl Stream {
     }
 }
 
+/// How the fixture's H.264 encoder presents itself ([`FixtureOptions::with_h264`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FixtureH264 {
+    /// Listed as a software encoder; a hardware-only open is refused.
+    #[default]
+    Software,
+    /// Listed as a hardware encoder; opens hardware-only; each session reports hardware.
+    Hardware,
+    /// Listed as a hardware encoder, but every open fails.
+    HardwareOpenFails,
+    /// Listed as a hardware encoder; it opens, but the session reports software.
+    HardwareReportsSoftware,
+    /// Listed as a hardware encoder; it opens, but the session can't say who runs it.
+    HardwareReportsUnknown,
+}
+
+/// The fixture backend's options ([`FixtureBackend::load_with`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FixtureOptions {
+    /// The H.264 encoder.
+    pub h264: FixtureH264,
+}
+
+impl FixtureOptions {
+    /// The defaults (a software H.264 encoder).
+    pub fn new() -> FixtureOptions {
+        FixtureOptions::default()
+    }
+
+    /// With the H.264 encoder `h264`.
+    pub fn with_h264(mut self, h264: FixtureH264) -> FixtureOptions {
+        self.h264 = h264;
+        self
+    }
+}
+
+/// Opens and live encoders of one codec, and the faults asked for.
+#[derive(Debug, Default)]
+struct Counts {
+    vp8_opens: AtomicU64,
+    vp8_live: Arc<AtomicU64>,
+    h264_opens: AtomicU64,
+    h264_live: Arc<AtomicU64>,
+    /// Bumped by `lose_h264`: an H.264 session opened before it is lost.
+    h264_epoch: Arc<AtomicU64>,
+    /// H.264 opens fail from now on (`lose_h264(true)`).
+    h264_refused: AtomicBool,
+    /// The next VP8 opens that fail.
+    vp8_failures: AtomicU32,
+}
+
 /// A backend replaying the fixture streams (see the module docs).
 pub struct FixtureBackend {
     streams: Vec<Arc<Stream>>,
     events: EventHub,
     shut: Arc<AtomicBool>,
+    opts: FixtureOptions,
+    counts: Counts,
 }
 
 impl std::fmt::Debug for FixtureBackend {
@@ -106,6 +166,14 @@ fn read(dir: &Path, file: &str) -> Result<Vec<u8>, FixtureError> {
 impl FixtureBackend {
     /// Loads the six streams from `dir`.
     pub fn load(dir: impl AsRef<Path>) -> Result<Arc<FixtureBackend>, FixtureError> {
+        FixtureBackend::load_with(dir, FixtureOptions::default())
+    }
+
+    /// Loads the six streams from `dir`, with `opts`.
+    pub fn load_with(
+        dir: impl AsRef<Path>,
+        opts: FixtureOptions,
+    ) -> Result<Arc<FixtureBackend>, FixtureError> {
         let dir = dir.as_ref();
         let mut streams = Vec::new();
         for (rid, width, height) in LAYERS {
@@ -146,7 +214,64 @@ impl FixtureBackend {
             streams: out,
             events: EventHub::default(),
             shut: Arc::new(AtomicBool::new(false)),
+            opts,
+            counts: Counts::default(),
         }))
+    }
+
+    /// The encoders of `codec` opened so far.
+    pub fn encoder_opens(&self, codec: VideoCodec) -> u64 {
+        match codec {
+            VideoCodec::Vp8 => self.counts.vp8_opens.load(Ordering::SeqCst),
+            VideoCodec::H264 => self.counts.h264_opens.load(Ordering::SeqCst),
+            _ => 0,
+        }
+    }
+
+    /// The encoders of `codec` open now (opened and not dropped).
+    pub fn encoders_open(&self, codec: VideoCodec) -> u64 {
+        match codec {
+            VideoCodec::Vp8 => self.counts.vp8_live.load(Ordering::SeqCst),
+            VideoCodec::H264 => self.counts.h264_live.load(Ordering::SeqCst),
+            _ => 0,
+        }
+    }
+
+    /// Every H.264 session open now is lost (its next poll answers `DeviceLost`, as a GPU
+    /// reset does); with `reopen_fails`, every later H.264 open fails too.
+    pub fn lose_h264(&self, reopen_fails: bool) {
+        if reopen_fails {
+            self.counts.h264_refused.store(true, Ordering::SeqCst);
+        }
+        self.counts.h264_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The next `n` VP8 encoder opens fail.
+    pub fn fail_vp8_opens(&self, n: u32) {
+        self.counts.vp8_failures.store(n, Ordering::SeqCst);
+    }
+
+    /// How many of [`FixtureBackend::fail_vp8_opens`]'s failures are left.
+    pub fn vp8_failures_left(&self) -> u32 {
+        self.counts.vp8_failures.load(Ordering::SeqCst)
+    }
+
+    /// The H.264 open as the options say: an error, or what the session reports.
+    fn h264_open(&self, config: &EncoderConfig) -> Result<Implementation, VideoError> {
+        let hw_only = config.implementation == ImplPreference::HardwareOnly;
+        if self.counts.h264_refused.load(Ordering::SeqCst) {
+            return Err(VideoError::NoResources);
+        }
+        match self.opts.h264 {
+            FixtureH264::Software if hw_only => Err(VideoError::Unsupported(
+                "the fixture's H.264 encoder is software".into(),
+            )),
+            FixtureH264::Software => Ok(Implementation::Software),
+            FixtureH264::Hardware => Ok(Implementation::Hardware),
+            FixtureH264::HardwareOpenFails => Err(VideoError::NoResources),
+            FixtureH264::HardwareReportsSoftware => Ok(Implementation::Software),
+            FixtureH264::HardwareReportsUnknown => Ok(Implementation::Unknown),
+        }
     }
 
     fn live(&self) -> Result<(), VideoError> {
@@ -197,7 +322,11 @@ impl VideoBackend for FixtureBackend {
         let mut h264 = CodecCapability::new(
             VideoCodec::H264,
             CodecDirection::Encode,
-            Implementation::Software,
+            if self.opts.h264 == FixtureH264::Software {
+                Implementation::Software
+            } else {
+                Implementation::Hardware
+            },
             "fixture H.264 (x264 Constrained Baseline)",
             1280,
             720,
@@ -279,7 +408,32 @@ impl VideoBackend for FixtureBackend {
         let stream = self
             .stream(codec, config.height)
             .ok_or_else(|| VideoError::Unsupported(format!("no {codec:?} fixture")))?;
+        let (implementation, live, lost) = match codec {
+            VideoCodec::H264 => {
+                let i = self.h264_open(&config)?;
+                self.counts.h264_opens.fetch_add(1, Ordering::SeqCst);
+                let epoch = self.counts.h264_epoch.clone();
+                let at = epoch.load(Ordering::SeqCst);
+                (i, self.counts.h264_live.clone(), Some((epoch, at)))
+            }
+            _ => {
+                let fail = self
+                    .counts
+                    .vp8_failures
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok();
+                if fail {
+                    return Err(VideoError::NoResources);
+                }
+                self.counts.vp8_opens.fetch_add(1, Ordering::SeqCst);
+                (Implementation::Software, self.counts.vp8_live.clone(), None)
+            }
+        };
+        live.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(FixtureEncoder {
+            implementation,
+            live,
+            lost,
             streams: self
                 .streams
                 .iter()
@@ -327,6 +481,12 @@ impl VideoBackend for FixtureBackend {
 }
 
 struct FixtureEncoder {
+    /// What the session reports.
+    implementation: Implementation,
+    /// The backend's live count of this codec (decremented on drop).
+    live: Arc<AtomicU64>,
+    /// H.264: the backend's loss epoch and the one this session opened in.
+    lost: Option<(Arc<AtomicU64>, u64)>,
     /// This codec's streams (for `set_size`).
     streams: Vec<Arc<Stream>>,
     stream: Arc<Stream>,
@@ -370,6 +530,11 @@ impl VideoEncoder for FixtureEncoder {
     }
 
     fn poll(&mut self) -> Option<Result<EncodedFrame, VideoError>> {
+        if let Some((epoch, at)) = &self.lost
+            && epoch.load(Ordering::SeqCst) != *at
+        {
+            return Some(Err(VideoError::DeviceLost));
+        }
         self.out.pop_front().map(Ok)
     }
 
@@ -400,7 +565,7 @@ impl VideoEncoder for FixtureEncoder {
 
     fn info(&self) -> EncoderInfo {
         EncoderInfo::new(
-            Implementation::Software,
+            self.implementation,
             format!("fixture {}", self.stream.file),
             self.config,
         )
@@ -408,6 +573,12 @@ impl VideoEncoder for FixtureEncoder {
 
     fn stats(&self) -> EncoderStats {
         self.stats
+    }
+}
+
+impl Drop for FixtureEncoder {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
