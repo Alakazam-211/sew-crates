@@ -1,8 +1,8 @@
 //! `Caps`: what a client's SDK can do.
 //!
-//! `Caps` has **no public constructor**: only a bridge builds it (`JsBridge::caps()`,
-//! `LiveKitRustSink::caps()`, the test `VirtualSdk`), so an app cannot claim a capability its
-//! SDK lacks by mistake. The in-tree bridges in other crates use the hidden
+//! `Caps` has **no public constructor**: only a bridge builds it (Sew's own SDK bridges, not
+//! published, or the test `VirtualSdk`), so an app cannot claim a capability its SDK lacks by
+//! mistake. The in-tree bridges in other crates use the hidden
 //! [`crate::__bridge::caps`]; it is not part of the supported API (test
 //! `caps_only_from_bridge`).
 

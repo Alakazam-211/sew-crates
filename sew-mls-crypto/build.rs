@@ -10,8 +10,9 @@ fn main() {
     let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") else {
         return;
     };
+    // Only build.rs is watched: a missing path would rerun this script on every build of a
+    // path dependency. Sew's tree always has the vectors, the package never does.
     let vectors = std::path::Path::new(&dir).join("tests/vectors/rfc9180.json");
-    println!("cargo::rerun-if-changed={}", vectors.display());
     if vectors.is_file() {
         println!("cargo::rustc-cfg=sew_rfc9180_vectors");
     }

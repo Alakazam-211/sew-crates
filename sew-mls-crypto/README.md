@@ -29,6 +29,7 @@ the end-to-end encrypted calls (`sew-e2ee`).
 - API documentation: <https://docs.rs/sew-mls-crypto>
 - Security problems: report them privately, as
   <https://github.com/Alakazam-211/sew-crates/security/policy> says.
+- No third-party audit: this crate has not had a third-party security audit.
 
 ## Usage
 

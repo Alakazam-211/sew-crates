@@ -1,8 +1,9 @@
 //! `sew-e2ee`: the reference client library for end-to-end encrypted Sew calls.
 //!
-//! Every Sew call is end-to-end encrypted. The keys exist only on participant devices,
-//! agreed with MLS (RFC 9420, openmls 0.9.0), and are fed into the LiveKit SDKs' own frame
-//! encryption. This crate is that protocol, written once:
+//! Every Sew call is end-to-end encrypted. The keys exist only on participant devices (and, when
+//! a call is recorded, on the recorder the members admit), agreed with MLS (RFC 9420, openmls
+//! 0.9.0), and are fed into the LiveKit SDKs' own frame encryption. This crate is that
+//! protocol, written once:
 //!
 //! - **Identity** ([`identity`], [`trust`], [`store`]): the P-256 device key interface
 //!   ([`DeviceSigner`]), device certificates from the server's call CA, the call credential

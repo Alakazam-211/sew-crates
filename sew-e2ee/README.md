@@ -55,8 +55,12 @@ Not affiliated with or endorsed by LiveKit.
   security code (`SecurityCode`, from the epoch authenticator) lets participants confirm out of
   band that they are in the same group epoch; it does not by itself show who is in it.
 - **What end-to-end encryption protects against:** the media server and anyone on the network
-  never get frame keys, so they cannot decrypt the media they forward. A call recorder gets only
-  the keys that consenting members seal to it.
+  never get frame keys, unless the server adds a device of its own (see above), so they cannot
+  decrypt the media they forward. A call recorder gets only the keys that consenting members
+  seal to it.
+- **What it does not hide (metadata):** the Sew server and the media server still see who joins
+  which call and when, device identities and group membership, and packet sizes and timing. The
+  LiveKit frame format also leaves the first bytes of each frame's codec header unencrypted.
 - **Trust on first use.** The first READY a device sees for an install pins the CA key, the DS
   key and the `external_sender` bytes in its `DeviceStore`. A later change is a hard error
   (`E2eeStatus::ServerIdentityChanged`: no joins, and a report for the admins). That catches a
@@ -64,13 +68,13 @@ Not affiliated with or endorsed by LiveKit.
   attacker's, if the attacker holds the server's real CA and DS keys, or after the device store is
   cleared (a new enrolment accepts new keys). Transport security (TLS to the server) is the
   host's job.
-- **What is tested** (in Sew's repository; the package carries no tests): device certificates,
-  pins and revocation; the call credential; Welcome and commit checks, including crafted
-  Welcomes, wrong external senders and disallowed proposals;
+- **What is tested** (the package carries only unit tests; the full suites are in Sew's
+  repository): device certificates, pins and revocation; the call credential; Welcome and
+  commit checks, including crafted Welcomes, wrong external senders and disallowed proposals;
   the two-phase key switch, retirement and recovery in a multi-member simulation; the recorder
   key handoff; that no key material shows in `Debug` output or logs; the RFC 9420 known-answer
   vectors (passive client and codecs); the MLS exporter against another implementation
-  (`mls-rs`); and fuzz entry points (no panic on any input). The HPKE provider,
+  (`mls-rs`); and the fuzz entry points, fuzzed for panics. The HPKE provider,
   `sew-mls-crypto`, is tested against the RFC 9180 vectors and against `openmls_rust_crypto`.
 - **No third-party audit.** Neither this crate nor `sew-mls-crypto` has had a third-party
   security audit.

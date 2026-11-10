@@ -224,6 +224,8 @@ impl storage::Entity<CURRENT_VERSION> for SignatureKeyPair {}
 impl storage::traits::SignatureKeyPair<CURRENT_VERSION> for SignatureKeyPair {}
 
 #[cfg(test)]
+// The package has no clippy.toml (Sew's allows unwrap in tests); the module says it itself.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tls_codec::{DeserializeBytes as _, Serialize as _};
