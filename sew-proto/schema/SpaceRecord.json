@@ -27,6 +27,31 @@
       ],
       "type": "object"
     },
+    "RecordingStartLevel": {
+      "description": "The lowest level of an App's governed Space whose members may start and stop\nrecordings. `member` means everyone in the Space. Stored as its wire string.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Nobody through the App's levels (the default; roles and overwrites still apply).",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "Admins.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "Moderators and admins.",
+          "type": "string"
+        },
+        {
+          "const": "member",
+          "description": "Everyone in the Space.",
+          "type": "string"
+        }
+      ]
+    },
     "SourceRef": {
       "additionalProperties": false,
       "description": "A converter's reference to the record it came from (ignored and not stored by Sew v1).",
@@ -164,6 +189,24 @@
     "private": {
       "description": "A private Space (minor 6); omitted when `false`. Always invite-only.",
       "type": "boolean"
+    },
+    "recording_required": {
+      "description": "Minor 12: the Space's own \"record every call with more than one person\"; omitted when\nit inherits.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "recording_start_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingStartLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Minor 12: the Space's own recording start level (over its governing App's); omitted\nwhen it inherits."
     },
     "rules_channel_id": {
       "description": "Rules channel (minor 1).",

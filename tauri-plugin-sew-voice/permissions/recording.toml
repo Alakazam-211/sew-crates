@@ -1,0 +1,13 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "recording"
+description = """
+The recording commands (Sew 0.9.0), for a call UI with Record and Stop buttons:
+`start_recording` and `stop_recording`. Each is the person's own act, which the host's provider
+sends to Sew with the person's session; Sew decides who may. Answering a recording's notice
+(`consent`, `withdraw_consent`) is in `sew-voice:default` and needs nothing more. Not in
+`sew-voice:default`: grant it to the call window, or `sew-voice:allow-start-recording` /
+`sew-voice:allow-stop-recording` one by one.
+"""
+permissions = ["allow-start-recording", "allow-stop-recording"]

@@ -50,6 +50,7 @@ unit_enum! {
 
 /// A channel, DM or group DM.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Channel {
     /// The channel id.
     pub id: Id,
@@ -133,6 +134,19 @@ pub struct Channel {
     /// absent = the org policy `recording.require_consent_to_join`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_require_consent: Option<bool>,
+    /// Voice channels: the channel's own "record every call with more than one person";
+    /// absent = it inherits (its Space, its governing App and the org policy may still require
+    /// it; `false` never removes their rule).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_required: Option<bool>,
+    /// Voice channels, DMs and group DMs: the rule the room records under, every source
+    /// applied: `auto` (a recording starts on the first join), `required` (every call with
+    /// more than one person is recorded) or `none` (people press Record). Absent = `none`.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::recording::RecordingRule::is_none"
+    )]
+    pub recording_rule: crate::recording::RecordingRule,
     /// A meeting channel's meeting; absent on every other channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meeting: Option<crate::api::meetings::ChannelMeeting>,
@@ -141,6 +155,47 @@ pub struct Channel {
     /// Absent when `false`; never set on an archived channel.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closing: bool,
+}
+
+impl Channel {
+    /// A channel with its required fields: position 0, not synced, head 0, no DM members, and
+    /// every optional field unset (no rule, no recording settings).
+    pub fn new(id: Id, kind: ChannelType, visibility: Visibility, created_at: Timestamp) -> Self {
+        Channel {
+            id,
+            space_id: None,
+            category_id: None,
+            kind,
+            visibility,
+            slug: None,
+            name: None,
+            topic: None,
+            purpose: None,
+            position: 0,
+            synced: false,
+            archived_at: None,
+            head_seq: 0,
+            last_message_id: None,
+            dm_member_ids: Vec::new(),
+            my_perms: None,
+            created_at,
+            member_count: 0,
+            created_by: None,
+            slow_mode_s: 0,
+            retention_days: None,
+            file_retention_days: None,
+            has_guests: false,
+            assistant_reader_ids: Vec::new(),
+            user_limit: 0,
+            recording_auto: false,
+            recording_audio_days: None,
+            recording_require_consent: None,
+            recording_required: None,
+            recording_rule: crate::recording::RecordingRule::None,
+            meeting: None,
+            closing: false,
+        }
+    }
 }
 
 /// The largest `recording_audio_days` a channel may store (the org's
@@ -214,6 +269,7 @@ impl Validate for CreateChannelRequest {
 /// Body of the update-channel route.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct UpdateChannelRequest {
     /// A new slug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,6 +305,12 @@ pub struct UpdateChannelRequest {
     /// Needs MANAGE_CHANNELS and RECORD_CALLS.
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
     pub recording_require_consent: Patch<bool>,
+    /// Voice channels only: set or clear (inherit) "record every call with more than one
+    /// person". `false` never removes a rule the Space, its App or the org sets. Needs
+    /// MANAGE_CHANNELS and RECORD_CALLS; on another channel type `400 validation_failed`,
+    /// field `recording_required`.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub recording_required: Patch<bool>,
 }
 
 impl Validate for UpdateChannelRequest {

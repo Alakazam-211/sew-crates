@@ -33,6 +33,7 @@ mod meet;
 mod member_channels;
 mod notifications;
 mod ops;
+mod recordings;
 mod spaces;
 mod voice;
 
@@ -79,6 +80,17 @@ pub use notifications::{
 };
 pub use ops::{
     AuditVerifyMode, AuditVerifyReport, AuditVerifyRequest, EXPORT_RECIPIENTS_MAX, ExportRequest,
+};
+pub use recordings::{
+    FEATURE_APP_RECORDING, FEATURE_MGMT_RECORDING_READS, FEATURE_RECORDING_REQUIRED,
+    FEATURE_VOICE_RECORD_CAP, MGMT_RECORDINGS_LIMIT_DEFAULT, MGMT_RECORDINGS_LIMIT_MAX,
+    MGMT_TRANSCRIPT_LIMIT_DEFAULT, MGMT_TRANSCRIPT_LIMIT_MAX, MgmtAppRecording,
+    MgmtAppRecordingRequest, MgmtChannelRecording, MgmtChannelRecordingRequest,
+    MgmtRecordingChange, MgmtRecordingChanges, MgmtRecordingChangesQuery, MgmtRecordingParticipant,
+    MgmtRecordingQuery, MgmtRecordingStopRequest, MgmtRecordingSummary, MgmtRecordingsPage,
+    MgmtRecordingsQuery, MgmtTranscriptPage, MgmtTranscriptQuery, MgmtTranscriptTurn,
+    RECORDING_CHANGES_LIMIT_DEFAULT, RECORDING_CHANGES_LIMIT_MAX, RECORDING_CHANGES_WAIT_MAX_S,
+    RECORDING_EVENTS_KEEP_DAYS,
 };
 pub use spaces::{
     ADMIN_SPACE_SLUG, APP_ID_MAX_BYTES, FEATURE_APP_GOVERNED_SPACES, FEATURE_APP_PARTICIPANT_LINKS,
@@ -325,6 +337,11 @@ unit_enum! {
         RecordingAutoFailed = "recording_auto_failed",
         /// A segment of an ungranted identity reached `sew` in the last 24 h.
         RecordingConsentViolation = "recording_consent_violation",
+        /// A room that must record every call with two or more people could not: three
+        /// required starts failed in 10 min for one channel, or recording is required where it
+        /// cannot run (the recorder is not installed, `recording.enabled` is off, or the
+        /// governing App has `uploads: false`) in the last hour.
+        RecordingRequiredFailed = "recording_required_failed",
     }
 }
 
@@ -553,6 +570,7 @@ pub struct StatusKeysMirror {
 
 /// Response of `GET /mgmt/v1/status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Status {
     /// The Sew version.
     pub version: String,
@@ -628,6 +646,49 @@ pub struct Status {
     /// outcomes and server-sent closes by code. Absent from servers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<StatusGateway>,
+}
+
+impl Status {
+    /// A status with its required parts: no sessions or sockets, empty search and keys blocks,
+    /// no alarms or features, every optional block unset.
+    pub fn new(
+        version: String,
+        schema_version: u64,
+        install_id: Id,
+        provider: ProviderKind,
+        db: StatusDb,
+        jobs: StatusJobs,
+    ) -> Status {
+        Status {
+            version,
+            schema_version,
+            install_id,
+            provider,
+            db,
+            jobs,
+            search: StatusSearch::default(),
+            keys: StatusKeys::default(),
+            sessions: 0,
+            sockets: 0,
+            started_at: None,
+            uptime_ms: 0,
+            alarms: Vec::new(),
+            identity: None,
+            client_listen: None,
+            backup: None,
+            drill: None,
+            files: None,
+            retention: None,
+            mail: None,
+            digest: None,
+            exports: None,
+            erasures: None,
+            voice: None,
+            recording: None,
+            features: Vec::new(),
+            gateway: None,
+        }
+    }
 }
 
 /// `status.gateway` (0.7.1): the gateway's counters since this process started, the same
@@ -714,6 +775,9 @@ pub const FEATURES: &[&str] = &[
     FEATURE_APP_PARTICIPANT_LINKS,
     // `GET`/`POST /mgmt/v1/apps/{app_id}/quotas` and their enforcement.
     "app_quotas",
+    // Since 0.9.0: App, Space and channel recording settings (`recording` in the App settings,
+    // the Space overrides, `channels/{channel_id}/recording`), `start_level`, the mgmt stop.
+    FEATURE_APP_RECORDING,
     // The pass's `app` claim scopes the session.
     FEATURE_APP_SCOPED_SESSIONS,
     "app_session_member_role", // An App session acts with install role at most `member`.
@@ -734,6 +798,9 @@ pub const FEATURES: &[&str] = &[
     "k2_managed_guard", // `--i-am-k2` and `sew install --managed-by` (the K2-managed guard).
     // `external_id` on the client `Member` (K2 installs, shared Spaces and DMs).
     crate::api::members::FEATURE_MEMBER_EXTERNAL_ID,
+    // Since 0.9.0: the mgmt recording reads, the transcript route and an App's recording feed
+    // (`recordings/{id}`, `spaces/{space_id}/recordings`, `apps/{app_id}/recordings/changes`).
+    FEATURE_MGMT_RECORDING_READS,
     // `voice/states` and the `voice/changes` feed over mgmt.
     FEATURE_MGMT_VOICE_STATES,
     // `GET /mgmt/v1/people/{external_id}/notifications`.
@@ -744,6 +811,9 @@ pub const FEATURES: &[&str] = &[
     FEATURE_PRINCIPAL_RELINK,
     // Private Spaces (`Space.private`, `/mgmt/v1/spaces/{space_id}/settings`).
     FEATURE_PRIVATE_SPACES,
+    // Since 0.9.0: rooms that record every call with more than one person (policy
+    // `recording.required`, the App, Space and channel `required`, `Channel.recording_rule`).
+    FEATURE_RECORDING_REQUIRED,
     // The server-governed Space (governance `server`, the `k2:server` owner).
     FEATURE_SERVER_GOVERNED_SPACE,
     // `spaces/unbind`, `spaces/release` and read-only orphan Spaces.
@@ -755,6 +825,9 @@ pub const FEATURES: &[&str] = &[
     FEATURE_VOICE_CHANNEL_CLOSING,
     // `POST /mgmt/v1/voice/media-path`, `status.voice.media_path`.
     FEATURE_VOICE_MEDIA_PATH,
+    // Since 0.9.0: the pass cap `voice:record` (a ceiling on recording start and stop where the
+    // session's App sets `recording.cap_required`).
+    FEATURE_VOICE_RECORD_CAP,
     // The pass cap `voice:video` (camera and screen leases).
     "voice_video_cap",
 ];
@@ -1501,6 +1574,14 @@ pub mod reasons {
     /// An erase asks for `anonymise` after the account was erased with `delete_content` (409;
     /// the content is gone).
     pub const ERASE_MODE_DOWNGRADE: &str = "erase_mode_downgrade";
+    /// The transcript route, for an App whose `recording.server_read` setting is off (403
+    /// `policy_denied`).
+    pub const RECORDING_SERVER_READ_OFF: &str = "recording_server_read_off";
+    /// A mgmt call that only the install's Owner or an Admin may make: the stop of a
+    /// recording, a recording read without `app_id`, an audio download. `Sew-Actor` is
+    /// absent or does not name an active person (by external id) whose install role is
+    /// owner or admin (403 `missing_permission`; audited denied).
+    pub const SEW_ACTOR_ADMIN_REQUIRED: &str = "sew_actor_admin_required";
     /// `governance: app` while box users (`k2:owner`, `k2:connect:`) other than
     /// the owner are members of the Space (409, `MgmtBoxUsersDetails`).
     pub const BOX_USERS_PRESENT: &str = "box_users_present";

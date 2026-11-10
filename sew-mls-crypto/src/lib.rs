@@ -22,13 +22,19 @@
 //! features for them are forbidden in Sew), and P-384 signatures, which no supported
 //! suite uses, are refused.
 //!
-//! Parts of this crate are derived from `openmls_rust_crypto` 0.6.0 (Copyright (c) 2020 OpenMLS
-//! Authors, MIT); see NOTICE.
+//! [`SignatureKeyPair`] is the signature key pair of a basic credential, the drop-in for
+//! `openmls_basic_credential`'s (same key, signature, serde, TLS and storage formats; Ed25519
+//! and ECDSA P-256 only).
+//!
+//! Parts of this crate are derived from `openmls_rust_crypto` 0.6.0 and
+//! `openmls_basic_credential` 0.6.0 (Copyright (c) 2020 OpenMLS Authors, MIT); see NOTICE.
 
+mod credential;
 mod crypto;
 mod hpke_impl;
 mod rng;
 
+pub use credential::{SignatureKeyPair, StorageId};
 pub use crypto::{MlsCrypto, RandError};
 pub use openmls_memory_storage::{MemoryStorage, MemoryStorageError};
 

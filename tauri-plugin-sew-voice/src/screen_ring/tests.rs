@@ -614,21 +614,21 @@ fn the_layout_follows_the_policy_and_caps_at_720p() {
         max_fps,
         layers: Vec::new(),
     };
-    let mut p = MediaPolicy {
-        tier: MediaTier::Normal,
-        video_enabled: true,
-        e2ee: "required".to_owned(),
-        audio_codecs: vec!["opus".to_owned()],
-        codecs: vec![VideoCodec::Vp8],
-        backup_codec: false,
-        vp9: None,
-        camera: hint(1280, 720, 30),
-        screen: hint(1920, 1080, 60),
-        dynacast: true,
-        adaptive_stream: true,
-        camera_allowed: true,
-        screen_allowed: true,
-        relay_only: false,
+    let mut p = {
+        let mut media_policy =
+            MediaPolicy::new(MediaTier::Normal, hint(1280, 720, 30), hint(1920, 1080, 60));
+        media_policy.video_enabled = true;
+        media_policy.e2ee = "required".to_owned();
+        media_policy.audio_codecs = vec!["opus".to_owned()];
+        media_policy.codecs = vec![VideoCodec::Vp8];
+        media_policy.backup_codec = false;
+        media_policy.vp9 = None;
+        media_policy.dynacast = true;
+        media_policy.adaptive_stream = true;
+        media_policy.camera_allowed = true;
+        media_policy.screen_allowed = true;
+        media_policy.relay_only = false;
+        media_policy
     };
     let l = layout_for(Some(&p));
     assert_eq!((l.max_width, l.max_height, l.max_fps), (1280, 720, 30));

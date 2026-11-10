@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The rule a voice room records under, as its settings and their sources resolve it.",
+  "oneOf": [
+    {
+      "const": "none",
+      "description": "People press Record.",
+      "type": "string"
+    },
+    {
+      "const": "auto",
+      "description": "The room records from its first join.",
+      "type": "string"
+    },
+    {
+      "const": "required",
+      "description": "The room records every call with two or more people.",
+      "type": "string"
+    }
+  ],
+  "title": "RecordingRule"
+}

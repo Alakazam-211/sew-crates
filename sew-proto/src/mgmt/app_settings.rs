@@ -117,6 +117,7 @@ pub struct MgmtHomeClient {
 /// Body of `POST /mgmt/v1/apps/{app_id}/settings`: any subset of the fields.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MgmtAppSettingsRequest {
     /// Leave the App's Spaces out of the home client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,10 +144,17 @@ pub struct MgmtAppSettingsRequest {
     /// are dropped and the list is kept sorted; `null` or `[]` clears it.
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
     pub origins: Patch<Vec<String>>,
+    /// Flag `app_recording`: any subset of the App's recording settings. Refused for the
+    /// home client (`409 home_client_cannot_govern`, field `recording`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<super::recordings::MgmtAppRecordingRequest>,
 }
 
 impl Validate for MgmtAppSettingsRequest {
     fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(r) = &self.recording {
+            r.validate()?;
+        }
         if let Some(l) = self.max_level {
             crate::error::check_known("max_level", l)?;
         }
@@ -181,6 +189,7 @@ impl Validate for MgmtAppSettingsRequest {
 
 /// `GET`/`POST /mgmt/v1/apps/{app_id}/settings`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct MgmtAppSettings {
     /// The App.
     pub app_id: String,
@@ -204,6 +213,30 @@ pub struct MgmtAppSettings {
     /// (old payloads read as none).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
+    /// Flag `app_recording`: the App's recording settings; absent while every one has its
+    /// default (old payloads read as the defaults).
+    #[serde(
+        default,
+        skip_serializing_if = "super::recordings::MgmtAppRecording::is_default"
+    )]
+    pub recording: super::recordings::MgmtAppRecording,
+}
+
+impl MgmtAppSettings {
+    /// `app_id`'s settings at their defaults: shown in the home client, no display name or
+    /// origins, `max_level` moderator, uploads on, the default recording settings.
+    pub fn new(app_id: String) -> Self {
+        MgmtAppSettings {
+            app_id,
+            hidden_from_home: false,
+            display_name: None,
+            origin: None,
+            max_level: default_max_level(),
+            uploads: default_uploads(),
+            origins: Vec::new(),
+            recording: super::recordings::MgmtAppRecording::default(),
+        }
+    }
 }
 
 /// The default `max_level`.

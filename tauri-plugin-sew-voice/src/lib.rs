@@ -26,6 +26,11 @@
 //! participant's engine identity and label, the connection quality and an incoming DM call
 //! ([`details`]).
 //!
+//! **Record and Stop (Sew 0.9.0).** The `start_recording` and `stop_recording` commands
+//! ([`RECORDING_COMMANDS`], permission set `sew-voice:recording`) send the person's Record and
+//! Stop through the host's provider ([`JoinProvider::recording`]) with the person's own
+//! session, as consent goes.
+//!
 //! **Phones (0.3.0).** A CallKit or Telecom shim registers a [`VoiceListener`]
 //! (`Builder::listener`), which sees the call whether or not a webview is awake, and acts
 //! through [`VoiceControl`] (Tauri state): join, leave, mute, consent, the snapshot on wake,
@@ -77,8 +82,8 @@ pub use details::{
 pub use engine::{
     AnswerError, AppScene, AudioSessionEvent, BoxFuture, CONSENT_UNSUPPORTED, CallCredential,
     CallEvent, CallHandle, CallSnapshot, ConsentAnswer, ConsentRequired, EngineError, JoinAnswer,
-    JoinProvider, JoinRequest, ProviderError, RejoinReason, VideoSnapshot, VoiceEngine,
-    app_server_answer,
+    JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED, RecordingControl,
+    RecordingRequest, RejoinReason, VideoSnapshot, VoiceEngine, app_server_answer,
 };
 pub use listener::{VoiceControl, VoiceListener};
 #[cfg(feature = "tauri")]
@@ -153,6 +158,13 @@ pub const COMMANDS: [&str; 8] = [
 /// Sew install (a sign-out) and answers the removed keys; `known_device_keys` lists the keys
 /// the plugin's device store holds.
 pub const DEVICE_KEY_COMMANDS: [&str; 2] = ["forget_server", "known_device_keys"];
+
+/// The recording commands (Sew 0.9.0), outside `sew-voice:default`: a window gets them with
+/// the set `sew-voice:recording` or each one's own `sew-voice:allow-<command>`.
+/// `start_recording` (Record) and `stop_recording` (Stop) are the person's own acts, sent by
+/// the host's provider with the person's session ([`JoinProvider::recording`]); Sew decides
+/// who may.
+pub const RECORDING_COMMANDS: [&str; 2] = ["start_recording", "stop_recording"];
 
 /// The video commands, outside `sew-voice:default`: a window gets them with the set
 /// `sew-voice:video` (all thirteen, and [`VIDEO_CODEC_COMMANDS`]) or each one's own

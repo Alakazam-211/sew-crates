@@ -25,15 +25,13 @@ the end-to-end encrypted calls (`sew-e2ee`).
 
 ## Usage
 
-The crate is not published on crates.io yet. It is held back, with `sew-e2ee`, until the
-dependency change for the P-256 advisory below (RUSTSEC-2026-0387) is made. Until then, get it
-from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository: clone
+The crate is not published on crates.io yet. Until it is, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository: clone
 it into your project (for example as `third_party/sew-crates`), and point Cargo at it from your
 workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-mls-crypto = "0.8.3"
+sew-mls-crypto = "0.9.0"
 openmls = "=0.9.0"
 
 [patch.crates-io]
@@ -48,21 +46,17 @@ let provider = MlsProvider::new();
 // Use `provider` wherever OpenMLS takes an `OpenMlsProvider`.
 ```
 
+`SignatureKeyPair` is the signature key pair of a basic credential (Ed25519 or ECDSA P-256), in
+place of `openmls_basic_credential`'s: the same keys, signatures, serde and TLS forms and storage
+id, so key pairs and groups made with either work with the other.
+
 ## Licence
 
 MIT OR Apache-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.
 
 `src/crypto.rs` and, in part, `src/lib.rs` (`MlsProvider` and its `OpenMlsProvider` impl) are
-derived from `openmls_rust_crypto` 0.6.0 (MIT, Copyright (c) 2020 OpenMLS Authors); `NOTICE` carries its copyright line and permission notice, which must travel with the
-code.
+derived from `openmls_rust_crypto` 0.6.0, and `src/credential.rs` (`SignatureKeyPair`) from
+`openmls_basic_credential` 0.6.0 (both MIT, Copyright (c) 2020 OpenMLS Authors); `NOTICE` carries
+their copyright line and permission notice, which must travel with the code.
 
 Copyright 2026 Alakazam Labs.
-
-> **Known advisory (RUSTSEC-2026-0387, crypto-bigint < 0.7.6).** The P-256 suite
-> `MLS_128_DHKEMP256_AES128GCM_SHA256_P256` (0x0002) reaches crypto-bigint 0.5.5 through p256 0.13
-> (DHKEM(P-256) in `hpke` 0.13 and ECDSA P-256 signatures). The X25519/Ed25519 suites (0x0001, 0x0003) don't use it, but it stays linked, so dependency scanners will still report it.
-> Our assessment, from source review only (no `cargo checkct` run yet: a tool that checks compiled
-> code for secret-dependent timing), is that these paths don't call the
-> operations the advisory names. The fix (crypto-bigint 0.7.9+) needs p256 0.14 and `hpke` 0.14+, a RustCrypto upgrade we plan to make.
-> If that's not enough for your threat model, use 0x0001 or 0x0003. That covers this crate only:
-> `sew-e2ee` signs with its P-256 device key on every join, whatever the suite (see its README).

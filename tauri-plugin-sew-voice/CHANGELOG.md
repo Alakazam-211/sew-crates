@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.0 (2026-11-10, Sew 0.9.0)
+
+Additions, and two breaks (below): `RecordingInfo` gains fields and is now non-exhaustive, and
+the plugin is on sew-call-client 0.6 and sew-proto 0.9.
+
+### Breaking
+
+- The `recording` event (and the `state` command's `recording`) carries `trigger`
+  (`"manual"`, `"auto"` or `"required"`, `wire::trigger`) and `required` (the room requires its
+  recording: Sew refuses Stop `recording_required` while two or more people are in it). Both are
+  always written; a payload without them reads as `"manual"` and `false`. `RecordingInfo` gains
+  the two fields and is `#[non_exhaustive]`: code outside the crate that built one with a
+  struct literal reads it from JSON instead.
+- sew-call-client 0.6 and sew-proto 0.9: the types the plugin re-exports from them are theirs
+  (see their CHANGELOGs).
+
+### Added
+
+- Record and Stop (Sew 0.9.0): the commands `start_recording` and `stop_recording` (no
+  arguments; `null`), outside `sew-voice:default`, with their own permissions
+  `sew-voice:allow-start-recording` and `sew-voice:allow-stop-recording` and the set
+  `sew-voice:recording` (`RECORDING_COMMANDS`). Each is the person's own act, sent by the host's
+  provider (sew-call-client's new `JoinProvider::recording`, `RecordingRequest` and
+  `RecordingControl`, re-exported with `RECORDING_UNSUPPORTED`) with the person's session; the
+  `recording` event follows Sew's answer. They reject `not_in_call`, `not_in_voice` (the join
+  is held for a notice; `code::NOT_IN_VOICE`), `no_recording` (a Stop with none),
+  `recording_unsupported` (`code::RECORDING_UNSUPPORTED`: the provider sends none), or Sew's
+  refusal as the provider gave it (`recording_active`, `recording_required`, `cap_ceiling`,
+  …). `VoiceControl::start_recording` and `stop_recording`, `VoiceService::start_recording`
+  and `stop_recording`, and `CallHandle::start_recording` and `stop_recording` (provided:
+  `recording_unsupported`). The fake records a Start's member alone and ends it on a Stop
+  (`fake::FakeCall::controls`, `fail_next_control`). The contract fixture's
+  `recording.controls` has the payloads.
+
 ## 0.5.1 (2026-11-10, Sew 0.8.3)
 
 Additions only: nothing in 0.5.0's API changes or goes away.

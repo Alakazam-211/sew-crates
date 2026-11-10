@@ -114,6 +114,17 @@
       "description": "Authorised compliance admins can download the audio (always `true` in v1).",
       "type": "boolean"
     },
+    "agent_readers": {
+      "description": "Agents in this channel can read the transcript (a coworker agent is a member of it);\nabsent when none is.",
+      "type": "boolean"
+    },
+    "app_readers": {
+      "description": "The display names of the Apps whose servers can read the transcript (the Space's\ngoverning App, when it may); absent when none.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "audio_keep_days": {
       "description": "How long audio is kept (0 = until the transcript is final).",
       "format": "uint16",
@@ -152,6 +163,10 @@
       "description": "What the answer refers to.",
       "pattern": "^(auto|[1-9][0-9]{0,18})$",
       "type": "string"
+    },
+    "required": {
+      "description": "The room records every call with two or more people (absent when not).",
+      "type": "boolean"
     },
     "room": {
       "$ref": "#/$defs/PromptRoom",

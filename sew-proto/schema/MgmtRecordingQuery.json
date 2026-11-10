@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Query of `GET /mgmt/v1/recordings/{id}`.",
+  "properties": {
+    "app_id": {
+      "description": "The governing App of the recording's Space (its view); absent: the compliance view of\nthe install's Owner or an Admin named by `Sew-Actor`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "MgmtRecordingQuery",
+  "type": "object"
+}

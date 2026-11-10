@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.6.0 (2026-11-10, Sew 0.9.0)
+
+### Breaking
+
+- sew-proto 0.9: the re-exported recording types (`Recording`, `ConsentPrompt`,
+  `RecordingNotice`, `RecordingRef`, and the new `RecordingTrigger`) are sew-proto 0.9.0's.
+  `Recording` and `ConsentPrompt` are now `#[non_exhaustive]` and gain fields (`trigger`;
+  `required`, `app_readers`, `agent_readers`): outside sew-proto, build them with
+  `Recording::new` and `ConsentPrompt::new` (a struct literal no longer compiles), or read them
+  from JSON. sew-proto 0.9.0's own breaks are in its CHANGELOG. `JoinProvider` gains the
+  provided method `recording` (a host that implements the trait keeps compiling).
+- Building from source: the workspace builds with Rust 1.99.1; the crate's `rust-version`
+  stays 1.95. 0.5.1's WebRTC update (dimpl 0.9, upstream str0m fixes) is included.
+
+### Added
+
+- Record and Stop (Sew 0.9.0): `Call::start_recording` and `Call::stop_recording`, the
+  person's own acts, sent through the host with the person's session by the new provided
+  method `JoinProvider::recording` (`RecordingRequest`, with `RecordingControl::Start` or
+  `Stop` as `action`, `path()`, `body()` and `recording_from_json()`; its JSON, `{target, room,
+  action, recording_id?, device_id?}`, is the web kit's native lane body). Its default sends nothing and
+  answers `recording_unsupported` (`RECORDING_UNSUPPORTED`). Sew's answer is the call's
+  recording at once; Sew's refusals come back as `ProviderError::Refused` with Sew's reason. A
+  Stop with no active recording is `CallError::NoRecording`; a Record while the join is held
+  for a notice is refused `not_in_voice` without asking Sew.
+- `CallRecording::trigger` (`RecordingTrigger`, re-exported: `manual`, `auto` or `required`;
+  from `auto` against an older Sew) and `CallRecording::required`: the room requires its
+  recording, so Sew refuses a Stop while two or more people are in it.
+
+### Fixed
+
+- macOS and iOS: an H.264 session counts as hardware only when kessel-video's encoder name
+  names a hardware encoder as well as its implementation saying so. A session opened with
+  low-latency rate control could run on VideoToolbox's software encoder while reporting
+  hardware; such a session is now refused unless its name carries the hardware encoder's id,
+  and the camera publishes VP8 instead. Every H.264 open logs its implementation and encoder
+  name at info.
+
 ## 0.5.1 (2026-11-10, Sew 0.8.3)
 
 Additions only: nothing in 0.5.0's API changes or goes away.

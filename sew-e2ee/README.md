@@ -33,16 +33,14 @@ Not affiliated with or endorsed by LiveKit.
 
 ## Usage
 
-The crate is not published on crates.io yet. It is held back, with `sew-mls-crypto` (one of
-its dependencies), until the dependency change for the P-256 advisory below
-(RUSTSEC-2026-0387) is made. Until then, get it from the read-only
+The crate is not published on crates.io yet. Until it is, get it from the read-only
 [sew-crates](https://github.com/Alakazam-211/sew-crates) repository: clone it into your project
 (for example as `third_party/sew-crates`), and point Cargo at it, and at the Sew crates it
 depends on, from your workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
-sew-e2ee = "0.8.3"
+sew-e2ee = "0.9.0"
 
 [patch.crates-io]
 sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }
@@ -55,16 +53,6 @@ the server's trust anchors, prepares a key package before it joins, and then dri
 `CallSession` per call: it hands the session each `Input` and applies each `Output` (key
 requests to send, `KeyEvent`s for its media SDK, status changes). The native voice engine
 `sew-call-client` is a complete host of this crate.
-
-## Known advisory: P-256 (RUSTSEC-2026-0387)
-
-The device key signs with ECDSA P-256 through `p256` 0.13 (`identity`'s `SoftwareSigner`) on
-every join, whatever MLS ciphersuite the call uses, so choosing a suite does not avoid this path.
-`p256` 0.13 links `crypto-bigint` 0.5.5, which RUSTSEC-2026-0387 (crypto-bigint < 0.7.6) names,
-and dependency scanners report it. Our assessment, from source review only, is that the signing
-path does not call the operations the advisory names; we have not yet run `cargo checkct` (a tool
-that checks compiled code for secret-dependent timing). The fix (crypto-bigint 0.7.9+) needs
-`p256` 0.14, a RustCrypto upgrade we plan to make. `sew-mls-crypto`'s README covers the MLS side.
 
 ## Licence
 

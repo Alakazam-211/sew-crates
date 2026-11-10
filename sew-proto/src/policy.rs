@@ -10,6 +10,7 @@ use crate::api::notify::{DigestDetail, NotifyLevel};
 use crate::e2ee::VerificationCode;
 use crate::error::{Validate, ValidationError, check_known};
 use crate::http::Patch;
+use crate::recording::RecordingRequiredPolicy;
 
 unit_enum! {
     /// A policy key.
@@ -84,6 +85,8 @@ unit_enum! {
         RecordingAudioMaxDays = "recording.audio_max_days",
         /// Declining the recording notice means not joining.
         RecordingRequireConsentToJoin = "recording.require_consent_to_join",
+        /// Whether every call with two or more people is recorded (`off` or `multi_person`).
+        RecordingRequired = "recording.required",
         /// Meetings on/off.
         MeetingsEnabled = "meetings.enabled",
         /// Who may host meetings.
@@ -242,6 +245,7 @@ pub const GIFS_API_KEY_REF_MAX_LEN: usize = 256;
 
 /// Every org policy value. `Default` gives the documented defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Policies {
     /// Who can create spaces.
     #[serde(rename = "spaces.create")]
@@ -381,6 +385,12 @@ pub struct Policies {
     /// Declining the recording notice means not joining.
     #[serde(rename = "recording.require_consent_to_join", default)]
     pub recording_require_consent_to_join: bool,
+    /// Whether every call with two or more people is recorded: `multi_person` starts a
+    /// recording when a room reaches two people (DM calls too while `recording.dm_enabled` is
+    /// on). Apps, Spaces and voice channels may require it where this is `off`. Old payloads
+    /// read `off`.
+    #[serde(rename = "recording.required", default = "default_recording_required")]
+    pub recording_required: RecordingRequiredPolicy,
     /// Meetings on/off: off refuses the meeting routes with `403 policy_denied`
     /// `meetings_disabled`; meetings already made keep their channels.
     #[serde(rename = "meetings.enabled", default)]
@@ -454,6 +464,10 @@ fn default_recording_audio_max_days() -> u16 {
     DEFAULT_RECORDING_AUDIO_MAX_DAYS
 }
 
+fn default_recording_required() -> RecordingRequiredPolicy {
+    RecordingRequiredPolicy::Off
+}
+
 fn default_verification_code() -> VerificationCode {
     VerificationCode::Shown
 }
@@ -515,6 +529,7 @@ impl Default for Policies {
             recording_audio_default_days: DEFAULT_RECORDING_AUDIO_DEFAULT_DAYS,
             recording_audio_max_days: DEFAULT_RECORDING_AUDIO_MAX_DAYS,
             recording_require_consent_to_join: false,
+            recording_required: RecordingRequiredPolicy::Off,
             meetings_enabled: false,
             meetings_create: MeetingsCreate::Members,
             meetings_max_participants: DEFAULT_MEETINGS_MAX_PARTICIPANTS,
@@ -590,6 +605,7 @@ impl Policies {
             recording_audio_default_days,
             recording_audio_max_days,
             recording_require_consent_to_join,
+            recording_required,
             meetings_enabled,
             meetings_create,
             meetings_max_participants,
@@ -611,6 +627,7 @@ impl Policies {
 /// A partial policy change. Every key is optional; unknown keys are rejected.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct PolicyPatch {
     /// `spaces.create`.
     #[serde(
@@ -858,6 +875,13 @@ pub struct PolicyPatch {
         skip_serializing_if = "Option::is_none"
     )]
     pub recording_require_consent_to_join: Option<bool>,
+    /// `recording.required`.
+    #[serde(
+        rename = "recording.required",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub recording_required: Option<RecordingRequiredPolicy>,
     /// `meetings.enabled`.
     #[serde(
         rename = "meetings.enabled",
@@ -974,6 +998,9 @@ impl Validate for PolicyPatch {
                 "recording.audio_default_days",
                 "recording.audio_default_days must not exceed recording.audio_max_days",
             ));
+        }
+        if let Some(v) = self.recording_required {
+            check_known("recording.required", v)?;
         }
         if let Some(v) = self.meetings_create {
             check_known("meetings.create", v)?;

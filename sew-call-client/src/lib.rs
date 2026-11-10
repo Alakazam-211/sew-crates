@@ -71,13 +71,16 @@ pub use kessel_audio;
 pub use kessel_video;
 pub use provider::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
-    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RejoinReason,
+    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED, RecordingControl,
+    RecordingRequest, RejoinReason,
 };
 /// rustls, re-exported for hosts that pass their own crypto provider
 /// ([`ClientConfig::with_crypto_provider`]).
 pub use rustls;
 /// Sew's recording types the engine's recording API carries (from `sew-proto`).
-pub use sew_proto::recording::{ConsentPrompt, Recording, RecordingNotice, RecordingRef};
+pub use sew_proto::recording::{
+    ConsentPrompt, Recording, RecordingNotice, RecordingRef, RecordingTrigger,
+};
 pub use stats::{
     BeaconOutcome, BeforeFirstWindow, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals,
     StatsWindow,

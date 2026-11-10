@@ -199,6 +199,8 @@ impl Builder {
                 crate::commands::state,
                 crate::commands::consent,
                 crate::commands::withdraw_consent,
+                crate::commands::start_recording,
+                crate::commands::stop_recording,
                 crate::commands::forget_server,
                 crate::commands::known_device_keys,
                 crate::commands::call_details,

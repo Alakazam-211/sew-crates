@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What an event of an App's recording feed is. Stored in `recording_events.kind`.",
+  "oneOf": [
+    {
+      "const": "started",
+      "description": "A recording started.",
+      "type": "string"
+    },
+    {
+      "const": "stopped",
+      "description": "A recording stopped.",
+      "type": "string"
+    },
+    {
+      "const": "transcript_ready",
+      "description": "Its transcript became final.",
+      "type": "string"
+    },
+    {
+      "const": "audio_expired",
+      "description": "Its audio expired.",
+      "type": "string"
+    },
+    {
+      "const": "deleted",
+      "description": "Its record message was deleted.",
+      "type": "string"
+    }
+  ],
+  "title": "RecordingEventKind"
+}

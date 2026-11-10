@@ -67,8 +67,11 @@ pub const EXPORT_FORMAT: u32 = 1;
 /// owned by the `k2:server` member) and channel records `closing`. Minor 10 (Sew 0.8.0): space
 /// records carry `participant_app_ids` (the participant links). Minor 11: member records of an
 /// erased account carry `erased_at` and `erase_mode` (with the `erased:<id>` external id),
-/// messages and attachments the delete and remove kind `erased`.
-pub const EXPORT_FORMAT_MINOR: u32 = 11;
+/// messages and attachments the delete and remove kind `erased`. Minor 12 (Sew 0.9.0): space
+/// records carry the recording overrides `recording_start_level` and `recording_required`,
+/// voice channel records `recording_required`, and recording records `trigger: required` for a
+/// recording a required room started.
+pub const EXPORT_FORMAT_MINOR: u32 = 12;
 
 /// The first export minor that carries BAN_MEMBERS (bit 47) itself.
 pub const EXPORT_MINOR_BAN_MEMBERS: u32 = 4;

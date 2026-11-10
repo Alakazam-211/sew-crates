@@ -33,6 +33,8 @@ pub struct ConsentChoice {
 // The kit's strings (strings.ts `R`), verbatim.
 const TITLE_ROOM: &str = "This call is being recorded";
 const AUTO_START: &str = "A recording starts when someone joins this channel.";
+const REQUIRED: &str = "This room records every call with more than one person.";
+const AGENT_READERS: &str = "Agents in this channel can read the transcript.";
 const NOT_E2EE: &str = "Transcripts are not end-to-end encrypted.";
 const ADMIN_DOWNLOAD: &str = "Authorised admins can download the audio.";
 const NOBODY_YET: &str = "Nobody is recorded yet.";
@@ -66,6 +68,15 @@ fn readers(ids: &[String]) -> String {
     }
 }
 
+/// "A", "A and B", "A, B and C".
+fn and_list(xs: &[String]) -> String {
+    match xs {
+        [] => String::new(),
+        [one] => one.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
+}
+
 impl ConsentPrompt {
     /// The notice's title, as the kit's modal writes it: "Lounge is being recorded" (a
     /// recording someone started), "Calls in Lounge are recorded" (an auto-record channel's
@@ -88,8 +99,9 @@ impl ConsentPrompt {
         format!("{}, recorded by {}", self.feature_label, self.recorder_name)
     }
 
-    /// The notice's sentences, in the kit's order: who started it, what the recorder does,
-    /// the transcript and who reads it, encryption, how long audio is kept, admin download,
+    /// The notice's sentences, in the kit's order: who started it (or that the room records
+    /// every call with more than one person), what the recorder does, the transcript and who
+    /// reads it, the Apps that can read it, encryption, how long audio is kept, admin download,
     /// who is recorded now, and what declining does. `member_name` names a member (the
     /// starter when Sew sent no display name, and each of [`ConsentPrompt::recorded_now`]); the
     /// host's names, as the kit's `memberName`.
@@ -104,7 +116,11 @@ impl ConsentPrompt {
                 };
                 lines.push(format!("{name} started recording this call."));
             }
+            None if self.required => {}
             None => lines.push(AUTO_START.to_owned()),
+        }
+        if self.required {
+            lines.push(REQUIRED.to_owned());
         }
         lines.push(format!(
             "{} joins the call as a participant and records the voice of each person who agrees. \
@@ -120,6 +136,15 @@ impl ConsentPrompt {
         } else {
             format!("Each person's words are transcribed; {who} can read the transcript.")
         });
+        if !self.app_readers.is_empty() {
+            lines.push(format!(
+                "{} can read the transcript.",
+                and_list(&self.app_readers)
+            ));
+        }
+        if self.agent_readers {
+            lines.push(AGENT_READERS.to_owned());
+        }
         if !self.transcript.e2ee {
             lines.push(NOT_E2EE.to_owned());
         }
@@ -217,6 +242,9 @@ mod tests {
             admin_download: true,
             decline_mode: DeclineMode::JoinUnrecorded,
             recorded_now: vec![Id::new(BOB).unwrap()],
+            required: false,
+            app_readers: vec![],
+            agent_readers: false,
         }
     }
 
@@ -384,5 +412,67 @@ mod tests {
         p.room.name = None;
         p.room.kind = PromptRoomKind::Dm;
         assert_eq!(p.title_en(ConsentAsk::Join), "This call is being recorded");
+    }
+
+    /// A room that records every call with two or more people: the first join's notice says
+    /// so in place of the auto-record line, and a recording's notice says it after the starter.
+    #[test]
+    fn required_room_notice() {
+        let mut p = kit_prompt();
+        p.started_by = None;
+        p.recorded_now = vec![];
+        p.required = true;
+        let want = "Sew Notes, recorded by Bobbin\n\
+            This room records every call with more than one person.\n\
+            Bobbin joins the call as a participant and records the voice of each person who \
+            agrees. Nobody is recorded without saying yes.\n\
+            Each person's words are transcribed and posted into this channel as ordinary \
+            messages that the channel's members, search and agents can read.\n\
+            Transcripts are not end-to-end encrypted.\n\
+            Audio is kept for 14 days.\n\
+            Authorised admins can download the audio.\n\
+            Nobody is recorded yet.\n\
+            If you don't allow it, you join without being recorded.";
+        assert_eq!(p.text_en(ConsentAsk::Join, &names), want);
+        assert_eq!(p.title_en(ConsentAsk::Join), "Calls in Lounge are recorded");
+        let mut q = kit_prompt();
+        q.required = true;
+        let l = q.lines_en(ConsentAsk::InCall, &names);
+        assert_eq!(l[0], "Bob started recording this call.");
+        assert_eq!(
+            l[1],
+            "This room records every call with more than one person."
+        );
+    }
+
+    /// The Apps whose servers can read the transcript are named after who reads it.
+    #[test]
+    fn app_readers_notice() {
+        let mut p = kit_prompt();
+        p.app_readers = vec!["Helpdesk".into()];
+        let l = p.lines_en(ConsentAsk::Join, &names);
+        assert_eq!(l[3], "Helpdesk can read the transcript.", "{l:?}");
+        assert_eq!(l[4], "Transcripts are not end-to-end encrypted.", "{l:?}");
+        p.app_readers = vec!["Helpdesk".into(), "Payroll".into(), "Desk".into()];
+        let l = p.lines_en(ConsentAsk::Join, &names);
+        assert_eq!(l[3], "Helpdesk, Payroll and Desk can read the transcript.");
+        // Neither slot set: the notice is the kit's, line for line.
+        assert_eq!(kit_prompt().lines_en(ConsentAsk::Join, &names).len(), 8);
+    }
+
+    /// Agents in the channel read the transcript: said after the Apps that can, in the kit's
+    /// words.
+    #[test]
+    fn agent_readers_notice() {
+        let mut p = kit_prompt();
+        p.app_readers = vec!["Helpdesk".into()];
+        p.agent_readers = true;
+        let l = p.lines_en(ConsentAsk::Join, &names);
+        assert_eq!(l[3], "Helpdesk can read the transcript.", "{l:?}");
+        assert_eq!(
+            l[4], "Agents in this channel can read the transcript.",
+            "{l:?}"
+        );
+        assert_eq!(l[5], "Transcripts are not end-to-end encrypted.", "{l:?}");
     }
 }

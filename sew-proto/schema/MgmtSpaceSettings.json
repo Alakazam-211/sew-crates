@@ -1,5 +1,30 @@
 {
   "$defs": {
+    "RecordingStartLevel": {
+      "description": "The lowest level of an App's governed Space whose members may start and stop\nrecordings. `member` means everyone in the Space. Stored as its wire string.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Nobody through the App's levels (the default; roles and overwrites still apply).",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "Admins.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "Moderators and admins.",
+          "type": "string"
+        },
+        {
+          "const": "member",
+          "description": "Everyone in the Space.",
+          "type": "string"
+        }
+      ]
+    },
     "SpaceGovernance": {
       "description": "Who governs a Space's structure.",
       "oneOf": [
@@ -58,6 +83,24 @@
     "private": {
       "description": "Whether the Space is private.",
       "type": "boolean"
+    },
+    "recording_required": {
+      "description": "Flag `app_recording`: the Space's own \"record every call with two or more people\";\nabsent when it inherits.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "recording_start_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingStartLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Flag `app_recording`: the Space's own recording start level; absent when it inherits."
     },
     "space_id": {
       "description": "The Space.",

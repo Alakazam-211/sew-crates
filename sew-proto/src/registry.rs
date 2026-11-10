@@ -1129,6 +1129,103 @@ pub fn all() -> Vec<WireType> {
         ),
         wire!(Record, "mgmt", MgmtVoiceChange, "MgmtVoiceChanges.changes"),
         wire!(Enum, "mgmt", MgmtVoiceChangeKind, "MgmtVoiceChange.kind"),
+        // Recording in Apps over mgmt.
+        wire!(
+            Record,
+            "mgmt",
+            MgmtAppRecordingRequest,
+            "MgmtAppSettingsRequest.recording"
+        ),
+        wire!(
+            Record,
+            "mgmt",
+            MgmtAppRecording,
+            "MgmtAppSettings.recording"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtChannelRecordingRequest,
+            "POST /mgmt/v1/channels/{channel_id}/recording"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtChannelRecording,
+            "POST /mgmt/v1/channels/{channel_id}/recording"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtRecordingStopRequest,
+            "POST /mgmt/v1/recordings/{id}/stop"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtRecordingQuery,
+            "GET /mgmt/v1/recordings/{id} (query)"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtRecordingSummary,
+            "GET /mgmt/v1/recordings/{id}, POST /mgmt/v1/recordings/{id}/stop"
+        ),
+        wire!(
+            Record,
+            "mgmt",
+            MgmtRecordingParticipant,
+            "MgmtRecordingSummary.participants"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtRecordingsQuery,
+            "GET /mgmt/v1/spaces/{space_id}/recordings (query)"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtRecordingsPage,
+            "GET /mgmt/v1/spaces/{space_id}/recordings"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtTranscriptQuery,
+            "GET /mgmt/v1/recordings/{id}/transcript (query)"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtTranscriptPage,
+            "GET /mgmt/v1/recordings/{id}/transcript"
+        ),
+        wire!(
+            Record,
+            "mgmt",
+            MgmtTranscriptTurn,
+            "MgmtTranscriptPage.turns"
+        ),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtRecordingChangesQuery,
+            "GET /mgmt/v1/apps/{app_id}/recordings/changes (query)"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtRecordingChanges,
+            "GET /mgmt/v1/apps/{app_id}/recordings/changes"
+        ),
+        wire!(
+            Record,
+            "mgmt",
+            MgmtRecordingChange,
+            "MgmtRecordingChanges.items"
+        ),
         wire!(
             Record,
             "mgmt",
@@ -3032,6 +3129,36 @@ pub fn all() -> Vec<WireType> {
         // Recording and transcripts.
         wire!(Enum, "recording", RecordingState, "Recording.state"),
         wire!(Enum, "recording", StopReason, "Recording.stop_reason"),
+        wire!(
+            Enum,
+            "recording",
+            RecordingTrigger,
+            "MgmtRecordingSummary.trigger"
+        ),
+        wire!(
+            Enum,
+            "recording",
+            RecordingRule,
+            "MgmtChannelRecording.rule"
+        ),
+        wire!(
+            Enum,
+            "recording",
+            RecordingStartLevel,
+            "App and Space recording start level"
+        ),
+        wire!(
+            Enum,
+            "recording",
+            RecordingRequiredPolicy,
+            "policy recording.required"
+        ),
+        wire!(
+            Enum,
+            "recording",
+            RecordingEventKind,
+            "MgmtRecordingChange.kind"
+        ),
         wire!(Enum, "recording", Consent, "RecordingParticipant.consent"),
         wire!(Enum, "recording", Capture, "RecordingParticipant.capture"),
         wire!(

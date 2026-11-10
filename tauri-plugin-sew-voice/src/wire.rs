@@ -296,13 +296,20 @@ pub mod code {
     pub const PROVIDER_ERROR: &str = "provider_error";
     /// The provider's `SigninRequired`.
     pub const SIGNIN_REQUIRED: &str = "signin_required";
-    /// `consent` or `withdraw_consent` with no recording to answer.
+    /// `consent` or `withdraw_consent` with no recording to answer, or `stop_recording` with
+    /// no recording to stop.
     pub const NO_RECORDING: &str = "no_recording";
     /// The notice changed before the answer reached Sew: `detail` is Sew's refusal
     /// (`{recording, auto, consent_prompt}`); show the new notice and answer again.
     pub const RECORDING_CONSENT_REQUIRED: &str = "recording_consent_required";
     /// The host's provider sends no consent (its `JoinProvider::consent` is the default).
     pub const CONSENT_UNSUPPORTED: &str = "consent_unsupported";
+    /// `start_recording` or `stop_recording`: the host's provider sends no Record or Stop (its
+    /// `JoinProvider::recording` is the default).
+    pub const RECORDING_UNSUPPORTED: &str = "recording_unsupported";
+    /// `start_recording` while the join is held for the recording notice: the person is not in
+    /// the room yet (Sew's own reason for a start without a voice entry).
+    pub const NOT_IN_VOICE: &str = "not_in_voice";
     /// `forget_server` while a call is connecting, held, connected or reconnecting: leave first.
     pub const IN_CALL: &str = "in_call";
     /// `forget_server` or `known_device_keys`: the device store failed (`detail`: what failed).
@@ -516,8 +523,15 @@ pub struct RecordingParticipant {
 /// `my_consent` is `pending` (it is written only then), and "Stop recording me" while it is
 /// `granted`. This device is recorded only after Sew says `granted`: no answer is never
 /// consent.
+///
+/// Sew 0.9.0 adds `trigger` (what started it: [`trigger`]) and `required` (the room requires
+/// its recording: Stop is refused `recording_required` while two or more people are in it).
+///
+/// Non-exhaustive (Sew 0.9.0): later releases add fields without a breaking change; outside
+/// this crate, read it (or build it from JSON).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingInfo {
     /// The recording (Sew's id), or `auto` while a held join into an auto-record channel waits.
     pub recording_id: String,
@@ -536,6 +550,39 @@ pub struct RecordingInfo {
     /// The recorder (Sew Notes) is in the call's media now. It is never in `participants`
     /// (it is not a member).
     pub recorder_present: bool,
+    /// What started it (Sew 0.9.0): `manual` (a person pressed Record), `auto` (an
+    /// auto-record room's first join) or `required` (the room reached two people while it
+    /// requires recording); a value a later Sew adds is passed through. Read as `manual` when
+    /// absent.
+    #[serde(default = "trigger::manual")]
+    pub trigger: String,
+    /// The room requires its recording (Sew 0.9.0): hide Stop while two or more people are in
+    /// the room (Sew refuses it `recording_required`); "Stop recording me" still works. Read
+    /// as `false` when absent.
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// The `recording` event's `trigger` values (Sew 0.9.0).
+pub mod trigger {
+    /// A person pressed Record.
+    pub const MANUAL: &str = "manual";
+    /// An auto-record room's first join.
+    pub const AUTO: &str = "auto";
+    /// The room reached two people while it requires recording.
+    pub const REQUIRED: &str = "required";
+
+    pub(crate) fn manual() -> String {
+        MANUAL.to_owned()
+    }
+
+    /// The engine's trigger as the wire writes it (Sew's own name for a value added later).
+    pub fn of(t: sew_call_client::RecordingTrigger) -> String {
+        serde_json::to_value(t)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(manual)
+    }
 }
 
 impl RecordingInfo {
@@ -560,6 +607,8 @@ impl RecordingInfo {
                 })
                 .collect(),
             recorder_present,
+            trigger: trigger::of(r.trigger),
+            required: r.required,
         }
     }
 }

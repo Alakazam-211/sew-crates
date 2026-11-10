@@ -302,6 +302,7 @@ impl Validate for SetOnBehalfApprovalRequest {
 
 /// A message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Message {
     /// The message id.
     pub id: Id,
@@ -383,6 +384,44 @@ pub struct Message {
     /// absent on tombstones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<crate::recording::TranscriptTurn>,
+}
+
+impl Message {
+    /// A message with its required fields: an empty body, no mentions, reactions or
+    /// attachments, not pinned, every optional field unset.
+    pub fn new(id: Id, channel_id: Id, author_id: Id, seq: u64, created_at: Timestamp) -> Message {
+        Message {
+            id,
+            channel_id,
+            author_id,
+            on_behalf_of: None,
+            on_behalf_approval: None,
+            body: String::new(),
+            nonce: None,
+            thread_root_id: None,
+            also_in_channel: false,
+            reference: None,
+            forwarded: None,
+            mentions: MentionTargets::default(),
+            reactions: Vec::new(),
+            attachments: Vec::new(),
+            pinned: false,
+            thread: None,
+            seq,
+            created_at,
+            edited_at: None,
+            deleted_at: None,
+            deleted_reason: None,
+            previews: Vec::new(),
+            previews_suppressed: false,
+            emojis: Vec::new(),
+            poll: None,
+            mentions_me: false,
+            call: None,
+            recording: None,
+            transcript: None,
+        }
+    }
 }
 
 /// Query of `GET /api/v1/channels/{id}/messages` and `GET /api/v1/messages/{root_id}/replies`:

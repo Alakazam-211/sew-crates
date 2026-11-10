@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "RecordingStartLevel": {
+      "description": "The lowest level of an App's governed Space whose members may start and stop\nrecordings. `member` means everyone in the Space. Stored as its wire string.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Nobody through the App's levels (the default; roles and overwrites still apply).",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "Admins.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "Moderators and admins.",
+          "type": "string"
+        },
+        {
+          "const": "member",
+          "description": "Everyone in the Space.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The `recording` object of `POST /mgmt/v1/apps/{app_id}/settings`: any subset of an App's\nrecording settings; absent fields are kept. Refused for the home client (`409 conflict`\n`home_client_cannot_govern`).",
+  "properties": {
+    "audio_max_days": {
+      "description": "The most audio keep days a recording in the App's Spaces may have (the org's\n`recording.audio_max_days` still caps it); `null` clears it.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cap_required": {
+      "description": "The App's sessions need the pass cap `voice:record` to start or stop recordings.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "required": {
+      "description": "Record every call with two or more people in the App's governed Spaces.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "server_read": {
+      "description": "The App's server may read the recordings, transcripts and recording feed of its\ngoverned Spaces over mgmt.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "start_level": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingStartLevel"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The lowest level of the App's governed Spaces whose members may start and stop\nrecordings (`member`: everyone in the Space)."
+    }
+  },
+  "title": "MgmtAppRecordingRequest",
+  "type": "object"
+}

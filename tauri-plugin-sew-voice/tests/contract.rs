@@ -13,8 +13,9 @@ use tauri_plugin_sew_voice::{
     COMMANDS, CallState, ConsentArgs, DEFAULT_DEVICE, DETAIL_COMMANDS, DETAIL_EVENTS,
     DEVICE_KEY_COMMANDS, Device, DeviceChoice, DeviceList, EngineError, ErrorInfo, JoinArgs,
     JoinRequest, JoinResult, MuteArgs, PLUGIN_NAME, Participant, PluginEvent, ProviderError,
-    RecordingInfo, RejoinReason, SetDeviceArgs, Speaking, StateEvent, StateSnapshot,
-    VIDEO_CODEC_COMMANDS, VIDEO_COMMANDS, app_server_answer,
+    RECORDING_COMMANDS, RecordingControl, RecordingInfo, RecordingRequest, RejoinReason,
+    SetDeviceArgs, Speaking, StateEvent, StateSnapshot, VIDEO_CODEC_COMMANDS, VIDEO_COMMANDS,
+    app_server_answer,
 };
 use tauri_plugin_sew_voice::{
     CameraArgs, FrameHeader, LocalVideo, LocalVideoState, PreviewArgs, ScreenKind, ScreenSource,
@@ -419,6 +420,110 @@ fn fixture_recording_round_trips() {
     );
 }
 
+/// Sew 0.9.0: Record and Stop as the fixture writes them: the commands (outside the default
+/// set), what the host's provider sends (the `RecordingRequest`'s JSON and Sew's route) and
+/// the `recording` event after each.
+#[test]
+fn fixture_recording_controls_round_trip() {
+    let f = fixture();
+    let c = &f["recording"]["controls"];
+    assert_eq!(c["permission"], json!("sew-voice:recording"));
+    assert_eq!(RECORDING_COMMANDS, ["start_recording", "stop_recording"]);
+    for (k, cmd) in [("start", "start_recording"), ("stop", "stop_recording")] {
+        assert_eq!(c[k]["command"], json!(cmd));
+        assert_eq!(c[k]["args"], json!({}), "{k} takes no arguments");
+        assert!(
+            !COMMANDS.contains(&cmd),
+            "{cmd} is not in the default eight"
+        );
+    }
+    let start: RecordingRequest =
+        serde_json::from_value(c["start"]["provider_request"].clone()).expect("start");
+    exact(&start, c["start"]["provider_request"].clone());
+    assert_eq!(start.action, RecordingControl::Start);
+    assert_eq!(start.body(), json!({}));
+    let stop: RecordingRequest =
+        serde_json::from_value(c["stop"]["provider_request"].clone()).expect("stop");
+    exact(&stop, c["stop"]["provider_request"].clone());
+    assert_eq!(stop.action, RecordingControl::Stop);
+    assert_eq!(stop.path(), "/api/v1/recordings/48831765147549721/stop");
+    // What the engine builds serializes to exactly the fixture's body (the kit's lane);
+    // its channel is for a provider that calls Sew itself.
+    let channel = "48831765147549698".parse().expect("id");
+    let built = RecordingRequest::start("k2:acme", "48831765147549698", channel);
+    assert_eq!(
+        serde_json::to_value(&built).expect("json"),
+        c["start"]["provider_request"]
+    );
+    assert_eq!(
+        built.path(),
+        "/api/v1/channels/48831765147549698/recording/start"
+    );
+    let built = RecordingRequest::stop(
+        "k2:acme",
+        "48831765147549698",
+        channel,
+        "48831765147549721".parse().expect("id"),
+    );
+    assert_eq!(
+        serde_json::to_value(&built).expect("json"),
+        c["stop"]["provider_request"]
+    );
+    refused::<RecordingRequest>(json!({"target": "a", "room": "b", "action": "pause"}));
+    let started: RecordingInfo =
+        serde_json::from_value(c["start"]["recording"].clone()).expect("started");
+    exact(&started, c["start"]["recording"].clone());
+    assert_eq!(
+        started.my_consent, "granted",
+        "Record is the starter's own consent"
+    );
+    assert_eq!(
+        (started.trigger.as_str(), started.required),
+        ("manual", false)
+    );
+    // A room that requires recording: `trigger` and `required` as written.
+    let req: RecordingInfo =
+        serde_json::from_value(c["required_room"]["recording"].clone()).expect("required");
+    exact(&req, c["required_room"]["recording"].clone());
+    assert_eq!(
+        (req.trigger.as_str(), req.required),
+        (tauri_plugin_sew_voice::wire::trigger::REQUIRED, true)
+    );
+    // An older payload without them reads as manual and not required.
+    let mut old = c["start"]["recording"].clone();
+    let o = old.as_object_mut().expect("object");
+    o.remove("trigger");
+    o.remove("required");
+    let old: RecordingInfo = serde_json::from_value(old).expect("old");
+    assert_eq!((old.trigger.as_str(), old.required), ("manual", false));
+    assert_eq!(
+        tauri_plugin_sew_voice::wire::trigger::of(
+            tauri_plugin_sew_voice::sew_call_client::RecordingTrigger::Required
+        ),
+        "required"
+    );
+    assert_eq!(c["stop"]["recording"], Value::Null);
+    let errors: Vec<&str> = c["errors"]
+        .as_array()
+        .expect("errors")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for code in [
+        tauri_plugin_sew_voice::wire::code::NOT_IN_CALL,
+        tauri_plugin_sew_voice::wire::code::NOT_IN_VOICE,
+        tauri_plugin_sew_voice::wire::code::NO_RECORDING,
+        tauri_plugin_sew_voice::wire::code::RECORDING_UNSUPPORTED,
+        tauri_plugin_sew_voice::RECORDING_UNSUPPORTED,
+        "recording_required",
+    ] {
+        assert!(
+            errors.contains(&code),
+            "{code} is not in the fixture's errors"
+        );
+    }
+}
+
 /// A notice that changed before the answer reached Sew: the command error carries Sew's
 /// refusal details for the app to show the new notice.
 #[test]
@@ -540,11 +645,12 @@ fn commands_build_script_and_permissions_agree() {
         .chain(DETAIL_COMMANDS.iter())
         .chain(VIDEO_COMMANDS.iter())
         .chain(VIDEO_CODEC_COMMANDS.iter())
+        .chain(RECORDING_COMMANDS.iter())
         .copied()
         .collect();
     assert_eq!(
         listed, all,
-        "build.rs's COMMANDS: the eight, the device-key commands, the call-detail ones, the video commands, then the codec setting"
+        "build.rs's COMMANDS: the eight, the device-key commands, the call-detail ones, the video commands, the codec setting, then the recording commands"
     );
     for c in all {
         let generated = manifest_file(&format!("permissions/autogenerated/commands/{c}.toml"));
@@ -580,13 +686,31 @@ fn commands_build_script_and_permissions_agree() {
             "sew-voice:default must not allow {c}"
         );
     }
-    for c in DEVICE_KEY_COMMANDS.iter().chain(DETAIL_COMMANDS.iter()) {
+    for c in DEVICE_KEY_COMMANDS
+        .iter()
+        .chain(DETAIL_COMMANDS.iter())
+        .chain(RECORDING_COMMANDS.iter())
+    {
         let perm = format!("allow-{}", c.replace('_', "-"));
         assert!(
             !default.contains(&perm),
             "sew-voice:default must not allow {c}"
         );
     }
+    // The recording commands (Sew 0.9.0) are the `recording` set, and only them.
+    let recording = manifest_file("permissions/recording.toml");
+    assert!(recording.contains("identifier = \"recording\""));
+    for c in RECORDING_COMMANDS {
+        let perm = format!("\"allow-{}\"", c.replace('_', "-"));
+        assert!(
+            recording.contains(&perm),
+            "sew-voice:recording lacks {perm}"
+        );
+    }
+    assert_eq!(
+        recording.matches("\"allow-").count(),
+        RECORDING_COMMANDS.len()
+    );
     // The call-detail commands are the `call-details` set (0.4.1).
     let details = manifest_file("permissions/call-details.toml");
     assert!(details.contains("identifier = \"call-details\""));

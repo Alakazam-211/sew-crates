@@ -948,6 +948,16 @@
       "type": "string"
     },
     {
+      "const": "recording.settings",
+      "description": "A room's or an App's recording settings changed over mgmt (`details {app_id?,\nspace_id?, channel_id?, fields}`: the names of the fields set, never values that\nidentify a person).",
+      "type": "string"
+    },
+    {
+      "const": "recording.transcript_read",
+      "description": "An App's server read a transcript over mgmt (`details {recording_id, app_id,\nturns}`; the actor is the App's service and K2's `Sew-Actor`).",
+      "type": "string"
+    },
+    {
       "const": "meeting.create",
       "description": "A meeting was made (`details {meeting_id, channel_id, kind,\nstarts_at, ends_at, member_attendees, email_attendees}`: counts and ids only, never a\ntitle, name or email).",
       "type": "string"

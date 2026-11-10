@@ -16,7 +16,9 @@
 //! call at `consent_required` (no roster, no room) as the real engine does; `consent` then joins
 //! again through the provider with the answer as `recording_notice`. In a call, `consent` and
 //! `withdraw_consent` are recorded ([`FakeCall::consents`]) and the test says what Sew answered
-//! with [`FakeCall::set_recording`].
+//! with [`FakeCall::set_recording`]. Sew 0.9.0: `start_recording` and `stop_recording` are
+//! recorded too ([`FakeCall::controls`]); a Start records this member alone (the `recording`
+//! event), a Stop ends it, and [`FakeCall::fail_next_control`] gives Sew's refusals.
 //!
 //! Video: off until [`FakeEngine::enable_video`] (then the demo cameras and capabilities). A
 //! call's frame channel is fed with [`FakeCall::push_video`]; its tracks, camera and policy are
@@ -42,7 +44,8 @@ use tokio::sync::{Semaphore, broadcast, mpsc};
 use crate::details::{IncomingCall, QualityInfo, RosterEntry, SecurityInfo};
 use crate::engine::{
     AppScene, AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, ConsentRequired,
-    EngineError, JoinAnswer, JoinProvider, JoinRequest, ProviderError, VideoSnapshot, VoiceEngine,
+    EngineError, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RecordingControl,
+    VideoSnapshot, VoiceEngine,
 };
 use crate::listener::VoiceListener;
 use crate::service::EventSink;
@@ -55,9 +58,12 @@ use crate::video::{
 use crate::wire::{
     CallState, Camera, CodecPreferenceInfo, Device, DeviceChoice, DeviceList, ErrorInfo, Facing,
     LocalVideo, LocalVideoState, Participant, PermissionState, PluginEvent, RecordingInfo,
-    ScreenCaps, ScreenSource, SelfMute, SinkStats, StateEvent, VideoCaps, VideoCodecPreference,
-    VideoDevices, VideoPermissions, VideoTrack, video_code,
+    RecordingParticipant, ScreenCaps, ScreenSource, SelfMute, SinkStats, StateEvent, VideoCaps,
+    VideoCodecPreference, VideoDevices, VideoPermissions, VideoTrack, video_code,
 };
+
+/// The recording a fake Start makes (a Sew id).
+const FAKE_RECORDING_ID: &str = "48831765147549721";
 
 /// How many items a fake frame channel holds before `push_video` drops.
 const FAKE_FRAME_QUEUE: usize = 256;
@@ -1034,6 +1040,9 @@ struct CallFake {
     /// Every `consent` (`Some(version)`) and `withdraw_consent` (`None`), in order.
     consents: Vec<(bool, Option<u32>)>,
     next_consent_error: Option<EngineError>,
+    /// Every `start_recording` and `stop_recording`, in order.
+    controls: Vec<RecordingControl>,
+    next_control_error: Option<EngineError>,
     /// Call details (0.4.1): what [`FakeCall::set_security`], [`FakeCall::set_roster`] and
     /// [`FakeCall::set_quality`] last said.
     security: Option<SecurityInfo>,
@@ -1120,6 +1129,8 @@ impl FakeCall {
                 next_leave_error: None,
                 consents: Vec::new(),
                 next_consent_error: None,
+                controls: Vec::new(),
+                next_control_error: None,
                 security: None,
                 roster: Vec::new(),
                 quality: QualityInfo::unknown(),
@@ -1169,6 +1180,8 @@ impl FakeCall {
                 next_leave_error: None,
                 consents: Vec::new(),
                 next_consent_error: None,
+                controls: Vec::new(),
+                next_control_error: None,
                 security: None,
                 roster: Vec::new(),
                 quality: QualityInfo::unknown(),
@@ -1318,6 +1331,66 @@ impl FakeCall {
     /// The next `consent` or `withdraw_consent` in a call fails with this.
     pub fn fail_next_consent(&self, e: EngineError) {
         lock(&self.state).next_consent_error = Some(e);
+    }
+
+    /// Every `start_recording` and `stop_recording` (Sew 0.9.0), in order.
+    pub fn controls(&self) -> Vec<RecordingControl> {
+        lock(&self.state).controls.clone()
+    }
+
+    /// The next `start_recording` or `stop_recording` fails with this (a Sew refusal such as
+    /// `recording_required`: `EngineError::Provider(ProviderError::Refused { .. })`).
+    pub fn fail_next_control(&self, e: EngineError) {
+        lock(&self.state).next_control_error = Some(e);
+    }
+
+    /// A Record or Stop as the fake's Sew answers it: refused while held (`not_in_voice`) or
+    /// with the failure the test set; a Start while a recording is active is Sew's
+    /// `recording_active`, else it records this member only (pressing Record is their own
+    /// consent); a Stop with none is `no_recording`, else the recording ends.
+    fn control(&self, control: RecordingControl) -> Result<(), EngineError> {
+        let held = self.is_held();
+        let mut st = lock(&self.state);
+        st.controls.push(control);
+        if held {
+            return Err(EngineError::failed(crate::wire::code::NOT_IN_VOICE));
+        }
+        if let Some(e) = st.next_control_error.take() {
+            return Err(e);
+        }
+        let active = st.snapshot.recording.is_some();
+        let next = match control {
+            RecordingControl::Start if active => {
+                return Err(EngineError::Provider(ProviderError::Refused {
+                    code: "recording_active".to_owned(),
+                    detail: serde_json::Value::Null,
+                }));
+            }
+            RecordingControl::Start => {
+                let me = lock(&self.self_member).clone();
+                Some(RecordingInfo {
+                    recording_id: FAKE_RECORDING_ID.to_owned(),
+                    auto: false,
+                    started_by: Some(me.clone()),
+                    my_consent: crate::wire::consent::GRANTED.to_owned(),
+                    consent_prompt: None,
+                    participants: vec![RecordingParticipant {
+                        member_id: me,
+                        consent: crate::wire::consent::GRANTED.to_owned(),
+                        recorded: true,
+                    }],
+                    recorder_present: true,
+                    trigger: crate::wire::trigger::MANUAL.to_owned(),
+                    required: false,
+                })
+            }
+            _ if !active => return Err(EngineError::failed(crate::wire::code::NO_RECORDING)),
+            _ => None,
+        };
+        st.snapshot.recording.clone_from(&next);
+        drop(st);
+        let _ = self.tx.send(CallEvent::Recording(next));
+        Ok(())
     }
 
     /// How many times the plugin passed a network change to this call.
@@ -1571,6 +1644,14 @@ impl CallHandle for FakeCall {
                 None => Ok(()),
             }
         })
+    }
+
+    fn start_recording(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(std::future::ready(self.control(RecordingControl::Start)))
+    }
+
+    fn stop_recording(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(std::future::ready(self.control(RecordingControl::Stop)))
     }
 
     fn events(&self) -> broadcast::Receiver<CallEvent> {

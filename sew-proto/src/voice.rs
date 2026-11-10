@@ -968,6 +968,7 @@ pub struct Vp9Hint {
 /// The client media policy: in join answers, `voice_server_updated`, READY
 /// `install.media` and `media_policy_updated`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct MediaPolicy {
     /// The budget tier the hints are for.
     pub tier: MediaTier,
@@ -1011,6 +1012,30 @@ pub struct MediaPolicy {
     /// Sent only when `true`; absent reads as `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub relay_only: bool,
+}
+
+impl MediaPolicy {
+    /// A policy of `tier` with these camera and screen hints: video off, E2EE `required`,
+    /// Opus, no video codecs, no backup codec, no VP9, no dynacast or adaptive stream, camera and
+    /// screen allowed, not relay-only.
+    pub fn new(tier: MediaTier, camera: TrackHint, screen: TrackHint) -> MediaPolicy {
+        MediaPolicy {
+            tier,
+            video_enabled: false,
+            e2ee: "required".to_owned(),
+            audio_codecs: vec!["opus".to_owned()],
+            codecs: Vec::new(),
+            backup_codec: false,
+            vp9: None,
+            camera,
+            screen,
+            dynacast: false,
+            adaptive_stream: false,
+            camera_allowed: true,
+            screen_allowed: true,
+            relay_only: false,
+        }
+    }
 }
 
 fn default_allowed() -> bool {

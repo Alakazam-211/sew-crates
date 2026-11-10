@@ -20,11 +20,11 @@ use openmls::prelude::{
     MlsMessageIn, ProcessedMessageContent, ProposalOrRefType, ProposalStore, ProtocolVersion,
     PublicGroup, RatchetTreeIn, Sender, SenderExtensionIndex,
 };
-use openmls_basic_credential::SignatureKeyPair;
 use openmls_memory_storage::MemoryStorage;
 use openmls_traits::types::SignatureScheme;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
+use sew_mls_crypto::SignatureKeyPair;
 use sew_mls_crypto::{MlsCrypto, MlsProvider};
 use sew_proto::e2ee::tls::{
     BindingKey, LeafBindingEntry, LeafBindingTableTbs, RecorderCertTbs, TlsCodec,

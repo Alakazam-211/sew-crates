@@ -432,6 +432,17 @@
           "description": "Authorised compliance admins can download the audio (always `true` in v1).",
           "type": "boolean"
         },
+        "agent_readers": {
+          "description": "Agents in this channel can read the transcript (a coworker agent is a member of it);\nabsent when none is.",
+          "type": "boolean"
+        },
+        "app_readers": {
+          "description": "The display names of the Apps whose servers can read the transcript (the Space's\ngoverning App, when it may); absent when none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "audio_keep_days": {
           "description": "How long audio is kept (0 = until the transcript is final).",
           "format": "uint16",
@@ -470,6 +481,10 @@
           "description": "What the answer refers to.",
           "pattern": "^(auto|[1-9][0-9]{0,18})$",
           "type": "string"
+        },
+        "required": {
+          "description": "The room records every call with two or more people (absent when not).",
+          "type": "boolean"
         },
         "room": {
           "$ref": "#/$defs/PromptRoom",
@@ -813,7 +828,7 @@
           "type": "integer"
         },
         "auto": {
-          "description": "Started by an auto-record channel's first join.",
+          "description": "Started by an auto-record channel's first join, or (`trigger: required`) by the room\nreaching two people.",
           "type": "boolean"
         },
         "call_record_id": {
@@ -925,6 +940,11 @@
             "string",
             "null"
           ]
+        },
+        "trigger": {
+          "$ref": "#/$defs/RecordingTrigger",
+          "default": "manual",
+          "description": "What started it: `manual` (someone pressed Record), `auto` (an auto-record room's\nfirst join) or `required` (the room reached two people while it records every call\nwith more than one person). Always sent; a payload without it (an older Sew) reads as\n`manual`, and `auto` then tells an automatic start."
         }
       },
       "required": [
@@ -1008,6 +1028,26 @@
         }
       ]
     },
+    "RecordingTrigger": {
+      "description": "What started a recording. Stored in `recordings.trigger`.",
+      "oneOf": [
+        {
+          "const": "manual",
+          "description": "A person pressed Record (the start route).",
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "An auto-record room's first join.",
+          "type": "string"
+        },
+        {
+          "const": "required",
+          "description": "The room reached two people while recording is required.",
+          "type": "string"
+        }
+      ]
+    },
     "RingState": {
       "description": "A ring's state as every DM member sees it.",
       "oneOf": [
@@ -1084,6 +1124,11 @@
         {
           "const": "max_bytes",
           "description": "`recording.max_bytes` reached.",
+          "type": "string"
+        },
+        {
+          "const": "mgmt_stopped",
+          "description": "Stopped over the management API (the App or K2 governing the room).",
           "type": "string"
         }
       ]

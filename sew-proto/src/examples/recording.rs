@@ -62,6 +62,9 @@ pub(super) fn consent_prompt_full() -> ConsentPrompt {
         admin_download: true,
         decline_mode: DeclineMode::JoinUnrecorded,
         recorded_now: vec![ID_ME],
+        required: true,
+        app_readers: vec!["Helpdesk".into()],
+        agent_readers: true,
     }
     .sealed()
 }
@@ -84,6 +87,35 @@ fn consent_prompt_auto() -> ConsentPrompt {
         admin_download: true,
         decline_mode: DeclineMode::NotJoin,
         recorded_now: vec![],
+        required: false,
+        app_readers: vec![],
+        agent_readers: false,
+    }
+    .sealed()
+}
+
+/// A room that records every call with two or more people, in a Space whose governing App's
+/// server can read the transcript: the first join's prompt (nobody recorded yet).
+fn consent_prompt_required() -> ConsentPrompt {
+    ConsentPrompt {
+        recording_id: RecordingRef::Auto,
+        notice_version: 0,
+        recorder_name: RECORDER_DISPLAY_NAME.into(),
+        feature_label: RECORDING_FEATURE_LABEL.into(),
+        started_by: None,
+        room: PromptRoom {
+            channel_id: ID_CHANNEL,
+            kind: PromptRoomKind::Voice,
+            name: Some("standup".into()),
+        },
+        audio_keep_days: 30,
+        transcript: PromptTranscript::default(),
+        admin_download: true,
+        decline_mode: DeclineMode::JoinUnrecorded,
+        recorded_now: vec![],
+        required: true,
+        app_readers: vec!["Helpdesk".into()],
+        agent_readers: false,
     }
     .sealed()
 }
@@ -99,6 +131,7 @@ pub(super) fn recording_full() -> Recording {
         started_by: ID_ME,
         started_at: t(0),
         auto: false,
+        trigger: RecordingTrigger::Manual,
         stopped_at: Some(t(3_600_000)),
         stop_reason: Some(StopReason::Stopped),
         message_id: ID_MESSAGE,
@@ -123,6 +156,7 @@ pub(super) fn recording_min() -> Recording {
         started_by: ID_ME,
         started_at: t(0),
         auto: true,
+        trigger: RecordingTrigger::Auto,
         stopped_at: None,
         stop_reason: None,
         message_id: ID_MESSAGE,
@@ -273,6 +307,7 @@ impl Example for ConsentPrompt {
         vec![
             ("full", consent_prompt_full()),
             ("auto", consent_prompt_auto()),
+            ("required", consent_prompt_required()),
         ]
     }
 }

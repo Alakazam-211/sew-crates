@@ -550,6 +550,32 @@ Denies the set_video_device command without any pre-configured scope.
 <tr>
 <td>
 
+`sew-voice:allow-start-recording`
+
+</td>
+<td>
+
+Enables the start_recording command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-start-recording`
+
+</td>
+<td>
+
+Denies the start_recording command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `sew-voice:allow-state`
 
 </td>
@@ -569,6 +595,32 @@ Enables the state command without any pre-configured scope.
 <td>
 
 Denies the state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:allow-stop-recording`
+
+</td>
+<td>
+
+Enables the stop_recording command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-stop-recording`
+
+</td>
+<td>
+
+Denies the stop_recording command without any pre-configured scope.
 
 </td>
 </tr>
@@ -762,6 +814,25 @@ devices of one Sew install, the hardware keys included, and answers the removed 
 `known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant
 it, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the
 window that needs it.
+
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:recording`
+
+</td>
+<td>
+
+The recording commands (Sew 0.9.0), for a call UI with Record and Stop buttons:
+`start_recording` and `stop_recording`. Each is the person's own act, which the host's provider
+sends to Sew with the person's session; Sew decides who may. Answering a recording's notice
+(`consent`, `withdraw_consent`) is in `sew-voice:default` and needs nothing more. Not in
+`sew-voice:default`: grant it to the call window, or `sew-voice:allow-start-recording` /
+`sew-voice:allow-stop-recording` one by one.
 
 
 </td>

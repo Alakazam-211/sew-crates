@@ -346,6 +346,19 @@ pub const MGMT_SPACE_VOICE_CHANGES: &str = "/mgmt/v1/spaces/{space_id}/voice/cha
 pub const MGMT_CHANNEL_CLOSING: &str = "/mgmt/v1/channels/{channel_id}/closing";
 /// `POST`: K2 reports the media path (the TURN lane) down or up.
 pub const MGMT_VOICE_MEDIA_PATH: &str = "/mgmt/v1/voice/media-path";
+/// `POST`: a voice room's recording settings (`auto`, `required`, `audio_days`,
+/// `require_consent`).
+pub const MGMT_CHANNEL_RECORDING: &str = "/mgmt/v1/channels/{channel_id}/recording";
+/// `GET`: one recording's summary (no content, no audio).
+pub const MGMT_RECORDING: &str = "/mgmt/v1/recordings/{id}";
+/// `POST`: stop a recording (the install's Owner or an Admin, named by `Sew-Actor`).
+pub const MGMT_RECORDING_STOP: &str = "/mgmt/v1/recordings/{id}/stop";
+/// `GET`: one recording's transcript turns, paged (audited).
+pub const MGMT_RECORDING_TRANSCRIPT: &str = "/mgmt/v1/recordings/{id}/transcript";
+/// `GET`: a Space's recordings, oldest first, paged.
+pub const MGMT_SPACE_RECORDINGS: &str = "/mgmt/v1/spaces/{space_id}/recordings";
+/// `GET`: an App's recording feed after a cursor (long-poll; no content).
+pub const MGMT_APP_RECORDING_CHANGES: &str = "/mgmt/v1/apps/{app_id}/recordings/changes";
 /// `GET` and `POST`: an App's quotas and their usage.
 pub const MGMT_APP_QUOTAS: &str = "/mgmt/v1/apps/{app_id}/quotas";
 /// `POST`: create the hidden Meetings Space and its retention, once (idempotent).
@@ -641,6 +654,17 @@ pub const MGMT_COMPLIANCE_EXPORT_CANCEL: &str = "/mgmt/v1/compliance/exports/{id
 pub const MGMT_COMPLIANCE_EXPORT_DELETE: &str = "/mgmt/v1/compliance/exports/{id}/delete";
 /// Mgmt twin of [`COMPLIANCE_EXPORT_ARCHIVE`].
 pub const MGMT_COMPLIANCE_EXPORT_ARCHIVE: &str = "/mgmt/v1/compliance/exports/{id}/archive";
+/// Mgmt twin of [`COMPLIANCE_RECORDING_DOWNLOADS`]: an audio download grant for the
+/// install's Owner or an Admin who is a person (`Sew-Actor`).
+pub const MGMT_COMPLIANCE_RECORDING_DOWNLOADS: &str =
+    "/mgmt/v1/compliance/recordings/{id}/downloads";
+/// Mgmt twin of [`COMPLIANCE_RECORDING_DOWNLOAD_SEGMENTS`].
+pub const MGMT_COMPLIANCE_RECORDING_DOWNLOAD_SEGMENTS: &str =
+    "/mgmt/v1/compliance/recordings/{id}/downloads/{download_id}/segments";
+/// Mgmt twin of [`COMPLIANCE_RECORDING_FILE`]: recorder-sealed bytes for a mgmt grant
+/// (`?d=<download_id>&exp=&sig=`, bound to the grant's person).
+pub const MGMT_COMPLIANCE_RECORDING_FILE: &str =
+    "/mgmt/v1/compliance/recordings/{id}/files/{link_id}";
 
 // ---- Voice channels ----
 // (`CHANNEL_VOICE_JOIN` above is the join; its body carries the `e2ee` object.)

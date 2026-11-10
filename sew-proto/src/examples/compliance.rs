@@ -714,6 +714,8 @@ impl Example for SpaceRecord {
             private: true,
             orphaned_from: Some("atrium".into()),
             governance: crate::api::spaces::SpaceGovernance::App,
+            recording_start_level: Some(crate::recording::RecordingStartLevel::Moderator),
+            recording_required: Some(true),
             source: source(),
         };
         let min = SpaceRecord {
@@ -730,6 +732,8 @@ impl Example for SpaceRecord {
             private: false,
             orphaned_from: None,
             governance: crate::api::spaces::SpaceGovernance::Sew,
+            recording_start_level: None,
+            recording_required: None,
             source: None,
             ..full.clone()
         };
@@ -874,6 +878,7 @@ impl Example for ChannelRecord {
             recording_auto: true,
             recording_audio_days: Some(30),
             recording_require_consent: Some(true),
+            recording_required: Some(true),
             closing: false,
             source: source(),
         };
@@ -900,6 +905,7 @@ impl Example for ChannelRecord {
             recording_auto: false,
             recording_audio_days: None,
             recording_require_consent: None,
+            recording_required: None,
             closing: false,
             source: None,
         };
@@ -1475,6 +1481,7 @@ impl Example for RecordingRecord {
             started_by: ID_ME,
             started_at: t(0),
             auto: true,
+            trigger: Some(crate::recording::RecordingTrigger::Required),
             state: RecordingState::Stopped,
             stopped_at: Some(t(3_600_000)),
             stop_reason: Some(StopReason::Stopped),
@@ -1574,6 +1581,7 @@ impl Example for RecordingRecord {
             started_by: ID_ME,
             started_at: t(0),
             auto: false,
+            trigger: None,
             state: RecordingState::Stopped,
             stopped_at: None,
             stop_reason: None,

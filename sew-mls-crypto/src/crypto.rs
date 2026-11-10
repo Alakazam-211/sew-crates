@@ -21,9 +21,9 @@ use openmls_traits::types::{
     AeadType, Ciphersuite, CryptoError, ExporterSecret, HashType, HpkeCiphertext, HpkeConfig,
     HpkeKeyPair, SignatureScheme,
 };
+use p256::Sec1Point;
 use p256::ecdsa::signature::{Signer as _, Verifier as _};
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
-use p256::{EncodedPoint, FieldBytes};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore as _, SeedableRng as _};
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
@@ -131,6 +131,19 @@ impl MlsCrypto {
     }
 }
 
+/// A P-256 signing key from `rng`: 32 random bytes as a big-endian scalar, drawn again when out
+/// of range (zero or at least the group order; a chance of about 2^-32), which is how
+/// `SigningKey::random` drew it.
+fn p256_random(rng: &mut ChaCha20Rng) -> SigningKey {
+    let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
+    loop {
+        rng.fill_bytes(bytes.as_mut());
+        if let Ok(k) = SigningKey::from_slice(bytes.as_ref()) {
+            return k;
+        }
+    }
+}
+
 /// A 12-byte AEAD nonce, or the error `openmls_rust_crypto` would have panicked instead of.
 fn nonce(nonce: &[u8]) -> Result<&[u8; AEAD_NONCE_LEN], CryptoError> {
     <&[u8; AEAD_NONCE_LEN]>::try_from(nonce).map_err(|_| CryptoError::CryptoLibraryError)
@@ -232,12 +245,8 @@ impl OpenMlsCrypto for MlsCrypto {
     fn signature_key_gen(&self, alg: SignatureScheme) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
         match alg {
             SignatureScheme::ECDSA_SECP256R1_SHA256 => self.with_rng(|rng| {
-                let k = SigningKey::random(rng);
-                let pk = k
-                    .verifying_key()
-                    .to_encoded_point(false)
-                    .as_bytes()
-                    .to_vec();
+                let k = p256_random(rng);
+                let pk = k.verifying_key().to_sec1_point(false).as_bytes().to_vec();
                 (k.to_bytes().to_vec(), pk)
             }),
             SignatureScheme::ED25519 => self.with_rng(|rng| {
@@ -259,8 +268,8 @@ impl OpenMlsCrypto for MlsCrypto {
         match alg {
             SignatureScheme::ECDSA_SECP256R1_SHA256 => {
                 let point =
-                    EncodedPoint::from_bytes(pk).map_err(|_| CryptoError::CryptoLibraryError)?;
-                let k = VerifyingKey::from_encoded_point(&point)
+                    Sec1Point::from_bytes(pk).map_err(|_| CryptoError::CryptoLibraryError)?;
+                let k = VerifyingKey::from_sec1_point(&point)
                     .map_err(|_| CryptoError::CryptoLibraryError)?;
                 let sig =
                     Signature::from_der(signature).map_err(|_| CryptoError::InvalidSignature)?;
@@ -285,8 +294,7 @@ impl OpenMlsCrypto for MlsCrypto {
                 if key.len() != 32 {
                     return Err(CryptoError::CryptoLibraryError);
                 }
-                let k = SigningKey::from_bytes(FieldBytes::from_slice(key))
-                    .map_err(|_| CryptoError::CryptoLibraryError)?;
+                let k = SigningKey::from_slice(key).map_err(|_| CryptoError::CryptoLibraryError)?;
                 let signature: Signature = k.sign(data);
                 Ok(signature.to_der().to_bytes().to_vec())
             }

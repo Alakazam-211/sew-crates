@@ -156,7 +156,7 @@ pub(crate) fn drop_video_packet(cfg: &ClientConfig) -> bool {
     use std::sync::atomic::Ordering;
     cfg.testing
         .drop_video_packets
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
         .is_ok()
 }
 

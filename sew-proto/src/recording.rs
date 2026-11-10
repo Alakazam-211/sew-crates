@@ -16,7 +16,12 @@ use crate::error::{Validate, ValidationError};
 use crate::id::Id;
 use crate::time::Timestamp;
 
+mod apps;
 mod consent_text;
+pub use apps::{
+    RecordingEventKind, RecordingRequiredPolicy, RecordingRule, RecordingStartLevel,
+    RecordingTrigger,
+};
 pub use consent_text::{ConsentAsk, ConsentChoice};
 
 /// The recorder's display name: the roster entry, the recording banner and every
@@ -92,6 +97,10 @@ pub mod reasons {
     pub const NOT_IN_VOICE: &str = "not_in_voice";
     /// `422`: not a voice channel, DM or group DM.
     pub const NOT_VOICE_CHANNEL: &str = "not_voice_channel";
+    /// `422 invalid_state`: the room records every call with two or more people, and two or
+    /// more are in it, so its recording cannot be stopped from a client. "Stop recording me"
+    /// still works.
+    pub const RECORDING_REQUIRED: &str = "recording_required";
 }
 
 coded_enum! {
@@ -122,6 +131,7 @@ impl RecordingState {
 coded_enum! {
     /// Why a recording stopped. Stored in `recordings.stop_reason`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum StopReason {
         /// The stop route.
         Stopped = "stopped" => 1,
@@ -141,6 +151,8 @@ coded_enum! {
         Disabled = "disabled" => 8,
         /// `recording.max_bytes` reached.
         MaxBytes = "max_bytes" => 9,
+        /// Stopped over the management API (the App or K2 governing the room).
+        MgmtStopped = "mgmt_stopped" => 10,
     }
 }
 
@@ -494,6 +506,7 @@ impl Default for PromptTranscript {
 /// The consent modal's data. Every slot is data; templates supply the
 /// sentences. `notice_version` is a stable hash of every other slot; the answer must echo it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ConsentPrompt {
     /// What the answer refers to.
     pub recording_id: RecordingRef,
@@ -517,6 +530,46 @@ pub struct ConsentPrompt {
     pub decline_mode: DeclineMode,
     /// Who is currently recorded (granted and captured), ascending.
     pub recorded_now: Vec<Id>,
+    /// The room records every call with two or more people (absent when not).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub required: bool,
+    /// The display names of the Apps whose servers can read the transcript (the Space's
+    /// governing App, when it may); absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app_readers: Vec<String>,
+    /// Agents in this channel can read the transcript (a coworker agent is a member of it);
+    /// absent when none is.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_readers: bool,
+}
+
+impl ConsentPrompt {
+    /// A prompt for `recording_id` in `room`: no starter, nobody recorded yet, audio deleted
+    /// once the transcript is final, the default transcript slots, admin download on, declining
+    /// joins unrecorded, and none of the optional slots. `notice_version` is 0 until
+    /// [`ConsentPrompt::sealed`].
+    pub fn new(recording_id: RecordingRef, room: PromptRoom) -> ConsentPrompt {
+        ConsentPrompt {
+            recording_id,
+            notice_version: 0,
+            recorder_name: RECORDER_DISPLAY_NAME.to_owned(),
+            feature_label: RECORDING_FEATURE_LABEL.to_owned(),
+            started_by: None,
+            room,
+            audio_keep_days: 0,
+            transcript: PromptTranscript::default(),
+            admin_download: true,
+            decline_mode: DeclineMode::JoinUnrecorded,
+            recorded_now: Vec::new(),
+            required: false,
+            app_readers: Vec::new(),
+            agent_readers: false,
+        }
+    }
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl ConsentPrompt {
@@ -546,6 +599,17 @@ impl ConsentPrompt {
             self.decline_mode.as_str(),
             recorded.join(","),
         ));
+        // Slots added later are hashed only when set, so a prompt that sets none keeps the
+        // version it always had.
+        if self.required {
+            text.push_str("|required");
+        }
+        if !self.app_readers.is_empty() {
+            text.push_str(&format!("|app_readers:{:?}", self.app_readers));
+        }
+        if self.agent_readers {
+            text.push_str("|agent_readers");
+        }
         let mut h: u32 = 0x811c_9dc5;
         for b in text.bytes() {
             h ^= u32::from(b);
@@ -563,6 +627,7 @@ impl ConsentPrompt {
 
 /// A recording.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Recording {
     /// The recording.
     pub id: Id,
@@ -580,8 +645,15 @@ pub struct Recording {
     pub started_by: Id,
     /// When.
     pub started_at: Timestamp,
-    /// Started by an auto-record channel's first join.
+    /// Started by an auto-record channel's first join, or (`trigger: required`) by the room
+    /// reaching two people.
     pub auto: bool,
+    /// What started it: `manual` (someone pressed Record), `auto` (an auto-record room's
+    /// first join) or `required` (the room reached two people while it records every call
+    /// with more than one person). Always sent; a payload without it (an older Sew) reads as
+    /// `manual`, and `auto` then tells an automatic start.
+    #[serde(default)]
+    pub trigger: RecordingTrigger,
     /// When it stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_at: Option<Timestamp>,
@@ -607,6 +679,41 @@ pub struct Recording {
     /// The consent modal (self only, while the viewer is `pending`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consent_prompt: Option<ConsentPrompt>,
+}
+
+impl Recording {
+    /// A recording `starting`, started manually by `started_by` at `started_at`, with its
+    /// record message: no participants yet, no mixed file, keep days 0, no limit set; every
+    /// optional field unset.
+    pub fn new(
+        id: Id,
+        channel_id: Id,
+        started_by: Id,
+        started_at: Timestamp,
+        message_id: Id,
+    ) -> Recording {
+        Recording {
+            id,
+            channel_id,
+            call_record_id: None,
+            space_id: None,
+            state: RecordingState::Starting,
+            started_by,
+            started_at,
+            auto: false,
+            trigger: RecordingTrigger::Manual,
+            stopped_at: None,
+            stop_reason: None,
+            message_id,
+            mixed: false,
+            audio_keep_days: 0,
+            language: None,
+            max_duration_ms: 0,
+            participants: Vec::new(),
+            my_consent: None,
+            consent_prompt: None,
+        }
+    }
 }
 
 impl Recording {
@@ -1015,6 +1122,9 @@ mod tests {
             admin_download: true,
             decline_mode: DeclineMode::JoinUnrecorded,
             recorded_now: vec![],
+            required: false,
+            app_readers: vec![],
+            agent_readers: false,
         }
         .sealed();
         let mut q = p.clone();
@@ -1024,6 +1134,84 @@ mod tests {
         r.decline_mode = DeclineMode::NotJoin;
         assert_ne!(p.notice_version, r.compute_version());
         assert_eq!(p.notice_version, p.compute_version());
+    }
+
+    /// A prompt that sets neither new slot keeps the version 0.8.x gave it (0.8.x's blessed
+    /// `ConsentPrompt.full` and `.auto` fixtures), so an old client's echoed answer still
+    /// matches; setting `required` or `app_readers` changes it.
+    #[test]
+    fn new_slots_hash_only_when_set() {
+        let id = |n: u64| Id::new(n).unwrap();
+        let full = ConsentPrompt {
+            recording_id: RecordingRef::Id(id(48_831_765_147_550_202)),
+            notice_version: 0,
+            recorder_name: RECORDER_DISPLAY_NAME.to_owned(),
+            feature_label: RECORDING_FEATURE_LABEL.to_owned(),
+            started_by: Some(PromptMember {
+                member_id: id(48_831_765_147_549_699),
+                display_name: "Morgan".to_owned(),
+            }),
+            room: PromptRoom {
+                channel_id: id(48_831_765_147_549_698),
+                kind: PromptRoomKind::Voice,
+                name: Some("standup".to_owned()),
+            },
+            audio_keep_days: 30,
+            transcript: PromptTranscript::default(),
+            admin_download: true,
+            decline_mode: DeclineMode::JoinUnrecorded,
+            recorded_now: vec![id(48_831_765_147_549_699)],
+            required: false,
+            app_readers: vec![],
+            agent_readers: false,
+        }
+        .sealed();
+        assert_eq!(full.notice_version, 357_303_234);
+        let auto = ConsentPrompt {
+            recording_id: RecordingRef::Auto,
+            started_by: None,
+            room: PromptRoom {
+                channel_id: id(48_831_765_147_549_698),
+                kind: PromptRoomKind::Voice,
+                name: None,
+            },
+            audio_keep_days: 0,
+            decline_mode: DeclineMode::NotJoin,
+            recorded_now: vec![],
+            ..full.clone()
+        }
+        .sealed();
+        assert_eq!(auto.notice_version, 3_743_614_694);
+        // The JSON of a prompt without the new slots is 0.8.x's: neither key is written.
+        let v = serde_json::to_value(&full).unwrap();
+        assert!(v.get("required").is_none() && v.get("app_readers").is_none());
+        let old: ConsentPrompt = serde_json::from_value(v).unwrap();
+        assert_eq!(old, full);
+        let mut r = full.clone();
+        r.required = true;
+        let r = r.sealed();
+        assert_ne!(r.notice_version, full.notice_version);
+        let mut a = full.clone();
+        a.app_readers = vec!["Helpdesk".to_owned()];
+        let a = a.sealed();
+        assert_ne!(a.notice_version, full.notice_version);
+        assert_ne!(a.notice_version, r.notice_version);
+        let mut b = a.clone();
+        b.app_readers = vec!["Payroll".to_owned()];
+        assert_ne!(b.compute_version(), a.notice_version);
+        // `agent_readers` too: hashed only when set, and left out of the JSON when not.
+        let mut g = full.clone();
+        g.agent_readers = true;
+        let g = g.sealed();
+        assert_ne!(g.notice_version, full.notice_version);
+        assert_ne!(g.notice_version, r.notice_version);
+        assert_eq!(serde_json::to_value(&g).unwrap()["agent_readers"], true);
+        assert!(
+            serde_json::to_value(&full)
+                .unwrap()
+                .get("agent_readers")
+                .is_none()
+        );
     }
 
     #[test]

@@ -23,10 +23,15 @@ pub struct SoftwareSigner {
 }
 
 impl SoftwareSigner {
-    /// A fresh key.
+    /// A fresh key: 32 bytes from `rng` as a big-endian scalar, drawn again when out of range
+    /// (zero or at least the group order; a chance of about 2^-32).
     pub fn generate<R: RngCore + CryptoRng>(rng: &mut R) -> SoftwareSigner {
-        SoftwareSigner {
-            key: SigningKey::random(rng),
+        let mut scalar = Zeroizing::new([0u8; 32]);
+        loop {
+            rng.fill_bytes(scalar.as_mut());
+            if let Ok(key) = SigningKey::from_slice(scalar.as_ref()) {
+                return SoftwareSigner { key };
+            }
         }
     }
 
@@ -55,7 +60,7 @@ impl SoftwareSigner {
 
 impl DeviceSigner for SoftwareSigner {
     fn public_key_sec1(&self) -> [u8; 65] {
-        let point = self.key.verifying_key().to_encoded_point(false);
+        let point = self.key.verifying_key().to_sec1_point(false);
         let mut out = [0u8; 65];
         let b = point.as_bytes();
         if b.len() == 65 {

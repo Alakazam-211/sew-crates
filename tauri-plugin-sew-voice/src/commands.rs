@@ -1,6 +1,6 @@
 //! The Tauri commands: the eight of `sew-voice:default`, the two device-key commands, the
-//! three call-detail commands and the fourteen video commands, each set behind its own
-//! permissions. Each one is a thin call into [`VoiceService`]; the argument names are the JSON
+//! three call-detail commands, the fourteen video commands and the two recording commands,
+//! each set behind its own permissions. Each one is a thin call into [`VoiceService`]; the argument names are the JSON
 //! keys the webview sends (`invoke('plugin:sew-voice|join', {target, room, muted, deafened})`,
 //! `invoke('plugin:sew-voice|consent', {granted, notice_version})`: snake_case, as every other
 //! key on the wire).
@@ -75,6 +75,16 @@ pub(crate) async fn consent(
 #[tauri::command]
 pub(crate) async fn withdraw_consent(service: State<'_, VoiceService>) -> Result<(), ErrorInfo> {
     service.withdraw_consent().await
+}
+
+#[tauri::command]
+pub(crate) async fn start_recording(service: State<'_, VoiceService>) -> Result<(), ErrorInfo> {
+    service.start_recording().await
+}
+
+#[tauri::command]
+pub(crate) async fn stop_recording(service: State<'_, VoiceService>) -> Result<(), ErrorInfo> {
+    service.stop_recording().await
 }
 
 #[tauri::command]

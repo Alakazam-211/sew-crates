@@ -7,9 +7,9 @@ use openmls::prelude::{
     KeyPackage, KeyPackageIn, Lifetime, MlsGroup, MlsGroupCreateConfig, MlsMessageBodyIn,
     MlsMessageIn, MlsMessageOut, PURE_PLAINTEXT_WIRE_FORMAT_POLICY, ProtocolVersion,
 };
-use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::types::SignatureScheme;
+use sew_mls_crypto::SignatureKeyPair;
 use sew_proto::e2ee::tls::{
     DeviceSigInput, IDENTITY_KIND_MEMBER, IDENTITY_VERSION, SewCallIdentity, TlsCodec,
 };

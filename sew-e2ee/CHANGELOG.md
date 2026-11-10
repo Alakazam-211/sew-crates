@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 (2026-11-10)
+
+- The version follows Sew 0.9.0.
+- The MLS leaf key pairs are `sew_mls_crypto::SignatureKeyPair`; `openmls_basic_credential` is no
+  longer a dependency. With the `testing` feature, `MiniDs::ds_signer` and `rogue::craft_leaf`
+  return that type instead of `openmls_basic_credential::SignatureKeyPair` (the same methods).
+- The device key and certificate checks are on `p256` 0.14. The crate no longer links
+  `crypto-bigint` 0.5.5 (RUSTSEC-2026-0387). Device signatures, key packages and every frozen
+  vector are unchanged.
+
 ## 0.8.3 (2026-11-10)
 
 - The version follows Sew 0.8.3. No API or behaviour change.

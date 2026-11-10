@@ -64,6 +64,7 @@ use serde::{Deserialize, Serialize};
 use crate::addr::Slug;
 use crate::error::{Validate, ValidationError, check_chars};
 use crate::external_id::ExternalId;
+use crate::http::Patch;
 use crate::id::Id;
 use crate::limits::NAME_MAX_CHARS;
 
@@ -290,6 +291,7 @@ pub const FEATURE_PRIVATE_SPACES: &str = "private_spaces";
 /// value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MgmtSpaceSettingsRequest {
     /// The Space's App; absent for an unbound Space.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -303,12 +305,24 @@ pub struct MgmtSpaceSettingsRequest {
     /// to or from `server` (`409 conflict` `server_governance_fixed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub governance: Option<crate::api::spaces::SpaceGovernance>,
+    /// Flag `app_recording`: the Space's own recording start level, over its governing App's
+    /// (`null` inherits). The server-governed Space has no admin level, so `admin` there is
+    /// `422 invalid_state` `level_above_ceiling`.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub recording_start_level: Patch<crate::recording::RecordingStartLevel>,
+    /// Flag `app_recording`: the Space records every call with two or more people (`null`
+    /// inherits; `false` never removes a rule its App or the org sets).
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub recording_required: Patch<bool>,
 }
 
 impl Validate for MgmtSpaceSettingsRequest {
     fn validate(&self) -> Result<(), ValidationError> {
         if let Some(g) = self.governance {
             crate::error::check_known("governance", g)?;
+        }
+        if let Patch::Set(l) = self.recording_start_level {
+            crate::error::check_known("recording_start_level", l)?;
         }
         match &self.app_id {
             Some(a) => check_app_id("app_id", a),
@@ -320,6 +334,7 @@ impl Validate for MgmtSpaceSettingsRequest {
 /// Answer of `GET`/`POST /mgmt/v1/spaces/{space_id}/settings`: the values after the
 /// call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct MgmtSpaceSettings {
     /// The Space.
     pub space_id: Id,
@@ -333,6 +348,29 @@ pub struct MgmtSpaceSettings {
     /// Who governs the Space's structure. Old payloads read as `sew`.
     #[serde(default = "crate::api::spaces::SpaceGovernance::default_sew")]
     pub governance: crate::api::spaces::SpaceGovernance,
+    /// Flag `app_recording`: the Space's own recording start level; absent when it inherits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_start_level: Option<crate::recording::RecordingStartLevel>,
+    /// Flag `app_recording`: the Space's own "record every call with two or more people";
+    /// absent when it inherits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_required: Option<bool>,
+}
+
+impl MgmtSpaceSettings {
+    /// The settings of `space_id`: not private, governance `sew`, no App, no recording
+    /// overrides.
+    pub fn new(space_id: Id, join_policy: crate::api::spaces::SpaceJoinPolicy) -> Self {
+        MgmtSpaceSettings {
+            space_id,
+            app_id: None,
+            private: false,
+            join_policy,
+            governance: crate::api::spaces::SpaceGovernance::Sew,
+            recording_start_level: None,
+            recording_required: None,
+        }
+    }
 }
 
 /// The feature flag of App-governed Spaces (Sew 0.6.0): `app:` external ids, the

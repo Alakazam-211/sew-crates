@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What started a recording. Stored in `recordings.trigger`.",
+  "oneOf": [
+    {
+      "const": "manual",
+      "description": "A person pressed Record (the start route).",
+      "type": "string"
+    },
+    {
+      "const": "auto",
+      "description": "An auto-record room's first join.",
+      "type": "string"
+    },
+    {
+      "const": "required",
+      "description": "The room reached two people while recording is required.",
+      "type": "string"
+    }
+  ],
+  "title": "RecordingTrigger"
+}

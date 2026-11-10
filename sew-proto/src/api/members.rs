@@ -57,6 +57,7 @@ impl InstallRole {
 
 /// A member of the install, person or agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Member {
     /// The member id.
     pub id: Id,
@@ -122,6 +123,43 @@ pub struct Member {
     /// avatar, title, pronouns, email or `external_id`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub erased: bool,
+}
+
+impl Member {
+    /// A member with its required fields: active, every optional field unset.
+    pub fn new(
+        id: Id,
+        kind: MemberKind,
+        install_role: InstallRole,
+        username: Handle,
+        display_name: String,
+        created_at: Timestamp,
+    ) -> Member {
+        Member {
+            id,
+            kind,
+            agent_kind: None,
+            assistant_of: None,
+            install_role,
+            username,
+            display_name,
+            title: None,
+            pronouns: None,
+            avatar_url: None,
+            deactivated: false,
+            created_at,
+            email: None,
+            compliance: None,
+            avatar_thumb_url: None,
+            timezone: None,
+            status: None,
+            profile_rev: 0,
+            custom_fields: None,
+            managed_fields: None,
+            external_id: None,
+            erased: false,
+        }
+    }
 }
 
 /// `external_id` on the client `Member` (listed in [`crate::mgmt::FEATURES`]).

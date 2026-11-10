@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/channels/{channel_id}/recording`: any subset of a voice room's\nrecording settings. Absent fields are kept.",
+  "properties": {
+    "app_id": {
+      "description": "The Space's governing App. Required in an App's Space (a participant App gets\n`409 app_not_governing`); absent for a Space no App governs, such as the server-governed\nSpace.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "audio_days": {
+      "description": "The room's default audio keep days (0 = until the transcript is final); `null`\ninherits the org's default.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "auto": {
+      "description": "Record from the room's first join.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "require_consent": {
+      "description": "Declining the recording notice means not joining; `null` inherits the org policy.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "required": {
+      "description": "Record every call with two or more people; `null` inherits from the Space, its App\nand the org. `false` never turns off a rule a higher level sets.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "title": "MgmtChannelRecordingRequest",
+  "type": "object"
+}

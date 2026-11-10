@@ -68,7 +68,9 @@
                   ]
                 },
                 "participants": [],
-                "recorder_present": false
+                "recorder_present": false,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]
@@ -130,7 +132,9 @@
                 "recorded": true
               }
             ],
-            "recorder_present": true
+            "recorder_present": true,
+            "trigger": "manual",
+            "required": false
           },
           "calls": [
             {
@@ -151,7 +155,9 @@
                     "recorded": true
                   }
                 ],
-                "recorder_present": true
+                "recorder_present": true,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]
@@ -255,7 +261,9 @@
                 "recorded": true
               }
             ],
-            "recorder_present": true
+            "recorder_present": true,
+            "trigger": "manual",
+            "required": false
           },
           "calls": [
             {
@@ -304,7 +312,9 @@
                     "recorded": true
                   }
                 ],
-                "recorder_present": true
+                "recorder_present": true,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]
@@ -334,7 +344,9 @@
                 "recorded": true
               }
             ],
-            "recorder_present": true
+            "recorder_present": true,
+            "trigger": "manual",
+            "required": false
           },
           "calls": [
             {
@@ -355,7 +367,9 @@
                     "recorded": true
                   }
                 ],
-                "recorder_present": true
+                "recorder_present": true,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]
@@ -383,7 +397,9 @@
                 "recorded": true
               }
             ],
-            "recorder_present": true
+            "recorder_present": true,
+            "trigger": "manual",
+            "required": false
           },
           "calls": [
             {
@@ -404,7 +420,9 @@
                     "recorded": true
                   }
                 ],
-                "recorder_present": true
+                "recorder_present": true,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]
@@ -508,7 +526,9 @@
                 "recorded": true
               }
             ],
-            "recorder_present": true
+            "recorder_present": true,
+            "trigger": "manual",
+            "required": false
           },
           "calls": [
             {
@@ -557,7 +577,9 @@
                     "recorded": true
                   }
                 ],
-                "recorder_present": true
+                "recorder_present": true,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]
@@ -587,7 +609,9 @@
                 "recorded": true
               }
             ],
-            "recorder_present": true
+            "recorder_present": true,
+            "trigger": "manual",
+            "required": false
           },
           "calls": [
             {
@@ -608,7 +632,9 @@
                     "recorded": true
                   }
                 ],
-                "recorder_present": true
+                "recorder_present": true,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]
@@ -1017,7 +1043,9 @@
                 "recorded": true
               }
             ],
-            "recorder_present": true
+            "recorder_present": true,
+            "trigger": "manual",
+            "required": false
           },
           "calls": [
             {
@@ -1038,7 +1066,9 @@
                     "recorded": true
                   }
                 ],
-                "recorder_present": true
+                "recorder_present": true,
+                "trigger": "manual",
+                "required": false
               }
             }
           ]

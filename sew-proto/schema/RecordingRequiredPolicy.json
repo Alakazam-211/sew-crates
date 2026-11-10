@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Org policy `recording.required`: whether rooms record every call with two or more\npeople.",
+  "oneOf": [
+    {
+      "const": "off",
+      "description": "Not required by the org (the default; Apps, Spaces and channels may still require\nit).",
+      "type": "string"
+    },
+    {
+      "const": "multi_person",
+      "description": "Every call with two or more people is recorded.",
+      "type": "string"
+    }
+  ],
+  "title": "RecordingRequiredPolicy"
+}

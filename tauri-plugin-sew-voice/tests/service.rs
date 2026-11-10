@@ -1180,6 +1180,77 @@ async fn consent_without_a_call_is_not_in_call() {
     assert!(w.sink.events().is_empty());
 }
 
+/// Sew 0.9.0: Record and Stop reach the engine; the `recording` event follows the answer (the
+/// fixture's payloads); Sew's refusals are the command's error as given; with no call, or a
+/// join held for a notice, nothing reaches Sew.
+#[tokio::test]
+async fn start_and_stop_recording() {
+    use tauri_plugin_sew_voice::RecordingControl;
+    let f = fixture();
+    let c = &f["recording"]["controls"];
+
+    let w = world();
+    for e in [
+        w.svc.start_recording().await.expect_err("no call"),
+        w.svc.stop_recording().await.expect_err("no call"),
+    ] {
+        assert_eq!(e.code, "not_in_call");
+    }
+    assert!(w.sink.events().is_empty());
+
+    let w = joined().await;
+    let call = w.engine.last_call().expect("call");
+    let e = w.svc.stop_recording().await.expect_err("none to stop");
+    assert_eq!(e.code, "no_recording");
+    w.svc.start_recording().await.expect("start");
+    until("started", || w.svc.snapshot().recording.is_some()).await;
+    assert_eq!(
+        w.sink.of("recording").last(),
+        Some(&c["start"]["recording"])
+    );
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert_eq!(snap["recording"], c["start"]["recording"]);
+    // A second Record is Sew's `recording_active`.
+    let e = w.svc.start_recording().await.expect_err("active");
+    assert_eq!(e.code, "recording_active");
+    // A required room refuses the Stop; the recording goes on, and so does the call.
+    call.fail_next_control(EngineError::Provider(ProviderError::Refused {
+        code: "recording_required".into(),
+        detail: json!({"reason": "recording_required"}),
+    }));
+    let e = w.svc.stop_recording().await.expect_err("required");
+    assert_eq!(e.code, "recording_required");
+    assert_eq!(e.detail["reason"], json!("recording_required"));
+    assert!(w.svc.snapshot().recording.is_some());
+    assert_eq!(w.svc.snapshot().state, CallState::Connected);
+    w.svc.stop_recording().await.expect("stop");
+    until("stopped", || w.svc.snapshot().recording.is_none()).await;
+    assert_eq!(w.sink.of("recording").last(), Some(&c["stop"]["recording"]));
+    assert_eq!(
+        call.controls(),
+        vec![
+            RecordingControl::Stop,
+            RecordingControl::Start,
+            RecordingControl::Start,
+            RecordingControl::Stop,
+            RecordingControl::Stop,
+        ]
+    );
+    assert_eq!(w.svc.snapshot().state, CallState::Connected);
+
+    // Held for a notice: the person is not in the room yet.
+    let (w, p) = refusing(vec![held_refusal()]);
+    w.svc.join(args()).await.expect("held");
+    let e = w.svc.start_recording().await.expect_err("held");
+    assert_eq!(e.code, "not_in_voice");
+    settle().await;
+    assert_eq!(
+        p.calls().len(),
+        1,
+        "nothing more is asked of Sew while held"
+    );
+}
+
 /// The recording leave reasons end a call as the fixture shows.
 #[tokio::test]
 async fn recording_end_reasons_reach_the_webview_unchanged() {

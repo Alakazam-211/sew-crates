@@ -638,6 +638,26 @@
       ],
       "type": "object"
     },
+    "RecordingTrigger": {
+      "description": "What started a recording. Stored in `recordings.trigger`.",
+      "oneOf": [
+        {
+          "const": "manual",
+          "description": "A person pressed Record (the start route).",
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "An auto-record room's first join.",
+          "type": "string"
+        },
+        {
+          "const": "required",
+          "description": "The room reached two people while recording is required.",
+          "type": "string"
+        }
+      ]
+    },
     "RunEnd": {
       "description": "Why a recorder run ended (`recording_runs.end_reason`).",
       "oneOf": [
@@ -739,6 +759,11 @@
         {
           "const": "max_bytes",
           "description": "`recording.max_bytes` reached.",
+          "type": "string"
+        },
+        {
+          "const": "mgmt_stopped",
+          "description": "Stopped over the management API (the App or K2 governing the room).",
           "type": "string"
         }
       ]
@@ -1033,6 +1058,17 @@
     "transcript_state": {
       "$ref": "#/$defs/TranscriptState",
       "description": "The transcript's state."
+    },
+    "trigger": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingTrigger"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Minor 12: what started it, when `auto` alone does not say: `required` (the room\nreached two people while it records every call with more than one person; `auto` is\nset too). Omitted for `manual` and `auto`, which `auto` tells."
     },
     "turn_count": {
       "description": "Turns posted.",

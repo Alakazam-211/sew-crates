@@ -487,6 +487,7 @@ pub struct PresenceSettingsRecord {
 /// `spaces.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SpaceRecord {
     /// The space id.
     pub id: Id,
@@ -542,9 +543,46 @@ pub struct SpaceRecord {
         skip_serializing_if = "crate::api::spaces::SpaceGovernance::is_sew"
     )]
     pub governance: crate::api::spaces::SpaceGovernance,
+    /// Minor 12: the Space's own recording start level (over its governing App's); omitted
+    /// when it inherits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_start_level: Option<crate::recording::RecordingStartLevel>,
+    /// Minor 12: the Space's own "record every call with more than one person"; omitted when
+    /// it inherits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_required: Option<bool>,
     /// Converter reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceRef>,
+}
+
+impl SpaceRecord {
+    /// A Space record with its required fields; every optional field unset, governance `sew`.
+    pub fn new(id: Id, slug: String, name: String, owner_id: Id, created_at: Timestamp) -> Self {
+        SpaceRecord {
+            id,
+            slug,
+            name,
+            owner_id,
+            created_by: None,
+            icon: None,
+            created_at,
+            join_policy: None,
+            default_channel_ids: Vec::new(),
+            description: None,
+            rules_channel_id: None,
+            welcome_channel_id: None,
+            app_id: None,
+            participant_app_ids: Vec::new(),
+            hidden: false,
+            private: false,
+            orphaned_from: None,
+            governance: crate::api::spaces::SpaceGovernance::Sew,
+            recording_start_level: None,
+            recording_required: None,
+            source: None,
+        }
+    }
 }
 
 /// A space icon in `spaces.ndjson`.
@@ -680,6 +718,7 @@ pub struct CategoryRecord {
 /// `channels.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ChannelRecord {
     /// The channel id.
     pub id: Id,
@@ -742,6 +781,10 @@ pub struct ChannelRecord {
     /// Declining means not joining (absent: the org policy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_require_consent: Option<bool>,
+    /// Minor 12: a voice channel's own "record every call with more than one person"; omitted
+    /// when it inherits. Only on voice channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_required: Option<bool>,
     /// Minor 9: a voice room K2 is closing (archived when its last person
     /// leaves). Absent when `false`; never set on an archived channel.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -749,6 +792,40 @@ pub struct ChannelRecord {
     /// Converter reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceRef>,
+}
+
+impl ChannelRecord {
+    /// A channel record with its required fields: position 0, not synced, every optional field
+    /// unset.
+    pub fn new(id: Id, kind: ChannelType, visibility: Visibility, created_at: Timestamp) -> Self {
+        ChannelRecord {
+            id,
+            space_id: None,
+            category_id: None,
+            kind,
+            visibility,
+            slug: None,
+            name: None,
+            topic: None,
+            purpose: None,
+            position: 0,
+            synced: false,
+            overwrites: Vec::new(),
+            slow_mode_s: None,
+            dm_member_ids: Vec::new(),
+            created_by: None,
+            created_at,
+            archived_at: None,
+            archived_by: None,
+            head_seq: None,
+            recording_auto: false,
+            recording_audio_days: None,
+            recording_require_consent: None,
+            recording_required: None,
+            closing: false,
+            source: None,
+        }
+    }
 }
 
 /// `channel_members.ndjson`.
@@ -1742,6 +1819,7 @@ pub struct TranscriptTurnRecord {
 /// recorder-sealed `files/…` plus `content_key`, and only inside the age layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingRecord {
     /// The recording.
     pub id: Id,
@@ -1759,6 +1837,11 @@ pub struct RecordingRecord {
     /// Auto-started.
     #[serde(default, skip_serializing_if = "is_false")]
     pub auto: bool,
+    /// Minor 12: what started it, when `auto` alone does not say: `required` (the room
+    /// reached two people while it records every call with more than one person; `auto` is
+    /// set too). Omitted for `manual` and `auto`, which `auto` tells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<crate::recording::RecordingTrigger>,
     /// Its state (an import loads active ones `stopped`, `disabled`).
     pub state: crate::recording::RecordingState,
     /// When it stopped.
@@ -1837,6 +1920,60 @@ pub struct RecordingRecord {
     /// Transcript turn timings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turns: Vec<TranscriptTurnRecord>,
+}
+
+impl RecordingRecord {
+    /// A recording record with its required fields: keep days 0, every optional field and
+    /// list unset.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Id,
+        channel_id: Id,
+        message_id: Id,
+        started_by: Id,
+        started_at: Timestamp,
+        state: crate::recording::RecordingState,
+        audio_state: crate::recording::AudioState,
+        transcript_state: crate::recording::TranscriptState,
+    ) -> Self {
+        RecordingRecord {
+            id,
+            channel_id,
+            call_record_id: None,
+            message_id,
+            started_by,
+            started_at,
+            auto: false,
+            trigger: None,
+            state,
+            stopped_at: None,
+            stop_reason: None,
+            recorder_joined_at: None,
+            recorder_runs: 0,
+            language: None,
+            mixed: false,
+            audio_keep_days: 0,
+            audio_state,
+            audio_expires_at: None,
+            audio_bytes: 0,
+            transcript_state,
+            transcript_final_at: None,
+            posted_through_ms: 0,
+            turn_count: 0,
+            model: None,
+            backend: None,
+            hidden: false,
+            purged_at: None,
+            content_key: None,
+            participants: Vec::new(),
+            runs: Vec::new(),
+            tracks: Vec::new(),
+            gaps: Vec::new(),
+            segments: Vec::new(),
+            mixes: Vec::new(),
+            turns: Vec::new(),
+        }
+    }
 }
 
 fn is_zero_u16(v: &u16) -> bool {

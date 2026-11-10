@@ -211,6 +211,13 @@
         "null"
       ]
     },
+    "recording_required": {
+      "description": "Minor 12: a voice channel's own \"record every call with more than one person\"; omitted\nwhen it inherits. Only on voice channels.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "slow_mode_s": {
       "description": "Slow mode seconds.",
       "format": "uint32",

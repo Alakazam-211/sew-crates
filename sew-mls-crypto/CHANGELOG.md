@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.0 (2026-11-10)
+
+- The version follows Sew 0.9.0.
+- `SignatureKeyPair` (and its `StorageId`): the signature key pair of a basic credential,
+  replacing `openmls_basic_credential`'s with the same API (`new`, `from_raw`, `public`,
+  `to_public_vec`, `signature_scheme`, `id`, `store`, `read`, `delete`, `Signer`) and the same
+  key, signature, serde, TLS and storage formats, for Ed25519 and ECDSA P-256 (P-384 is refused,
+  as the provider refuses it). Key pairs and groups made with either work with the other.
+- On RustCrypto's current line: `p256` 0.14 and `hpke` 0.15.1 (both on `crypto-bigint` 0.7). The
+  crate no longer links `crypto-bigint` 0.5.5 (RUSTSEC-2026-0387). Signatures, public keys, HPKE
+  ciphertexts and exporters are unchanged, and the RFC 9180 vectors still pass.
+- `derive_hpke_keypair` now returns clamped X25519 private keys (RFC 9180 §7.1.2); public keys,
+  ciphertexts and exporters are unchanged. Before, it returned the unclamped bytes; it is the
+  same key, and either form opens the same ciphertexts.
+
 ## 0.8.3 (2026-11-10)
 
 - The version follows Sew 0.8.3. No API or behaviour change.

@@ -24,7 +24,8 @@
 //!   no microphone: kessel-audio starts when the call first leaves that state (after
 //!   `consent`). The `recording` event is the engine's recording with `recorder_present` from
 //!   its roster (the recorder is never a `participants` entry: it is no member). `consent` and
-//!   `withdraw_consent` are the engine's, through the host's provider.
+//!   `withdraw_consent` are the engine's, through the host's provider, and so (Sew 0.9.0) are
+//!   `start_recording` and `stop_recording`.
 //! - **The phone's audio session.** The engine keeps one `AudioSession` for the app: every
 //!   [`AudioSessionEvent`] goes to it, with or without a call, and each call's kessel-audio
 //!   starts from what it says (on iOS, deferred until the session is active). On phones the
@@ -1283,6 +1284,26 @@ impl CallHandle for RealCall {
                 .as_ref()
                 .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
             call.withdraw_consent().await.map_err(consent_error)
+        })
+    }
+
+    fn start_recording(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(async move {
+            let g = self.shared.call.read().await;
+            let call = g
+                .as_ref()
+                .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+            call.start_recording().await.map_err(consent_error)
+        })
+    }
+
+    fn stop_recording(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(async move {
+            let g = self.shared.call.read().await;
+            let call = g
+                .as_ref()
+                .ok_or_else(|| EngineError::failed(crate::wire::code::NOT_IN_CALL))?;
+            call.stop_recording().await.map_err(consent_error)
         })
     }
 

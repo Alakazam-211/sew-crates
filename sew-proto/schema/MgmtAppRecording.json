@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "RecordingStartLevel": {
+      "description": "The lowest level of an App's governed Space whose members may start and stop\nrecordings. `member` means everyone in the Space. Stored as its wire string.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Nobody through the App's levels (the default; roles and overwrites still apply).",
+          "type": "string"
+        },
+        {
+          "const": "admin",
+          "description": "Admins.",
+          "type": "string"
+        },
+        {
+          "const": "moderator",
+          "description": "Moderators and admins.",
+          "type": "string"
+        },
+        {
+          "const": "member",
+          "description": "Everyone in the Space.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "An App's recording settings, in the answer of `GET`/`POST /mgmt/v1/apps/{app_id}/settings`\n(left out while every field has its default).",
+  "properties": {
+    "audio_max_days": {
+      "description": "The App's cap on audio keep days; absent: the org's.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cap_required": {
+      "default": false,
+      "description": "The App's sessions need `voice:record` to start or stop (default `false`).",
+      "type": "boolean"
+    },
+    "required": {
+      "default": false,
+      "description": "Every call with two or more people is recorded (default `false`).",
+      "type": "boolean"
+    },
+    "server_read": {
+      "default": false,
+      "description": "The App's server may read over mgmt (default `false`).",
+      "type": "boolean"
+    },
+    "start_level": {
+      "$ref": "#/$defs/RecordingStartLevel",
+      "default": "none",
+      "description": "The lowest level whose members may record (default `none`)."
+    }
+  },
+  "title": "MgmtAppRecording",
+  "type": "object"
+}

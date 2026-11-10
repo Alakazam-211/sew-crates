@@ -79,8 +79,8 @@ built-in)`. It covers TLS only; the call's DTLS and SRTP keep their own backend.
 ## Usage
 
 The crate is not published on crates.io yet, because some of its dependencies are not:
-`sew-e2ee` and `sew-mls-crypto` (held back for the P-256 advisory below) and Alakazam Labs'
-fork of `str0m` (K2's `kessel-audio` and `kessel-video` come from crates.io).
+`sew-e2ee` and `sew-mls-crypto`, and Alakazam Labs' fork of `str0m` (K2's `kessel-audio` and
+`kessel-video` come from crates.io).
 Until they are, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates)
 repository, which holds it with the Sew crates it depends on: clone it into your project (for
 example as `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists
@@ -89,7 +89,7 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.5.1"
+sew-call-client = "0.6.0"
 ```
 
 **Known issue without the `str0m` fork.** The fork's `[patch.crates-io]` rows carry a fix to
@@ -212,6 +212,13 @@ device's key to the recorder only while Sew says `granted`.
   your provider's `JoinProvider::consent` with the person's own session (`ConsentAnswer::path`
   and `body` are Sew's route and body). The default `consent` sends nothing
   (`consent_unsupported`): the person stays unrecorded.
+- Record and Stop (Sew 0.9.0): `call.start_recording()` and `call.stop_recording()` go through
+  your provider's `JoinProvider::recording` with the person's own session
+  (`RecordingRequest::path` and `body` are Sew's route and body); Sew's refusals come back as
+  given. Record is the starter's own consent, nobody else's. The default `recording` sends
+  nothing (`recording_unsupported`). `CallRecording::trigger` says what started a recording
+  and `CallRecording::required` whether the room requires it (Stop is then refused
+  `recording_required` while two or more people are in the room).
 - `Participant::recorder` marks the recorder in the roster.
 
 ### Network changes (phones)
@@ -245,10 +252,6 @@ directory holds a record of (`device::forget_install` and `device::known_device_
 `VaultConfig` or a directory directly).
 
 For a Tauri 2 app, `tauri-plugin-sew-voice` wraps this engine in eight commands and six events.
-
-**Known advisory (RUSTSEC-2026-0387, P-256).** Through `sew-e2ee`, every join signs with a P-256
-device key via `p256` 0.13, whatever the call's MLS suite; see `sew-e2ee`'s README for what that
-means and our assessment.
 
 ## Licence
 

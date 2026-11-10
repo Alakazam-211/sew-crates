@@ -144,6 +144,116 @@ impl ConsentAnswer {
 /// The `Refused` code of [`JoinProvider::consent`]'s default: the host sends no consent.
 pub const CONSENT_UNSUPPORTED: &str = "consent_unsupported";
 
+/// What the person asks of the call's recording: press Record, or Stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RecordingControl {
+    /// Start recording the call's room (Sew's `POST /api/v1/channels/{id}/recording/start`).
+    Start,
+    /// Stop the room's active recording (Sew's `POST /api/v1/recordings/{id}/stop`).
+    Stop,
+}
+
+/// The person's Record or Stop, for the host to send with the person's own Sew session, as
+/// [`ConsentAnswer`] is: `POST {path}` with `{body}`, whose `200` is the recording as the person
+/// sees it ([`RecordingRequest::recording_from_json`]). Never the call credential: starting and
+/// stopping are the person's acts, with Sew's permission checks and audit.
+///
+/// Its JSON, `{target, room, action: "start" | "stop", recording_id?, device_id?}`, is what a
+/// provider forwards to its own server (the web kit's native lane:
+/// `POST /sew/native/voice/recording`), which maps `room` to Sew's channel as its join does.
+///
+/// Sew decides who may: a refusal comes back with Sew's reason (`not_in_voice`,
+/// `recording_active`, `recording_disabled`, `recording_required` for a Stop while the room
+/// requires its recording, `cap_ceiling`, …), read by [`ProviderError::from_sew_error`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RecordingRequest {
+    /// The call's `target` (the join's).
+    pub target: String,
+    /// The call's `room` (the join's, or a move's destination).
+    pub room: String,
+    /// Start or Stop.
+    pub action: RecordingControl,
+    /// The call's channel as Sew names it (the voice channel, DM or group DM of the join
+    /// answer, or a move's destination), for a provider that calls Sew itself
+    /// ([`RecordingRequest::path`]). Not in the JSON: a server maps `room` itself.
+    #[serde(skip)]
+    pub channel_id: Option<Id>,
+    /// The active recording: Stop's route (`None` for a Start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<Id>,
+    /// This device in Sew's call keys (its device id), for the host's own records; not part of
+    /// Sew's body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+}
+
+impl RecordingRequest {
+    /// A Start of `channel_id`'s recording, for the call on `target` / `room`.
+    pub fn start(target: impl Into<String>, room: impl Into<String>, channel_id: Id) -> Self {
+        RecordingRequest {
+            target: target.into(),
+            room: room.into(),
+            action: RecordingControl::Start,
+            channel_id: Some(channel_id),
+            recording_id: None,
+            device_id: None,
+        }
+    }
+
+    /// A Stop of `recording_id` in `channel_id`, for the call on `target` / `room`.
+    pub fn stop(
+        target: impl Into<String>,
+        room: impl Into<String>,
+        channel_id: Id,
+        recording_id: Id,
+    ) -> Self {
+        RecordingRequest {
+            target: target.into(),
+            room: room.into(),
+            action: RecordingControl::Stop,
+            channel_id: Some(channel_id),
+            recording_id: Some(recording_id),
+            device_id: None,
+        }
+    }
+
+    /// Sew's route, under the client API: `/api/v1/channels/{channel_id}/recording/start` for
+    /// a Start, `/api/v1/recordings/{recording_id}/stop` for a Stop. A request without its id
+    /// (read from JSON, or a Stop the engine never sends) keeps the route's `{id}` unfilled,
+    /// which Sew refuses: a Stop never becomes a Start.
+    pub fn path(&self) -> String {
+        use sew_proto::routes;
+        match (self.action, self.channel_id, self.recording_id) {
+            (RecordingControl::Start, Some(ch), _) => {
+                routes::with_id(routes::CHANNEL_RECORDING_START, ch)
+            }
+            (RecordingControl::Start, None, _) => routes::CHANNEL_RECORDING_START.to_owned(),
+            (_, _, Some(id)) => routes::with_id(routes::RECORDING_STOP, id),
+            (_, _, None) => routes::RECORDING_STOP.to_owned(),
+        }
+    }
+
+    /// Sew's body: `{}` for both (a Start takes the room's defaults for keep days, mixing and
+    /// language).
+    pub fn body(&self) -> serde_json::Value {
+        serde_json::Value::Object(serde_json::Map::new())
+    }
+
+    /// Reads Sew's `200` answer (the recording as the person sees it). The error never quotes
+    /// the body.
+    pub fn recording_from_json(body: &[u8]) -> Result<Recording, ProviderError> {
+        serde_json::from_slice(body)
+            .map_err(|_| ProviderError::Other("the recording answer did not parse".to_owned()))
+    }
+}
+
+/// The `Refused` code of [`JoinProvider::recording`]'s default: the host sends no Record or
+/// Stop.
+pub const RECORDING_UNSUPPORTED: &str = "recording_unsupported";
+
 /// The call-scoped credential minted with the join answer
 /// (`VoiceJoinResponse.call_credential`, flag `call_credential`, Sew 0.7.1).
 ///
@@ -422,6 +532,24 @@ pub trait JoinProvider: Send + Sync + 'static {
             detail: serde_json::Value::Null,
         })))
     }
+
+    /// Send the person's Record or Stop with the person's own Sew session (Sew 0.9.0):
+    /// `POST req.path()` with `req.body()`, and return Sew's answer
+    /// ([`RecordingRequest::recording_from_json`]); a refusal as in
+    /// [`ProviderError::from_sew_error`]. Sew's answer becomes the call's recording at once,
+    /// and the call socket's `recording_updated` follows for everyone in the room. A Start is
+    /// the starter's own consent (Sew records it as their answer, so show the notice as a
+    /// confirmation first) and nobody else's: everyone else in the room is `pending` until
+    /// they answer.
+    ///
+    /// The default sends nothing and answers `Refused { code: "recording_unsupported" }`.
+    fn recording(&self, req: RecordingRequest) -> BoxFuture<'_, Result<Recording, ProviderError>> {
+        let _ = req;
+        Box::pin(std::future::ready(Err(ProviderError::Refused {
+            code: RECORDING_UNSUPPORTED.to_owned(),
+            detail: serde_json::Value::Null,
+        })))
+    }
 }
 
 #[cfg(test)]
@@ -555,6 +683,91 @@ mod tests {
             serde_json::to_value(a.body()).unwrap(),
             serde_json::json!({"consent": false})
         );
+    }
+
+    #[test]
+    fn a_recording_says_what_started_it() {
+        use crate::call::CallRecording;
+        use sew_proto::recording::RecordingTrigger;
+        let rec = |auto: bool| {
+            serde_json::json!({
+                "id": "77", "channel_id": "2002", "state": "recording", "started_by": "1001",
+                "started_at": "2026-11-02T09:58:00Z", "auto": auto, "message_id": "88",
+                "mixed": false, "audio_keep_days": 30, "max_duration_ms": 14_400_000u64,
+                "participants": []
+            })
+        };
+        for (auto, want) in [
+            (false, RecordingTrigger::Manual),
+            (true, RecordingTrigger::Auto),
+        ] {
+            let r: Recording = serde_json::from_value(rec(auto)).unwrap();
+            let v = CallRecording::from_sew(&r);
+            assert_eq!(v.trigger, want);
+            assert!(!v.required, "a 0.8.x recording is never required");
+            assert_eq!(
+                serde_json::to_value(&v).unwrap()["trigger"],
+                serde_json::to_value(want).unwrap()
+            );
+        }
+        // A held join with no recording yet: an auto-record room's first join.
+        let c = ConsentRequired::from_details(&serde_json::json!({
+            "recording": null, "auto": true, "consent_prompt": prompt()
+        }))
+        .unwrap();
+        let v = CallRecording::from_consent_required(&c);
+        assert_eq!(v.trigger, RecordingTrigger::Auto);
+        assert!(!v.required);
+    }
+
+    #[test]
+    fn recording_requests_name_sews_routes() {
+        let ch = Id::new(2002).unwrap();
+        let start = RecordingRequest::start("acme", "2002", ch);
+        assert_eq!(start.path(), "/api/v1/channels/2002/recording/start");
+        assert_eq!(start.body(), serde_json::json!({}));
+        assert_eq!(
+            serde_json::to_value(&start).unwrap(),
+            serde_json::json!({"target": "acme", "room": "2002", "action": "start"})
+        );
+        let stop = RecordingRequest::stop("acme", "2002", ch, Id::new(77).unwrap());
+        assert_eq!(stop.path(), "/api/v1/recordings/77/stop");
+        assert_eq!(stop.body(), serde_json::json!({}));
+        assert_eq!(
+            serde_json::to_value(&stop).unwrap(),
+            serde_json::json!({"target": "acme", "room": "2002", "action": "stop",
+                               "recording_id": "77"})
+        );
+        // Read from a server's JSON: no channel, so a Start's route stays unfilled.
+        let read: RecordingRequest = serde_json::from_value(
+            serde_json::json!({"target": "acme", "room": "2002", "action": "start"}),
+        )
+        .unwrap();
+        assert_eq!(read.channel_id, None);
+        assert_eq!(read.path(), "/api/v1/channels/{id}/recording/start");
+        // A Stop that names no recording never becomes a Start.
+        let mut bare = stop.clone();
+        bare.recording_id = None;
+        assert_eq!(bare.path(), "/api/v1/recordings/{id}/stop");
+        assert!(RecordingRequest::recording_from_json(b"not json").is_err());
+    }
+
+    #[test]
+    fn the_default_provider_sends_no_record_or_stop() {
+        struct P;
+        impl JoinProvider for P {
+            fn join(&self, _: JoinRequest) -> BoxFuture<'_, Result<JoinAnswer, ProviderError>> {
+                Box::pin(std::future::ready(Err(ProviderError::SigninRequired)))
+            }
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let req = RecordingRequest::start("acme", "2002", Id::new(2002).unwrap());
+        match rt.block_on(P.recording(req)) {
+            Err(ProviderError::Refused { code, .. }) => assert_eq!(code, RECORDING_UNSUPPORTED),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

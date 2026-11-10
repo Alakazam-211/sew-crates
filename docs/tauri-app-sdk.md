@@ -18,7 +18,7 @@ such shell needs; `tauri-plugin-sew-voice` is the call engine beside it. The cra
   account is left on that Sew install. A server-side end (revoke, idle, replaced) turns the
   account `signed_out` with its reason on the next call and sends `sew-app://signed_out`.
 - **Voice**: `Builder::join_provider()`, the voice plugin's `JoinProvider` over the lane's
-  `voice/join` and `voice/consent`. A `404` with no code of its own is `lane_not_found`; a `401`
+  `voice/join`, `voice/consent` and (Sew 0.9.0) `voice/recording` (Record and Stop; a lane without it is `recording_unsupported`). A `404` with no code of its own is `lane_not_found`; a `401`
   is `signin_required`.
 - **The webview**: `open` (the site's page, signed in through the App's handoff page) and
   `handoff` (a 60 s code for the page's cookie, only to a page on that server).

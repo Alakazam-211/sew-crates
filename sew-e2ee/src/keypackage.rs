@@ -8,9 +8,9 @@ use openmls::prelude::{
     BasicCredential, Capabilities, Ciphersuite, Credential, CredentialType, CredentialWithKey,
     ExtensionType, KeyPackage, Lifetime, MlsMessageOut, ProtocolVersion,
 };
-use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::OpenMlsProvider;
 use openmls_traits::types::SignatureScheme;
+use sew_mls_crypto::SignatureKeyPair;
 use sew_proto::e2ee::{
     B64, CallKeysInit, CallScope, E2eeJoin, KeyJoinRequest, KeyPackageRefItem,
     KeyPackageUploadRequest,
@@ -44,7 +44,7 @@ pub fn member_capabilities() -> Capabilities {
 }
 
 /// A leaf's MLS signing key and credential (in memory only, zeroized on drop by
-/// `openmls_basic_credential`).
+/// `sew_mls_crypto::SignatureKeyPair`).
 pub(crate) struct LeafSecret {
     pub(crate) signer: SignatureKeyPair,
     pub(crate) credential: Credential,

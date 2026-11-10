@@ -1428,6 +1428,11 @@
           "const": "max_bytes",
           "description": "`recording.max_bytes` reached.",
           "type": "string"
+        },
+        {
+          "const": "mgmt_stopped",
+          "description": "Stopped over the management API (the App or K2 governing the room).",
+          "type": "string"
         }
       ]
     },

@@ -1,5 +1,103 @@
 # Changelog
 
+## 0.9.0 (2026-11-10)
+
+**The first crates.io release since 0.8.1.** 0.8.2 and 0.8.3 were mirror-only, so coming from
+crates.io's 0.8.1 this release also carries 0.8.2's breaks and 0.8.3's change (their entries
+below).
+
+**Recording in Apps.** The wire is additive throughout: every new field is optional or has a
+default, and a payload of 0.8.x reads as before.
+
+### Breaking
+
+- **New enum variants:** `PassCap::VoiceRecord` (`voice:record`, bit 32; `PassCap::ALL` has six
+  entries and `CapSet` reads bit 32), `StopReason::MgmtStopped` (`mgmt_stopped`, code 10),
+  `Action::RecordingSettings` (`recording.settings`) and `Action::RecordingTranscriptRead`
+  (`recording.transcript_read`), `PolicyKey::RecordingRequired` (`recording.required`) and
+  `StatusAlarm::RecordingRequiredFailed` (`recording_required_failed`). A `match` on
+  `PassCap` or `StopReason` written for 0.8.x no longer compiles. `Action`'s new variants sit
+  before older ones, so the implicit discriminants of later variants move.
+- **`StopReason` and `PassCap` are now `#[non_exhaustive]`:** a `match` outside the crate needs
+  a `_` arm, and later variants are not breaking.
+- **New public fields on structs** (a struct literal written for 0.8.x no longer compiles):
+  - `Channel.recording_required` and `Channel.recording_rule`, and the same two on
+    `ReadyChannel`; `UpdateChannelRequest.recording_required`;
+  - `Recording.trigger`;
+  - `ConsentPrompt.required`, `ConsentPrompt.app_readers` and `ConsentPrompt.agent_readers`;
+  - `Policies.recording_required` and `PolicyPatch.recording_required`;
+  - `MgmtAppSettingsRequest.recording`, `MgmtAppSettings.recording`, and
+    `recording_start_level` and `recording_required` on `MgmtSpaceSettingsRequest` and
+    `MgmtSpaceSettings`;
+  - the export records: `SpaceRecord.recording_start_level` and `recording_required`,
+    `ChannelRecord.recording_required`, `RecordingRecord.trigger`.
+- **These structs are now `#[non_exhaustive]`,** so later fields are not breaking. Outside the
+  crate, build them with their constructor (or `Default`) and set the public fields; a struct
+  literal or a `..base` update no longer compiles. Each constructor sets every other field to
+  its unset value (`None`, empty, `false`, 0); its doc says which.
+  - `Channel::new(id, kind, visibility, created_at)`;
+  - `ReadyChannel::new(id, kind, visibility, my_perms)`;
+  - `Recording::new(id, channel_id, started_by, started_at, message_id)`;
+  - `ConsentPrompt::new(recording_id, room)`;
+  - `Member::new(id, kind, install_role, username, display_name, created_at)`;
+  - `Message::new(id, channel_id, author_id, seq, created_at)`;
+  - `MediaPolicy::new(tier, camera, screen)`;
+  - `Status::new(version, schema_version, install_id, provider, db, jobs)`;
+  - `MgmtAppSettings::new(app_id)` and `MgmtSpaceSettings::new(space_id, join_policy)`;
+  - the export records `SpaceRecord::new(id, slug, name, owner_id, created_at)`,
+    `ChannelRecord::new(id, kind, visibility, created_at)` and
+    `RecordingRecord::new(id, channel_id, message_id, started_by, started_at, state,
+    audio_state, transcript_state)`;
+  - with `Default`: `UpdateChannelRequest`, `MgmtAppSettingsRequest`,
+    `MgmtSpaceSettingsRequest`, `Policies` and `PolicyPatch`.
+- `EXPORT_FORMAT_MINOR` is 12.
+
+### Added
+
+- **Enums** (all `#[non_exhaustive]`): `RecordingTrigger` (`manual`, `auto`, `required`; codes
+  1–3; `Default` is `manual`), `RecordingRule` (`none`, `auto`, `required`; `Default` is
+  `none`), `RecordingStartLevel` (`none`, `admin`, `moderator`, `member`),
+  `RecordingRequiredPolicy` (`off`, `multi_person`) and `RecordingEventKind` (`started`,
+  `stopped`, `transcript_ready`, `audio_expired`, `deleted`; codes 1–5).
+- **The flags** `app_recording`, `voice_record_cap`, `recording_required` and
+  `mgmt_recording_reads`, now in `FEATURES` (`FEATURE_APP_RECORDING`,
+  `FEATURE_VOICE_RECORD_CAP`, `FEATURE_RECORDING_REQUIRED`, `FEATURE_MGMT_RECORDING_READS`).
+- **The client wire:**
+  - `Channel.recording_rule`: the rule a room records under, every source applied (`auto`,
+    `required`; omitted for `none`);
+  - `Channel.recording_required`: a voice channel's own "record every call with more than one
+    person" (omitted while it inherits), settable through `UpdateChannelRequest`;
+  - `Recording.trigger`: what started a recording (always sent; a payload without it reads as
+    `manual`);
+  - `ConsentPrompt.required`, `app_readers` and `agent_readers`: each left out of the JSON
+    when unset, and `notice_version` hashes it only when set, so a prompt that sets none keeps
+    the version 0.8.x gave it. `ConsentPrompt::lines_en` / `text_en` say "This room records
+    every call with more than one person." (in place of the auto-record line for a room with
+    no recording yet), "<Apps> can read the transcript." and "Agents in this channel can read
+    the transcript." after who reads it;
+  - the reason `recording_required` (`recording::reasons::RECORDING_REQUIRED`): a client stop
+    of a required recording while two or more people are in the room.
+- **The policy** `recording.required` (`off` by default; a stored policy set without it reads
+  `off`). `Policies` JSON now always carries the key.
+- **Mgmt:**
+  - an App's recording settings (`MgmtAppRecordingRequest`, `MgmtAppRecording`) and a Space's
+    overrides (`null` inherits);
+  - the routes `MGMT_CHANNEL_RECORDING`, `MGMT_RECORDING_STOP`, `MGMT_RECORDING`,
+    `MGMT_RECORDING_TRANSCRIPT`, `MGMT_SPACE_RECORDINGS`, `MGMT_APP_RECORDING_CHANGES`, and the
+    audio download twins `MGMT_COMPLIANCE_RECORDING_DOWNLOADS`,
+    `MGMT_COMPLIANCE_RECORDING_DOWNLOAD_SEGMENTS` and `MGMT_COMPLIANCE_RECORDING_FILE`;
+  - their types (`MgmtChannelRecordingRequest`, `MgmtChannelRecording`,
+    `MgmtRecordingStopRequest`, `MgmtRecordingQuery`, `MgmtRecordingsQuery`,
+    `MgmtRecordingsPage`, `MgmtRecordingSummary`, `MgmtRecordingParticipant`,
+    `MgmtTranscriptQuery`, `MgmtTranscriptPage`, `MgmtTranscriptTurn`,
+    `MgmtRecordingChangesQuery`, `MgmtRecordingChanges`, `MgmtRecordingChange`), all
+    `#[non_exhaustive]` with `new` or `Default`, and their limits;
+  - the reasons `recording_server_read_off` and `sew_actor_admin_required`
+    (`mgmt::reasons`): the stop, a read without `app_id` and the audio downloads need a
+    `Sew-Actor` naming the install's Owner or an Admin who is a person; the stop names no App.
+- **Export minor 12:** the Space's recording overrides, a voice channel's
+  `recording_required`, and `trigger: required` on a recording a required room started.
+
 ## 0.8.3 (2026-11-10)
 
 **0.8.3 is mirror-only, as 0.8.2 was (crates.io stays at 0.8.1); the next crates.io release is

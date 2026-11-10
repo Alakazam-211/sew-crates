@@ -440,6 +440,13 @@ unit_enum! {
         /// A compliance download grant (`details {recording_id, channel_id, download_id, what,
         /// parts, segments, reason_given}`).
         RecordingDownload = "recording.download",
+        /// A room's or an App's recording settings changed over mgmt (`details {app_id?,
+        /// space_id?, channel_id?, fields}`: the names of the fields set, never values that
+        /// identify a person).
+        RecordingSettings = "recording.settings",
+        /// An App's server read a transcript over mgmt (`details {recording_id, app_id,
+        /// turns}`; the actor is the App's service and K2's `Sew-Actor`).
+        RecordingTranscriptRead = "recording.transcript_read",
         /// A meeting was made (`details {meeting_id, channel_id, kind,
         /// starts_at, ends_at, member_attendees, email_attendees}`: counts and ids only, never a
         /// title, name or email).
@@ -539,7 +546,8 @@ impl Action {
             | A::EdiscoveryExpire
             | A::MemberComplianceSet
             | A::AuditRead
-            | A::RecordingDownload => AuditVisibility::Sealed,
+            | A::RecordingDownload
+            | A::RecordingTranscriptRead => AuditVisibility::Sealed,
             // Install: exports, imports, keys, install ops, policies, members, owner, jobs,
             // audit verification, mgmt, auth.
             A::ExportStart
@@ -717,6 +725,7 @@ impl Action {
             | A::RecordingAudioRetention
             | A::RecordingAudioPurge
             | A::RecordingRecorderRejoin
+            | A::RecordingSettings
             | A::TranscriptFinal
             | A::MeetingCreate
             | A::MeetingUpdate

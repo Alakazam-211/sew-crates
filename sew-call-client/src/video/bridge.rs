@@ -586,7 +586,8 @@ fn encoder_config(codec: VideoCodec, l: &LayerSpec, content: ContentHint) -> Enc
 
 /// Opens one layer's encoder. An H.264 session must report that the hardware runs it (the
 /// third check of the usable-H.264 test): one that says software, or can't say, is closed and
-/// refused.
+/// refused. On Apple's backend the session's name must also name a hardware encoder
+/// ([`apple_h264_name_is_hardware`]).
 fn open_encoder(
     backend: &Arc<dyn VideoBackend>,
     codec: VideoCodec,
@@ -597,14 +598,38 @@ fn open_encoder(
     let enc = backend.encoder(encoder_config(codec, l, content), wake.clone())?;
     if codec == VideoCodec::H264 {
         let got = enc.implementation();
+        let name = enc.info().name;
+        tracing::info!(target: "sew_call_client", rid = %l.rid, implementation = ?got, encoder = %name, "H.264 session opened");
         if got != Implementation::Hardware {
-            tracing::info!(target: "sew_call_client", rid = %l.rid, implementation = ?got, "the H.264 session is not run by the hardware: refused");
+            tracing::info!(target: "sew_call_client", rid = %l.rid, implementation = ?got, encoder = %name, "the H.264 session is not run by the hardware: refused");
             return Err(KError::Unsupported(
                 "the H.264 session is not hardware".to_owned(),
             ));
         }
+        if backend.capabilities().backend == "apple" && !apple_h264_name_is_hardware(&name) {
+            tracing::info!(target: "sew_call_client", rid = %l.rid, implementation = ?got, encoder = %name, "the H.264 session says hardware but its encoder isn't named as hardware: refused");
+            return Err(KError::Unsupported(
+                "the H.264 session's encoder is not named as hardware".to_owned(),
+            ));
+        }
     }
     Ok(enc)
+}
+
+/// Whether an Apple (VideoToolbox) H.264 session's name, kessel-video's
+/// `EncoderInfo::name`, names a hardware encoder. A session asked for hardware with
+/// low-latency rate control can run on VideoToolbox's software encoder while it reports
+/// hardware, so such a session counts only when its name carries the hardware encoder's id
+/// (`…ave.avc…`); any other session needs the name to say hardware.
+fn apple_h264_name_is_hardware(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    if name.contains("ave.avc") {
+        return true;
+    }
+    if name.contains("rtvc") || name.contains("software") || name.contains("low-latency") {
+        return false;
+    }
+    name.contains("hardware")
 }
 
 /// One layer's encoder in the pipeline.
@@ -2454,21 +2479,24 @@ mod tests {
             max_fps: 30,
             layers: Vec::new(),
         };
-        sew_proto::voice::MediaPolicy {
-            tier: sew_proto::voice::MediaTier::Normal,
-            video_enabled: true,
-            e2ee: "required".to_owned(),
-            audio_codecs: vec!["opus".to_owned()],
-            codecs: codecs.to_vec(),
-            backup_codec: backup,
-            vp9: None,
-            camera: hint.clone(),
-            screen: hint,
-            dynacast: true,
-            adaptive_stream: true,
-            camera_allowed: true,
-            screen_allowed: true,
-            relay_only: false,
+        {
+            let mut media_policy = sew_proto::voice::MediaPolicy::new(
+                sew_proto::voice::MediaTier::Normal,
+                hint.clone(),
+                hint,
+            );
+            media_policy.video_enabled = true;
+            media_policy.e2ee = "required".to_owned();
+            media_policy.audio_codecs = vec!["opus".to_owned()];
+            media_policy.codecs = codecs.to_vec();
+            media_policy.backup_codec = backup;
+            media_policy.vp9 = None;
+            media_policy.dynacast = true;
+            media_policy.adaptive_stream = true;
+            media_policy.camera_allowed = true;
+            media_policy.screen_allowed = true;
+            media_policy.relay_only = false;
+            media_policy
         }
     }
 
@@ -2708,6 +2736,35 @@ mod tests {
             );
             // VP8 is kessel-vp8's software encoder, opened with the default preference.
             assert!(open_encoder(&b, VideoCodec::Vp8, &l, ContentHint::Camera, &wake).is_ok());
+        }
+    }
+
+    /// Apple's H.264 sessions: a low-latency session counts as hardware only when its name
+    /// carries the hardware encoder's id; the software encoder's id never does.
+    #[test]
+    fn apple_h264_names() {
+        for (name, hw) in [
+            ("VideoToolbox H.264 (hardware)", true),
+            (
+                "VideoToolbox H.264 (hardware, low-latency rate control)",
+                false,
+            ),
+            ("VideoToolbox H.264 (software)", false),
+            (
+                "VideoToolbox H.264 (hardware or software: the OS doesn't say)",
+                false,
+            ),
+            (
+                "VideoToolbox H.264 (hardware, low-latency rate control, encoder com.apple.videotoolbox.videoencoder.ave.avc)",
+                true,
+            ),
+            (
+                "VideoToolbox H.264 (hardware, low-latency rate control, encoder com.apple.videotoolbox.videoencoder.h264.rtvc)",
+                false,
+            ),
+            ("", false),
+        ] {
+            assert_eq!(apple_h264_name_is_hardware(name), hw, "{name}");
         }
     }
 
@@ -3367,7 +3424,7 @@ mod tests {
             }
             let fail = self
                 .vp8_failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok();
             if fail {
                 return Err(KError::NoResources);

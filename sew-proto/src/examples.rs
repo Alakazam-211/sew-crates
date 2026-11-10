@@ -83,6 +83,8 @@ mod space_bans;
 mod member_channels;
 // Voice over mgmt.
 mod mgmt_voice;
+// Recording in Apps over mgmt.
+mod mgmt_recordings;
 
 const fn id(seq: u64) -> Id {
     // 23_284_800_123 << 21 = 48_831_765_147_549_696
@@ -573,6 +575,8 @@ fn channel_full() -> Channel {
         recording_auto: false,
         recording_audio_days: None,
         recording_require_consent: None,
+        recording_required: None,
+        recording_rule: crate::recording::RecordingRule::None,
         meeting: None,
         closing: false,
     }
@@ -591,6 +595,8 @@ fn channel_voice() -> Channel {
         recording_auto: true,
         recording_audio_days: Some(30),
         recording_require_consent: Some(true),
+        recording_required: Some(true),
+        recording_rule: crate::recording::RecordingRule::Auto,
         meeting: Some(crate::api::meetings::ChannelMeeting { id: id(600) }),
         closing: true,
         ..channel_full()
@@ -627,6 +633,8 @@ fn channel_min() -> Channel {
         recording_auto: false,
         recording_audio_days: None,
         recording_require_consent: None,
+        recording_required: None,
+        recording_rule: crate::recording::RecordingRule::None,
         meeting: None,
         closing: false,
     }
@@ -693,6 +701,7 @@ impl Example for UpdateChannelRequest {
                     recording_auto: Some(true),
                     recording_audio_days: Patch::Set(30),
                     recording_require_consent: Patch::Clear,
+                    recording_required: Patch::Set(true),
                 },
             ),
             ("min", UpdateChannelRequest::default()),
@@ -1903,6 +1912,8 @@ fn ready_full() -> Ready {
                 recording_auto: false,
                 recording_audio_days: None,
                 recording_require_consent: None,
+                recording_required: None,
+                recording_rule: crate::recording::RecordingRule::None,
             },
             ReadyChannel {
                 id: ID_DM,
@@ -1925,6 +1936,8 @@ fn ready_full() -> Ready {
                 recording_auto: false,
                 recording_audio_days: None,
                 recording_require_consent: None,
+                recording_required: None,
+                recording_rule: crate::recording::RecordingRule::None,
             },
             // An auto-record voice channel.
             ReadyChannel {
@@ -1948,6 +1961,8 @@ fn ready_full() -> Ready {
                 recording_auto: true,
                 recording_audio_days: Some(30),
                 recording_require_consent: Some(true),
+                recording_required: Some(true),
+                recording_rule: crate::recording::RecordingRule::Auto,
             },
         ],
         read_states: vec![read_state::ready_read_state()],
@@ -3314,6 +3329,7 @@ fn policy_patch_full() -> PolicyPatch {
         recording_audio_default_days: Some(30),
         recording_audio_max_days: Some(365),
         recording_require_consent_to_join: Some(false),
+        recording_required: Some(crate::recording::RecordingRequiredPolicy::MultiPerson),
         meetings_enabled: Some(true),
         meetings_create: Some(MeetingsCreate::Admins),
         meetings_max_participants: Some(100),
@@ -3693,6 +3709,7 @@ impl Example for MgmtAppSettingsRequest {
                         "wss://jobs.acme.example".into(),
                         "wss://jobs.example.com:8443".into(),
                     ]),
+                    recording: Some(mgmt_recordings::app_recording_request_full()),
                 },
             ),
             (
@@ -3704,6 +3721,7 @@ impl Example for MgmtAppSettingsRequest {
                     max_level: None,
                     uploads: None,
                     origins: Patch::Clear,
+                    recording: None,
                 },
             ),
             ("min", MgmtAppSettingsRequest::default()),
@@ -3727,6 +3745,7 @@ impl Example for MgmtAppSettings {
                         "wss://jobs.acme.example".into(),
                         "wss://jobs.example.com:8443".into(),
                     ],
+                    recording: mgmt_recordings::app_recording_full(),
                 },
             ),
             (
@@ -3739,6 +3758,7 @@ impl Example for MgmtAppSettings {
                     max_level: SpaceLevel::Moderator,
                     uploads: true,
                     origins: Vec::new(),
+                    recording: MgmtAppRecording::new(),
                 },
             ),
         ]
@@ -3754,6 +3774,10 @@ impl Example for MgmtSpaceSettingsRequest {
                     app_id: Some("jobs".into()),
                     private: Some(true),
                     governance: Some(SpaceGovernance::App),
+                    recording_start_level: Patch::Set(
+                        crate::recording::RecordingStartLevel::Moderator,
+                    ),
+                    recording_required: Patch::Set(true),
                 },
             ),
             ("min", MgmtSpaceSettingsRequest::default()),
@@ -3772,6 +3796,8 @@ impl Example for MgmtSpaceSettings {
                     private: true,
                     join_policy: SpaceJoinPolicy::Invite,
                     governance: SpaceGovernance::App,
+                    recording_start_level: Some(crate::recording::RecordingStartLevel::Moderator),
+                    recording_required: Some(true),
                 },
             ),
             (
@@ -3782,6 +3808,8 @@ impl Example for MgmtSpaceSettings {
                     private: false,
                     join_policy: SpaceJoinPolicy::Open,
                     governance: SpaceGovernance::Sew,
+                    recording_start_level: None,
+                    recording_required: None,
                 },
             ),
         ]

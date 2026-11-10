@@ -563,6 +563,25 @@ impl VoiceService {
         call.withdraw_consent().await.map_err(|e| e.to_info())
     }
 
+    /// `start_recording`: Record (Sew 0.9.0). The host's provider sends it with the person's
+    /// session; pressing Record is the person's own consent, nobody else's. Sew's answer is the
+    /// `recording` event. Errors: `not_in_call`, `not_in_voice` (the join is held for a
+    /// notice), `recording_unsupported` (the provider sends no Record), and Sew's refusals as
+    /// the provider gave them (`recording_active`, `recording_disabled`, `cap_ceiling`, …).
+    pub async fn start_recording(&self) -> Result<(), ErrorInfo> {
+        let call = self.live_call()?;
+        call.start_recording().await.map_err(|e| e.to_info())
+    }
+
+    /// `stop_recording`: Stop (Sew 0.9.0), through the host's provider. Errors: `not_in_call`,
+    /// `no_recording`, `recording_unsupported`, and Sew's refusals (`recording_required`
+    /// while the room requires its recording and two or more people are in it: "Stop
+    /// recording me", `withdraw_consent`, still works).
+    pub async fn stop_recording(&self) -> Result<(), ErrorInfo> {
+        let call = self.live_call()?;
+        call.stop_recording().await.map_err(|e| e.to_info())
+    }
+
     fn live_call(&self) -> Result<Arc<dyn CallHandle>, ErrorInfo> {
         self.lock()
             .call

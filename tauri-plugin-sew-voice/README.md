@@ -103,7 +103,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.5.1"
+tauri-plugin-sew-voice = "0.6.0"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -172,12 +172,19 @@ implements `consent` (Sew's `POST /api/v1/recordings/{id}/consent` with the pers
 without it the answer is refused `consent_unsupported`). The exact payloads are in
 `tests/native-voice-contract.json` (`recording`).
 
+Record and Stop (Sew 0.9.0) are `start_recording` and `stop_recording`, outside
+`sew-voice:default` (permission set `sew-voice:recording`). Your provider's
+`JoinProvider::recording` sends each with the person's session (`RecordingRequest::path` and
+`body`); without it both are refused `recording_unsupported`. Record is the starter's own
+consent and nobody else's:
+
+```js
+await invoke("plugin:sew-voice|start_recording");   // the recording event follows Sew's answer
+await invoke("plugin:sew-voice|stop_recording");    // refused `recording_required` in a room that requires it
+```
+
 On macOS the app needs `NSMicrophoneUsageDescription` in its `Info.plist`, and the
 `com.apple.security.device.audio-input` entitlement for a hardened-runtime build.
-
-**Known advisory (RUSTSEC-2026-0387, P-256).** Through `sew-e2ee`, every join signs with a P-256
-device key via `p256` 0.13, whatever the call's MLS suite; see `sew-e2ee`'s README for what that
-means and our assessment.
 
 ### Content Security Policy
 

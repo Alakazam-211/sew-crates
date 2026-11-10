@@ -1,0 +1,330 @@
+{
+  "$defs": {
+    "AudioState": {
+      "description": "The recording's audio. Stored in `recordings.audio_state`.",
+      "oneOf": [
+        {
+          "const": "available",
+          "description": "Kept.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "Hidden; links may still exist (held or not yet purged).",
+          "type": "string"
+        },
+        {
+          "const": "purged",
+          "description": "Every link deleted; the content key is gone.",
+          "type": "string"
+        }
+      ]
+    },
+    "Consent": {
+      "description": "What a participant said to the recording notice. Stored in\n`recording_participants.consent`.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "In the room, has not answered.",
+          "type": "string"
+        },
+        {
+          "const": "granted",
+          "description": "Agreed.",
+          "type": "string"
+        },
+        {
+          "const": "declined",
+          "description": "Refused; stays in the room unrecorded (unless declining means not joining).",
+          "type": "string"
+        },
+        {
+          "const": "withdrawn",
+          "description": "Agreed earlier, then withdrew.",
+          "type": "string"
+        }
+      ]
+    },
+    "MgmtRecordingParticipant": {
+      "description": "One person of a recording, as an App's server sees them.",
+      "properties": {
+        "consent": {
+          "$ref": "#/$defs/Consent",
+          "description": "What they said to the recording notice."
+        },
+        "external_id": {
+          "description": "The member's external id.",
+          "maxLength": 128,
+          "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63}|erased:[1-9][0-9]{0,18})$",
+          "type": "string"
+        },
+        "recorded": {
+          "description": "Whether any of their speech was recorded.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "external_id",
+        "consent",
+        "recorded"
+      ],
+      "type": "object"
+    },
+    "MgmtRecordingSummary": {
+      "description": "One recording as an App's server sees it: no content, no audio.",
+      "properties": {
+        "audio_keep_days": {
+          "description": "Audio keep days (0 = until the transcript is final).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "audio_state": {
+          "$ref": "#/$defs/AudioState",
+          "description": "The audio (never served to an App)."
+        },
+        "channel_id": {
+          "description": "The voice channel or DM.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "id": {
+          "description": "The recording.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "participants": {
+          "description": "The people in the recording, in member order.",
+          "items": {
+            "$ref": "#/$defs/MgmtRecordingParticipant"
+          },
+          "type": "array"
+        },
+        "record_message_id": {
+          "description": "The record message (its thread holds the transcript turns).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "space_id": {
+          "description": "The Space (absent for a DM call).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "description": "When it started.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "started_by": {
+          "description": "Who started it (for `required`, the person whose join made two).",
+          "maxLength": 128,
+          "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63}|erased:[1-9][0-9]{0,18})$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/RecordingState",
+          "description": "Its state."
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StopReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why it stopped."
+        },
+        "stopped_at": {
+          "description": "When it stopped.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transcript_state": {
+          "$ref": "#/$defs/TranscriptState",
+          "description": "The transcript."
+        },
+        "trigger": {
+          "$ref": "#/$defs/RecordingTrigger",
+          "description": "What started it."
+        }
+      },
+      "required": [
+        "id",
+        "channel_id",
+        "state",
+        "trigger",
+        "started_by",
+        "started_at",
+        "record_message_id",
+        "transcript_state",
+        "audio_state",
+        "audio_keep_days",
+        "participants"
+      ],
+      "type": "object"
+    },
+    "RecordingState": {
+      "description": "A recording's lifecycle state. Stored in `recordings.state`.",
+      "oneOf": [
+        {
+          "const": "starting",
+          "description": "Admitting and certifying the recorder.",
+          "type": "string"
+        },
+        {
+          "const": "recording",
+          "description": "The recorder joined.",
+          "type": "string"
+        },
+        {
+          "const": "stopping",
+          "description": "Draining the recorder.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "Over.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecordingTrigger": {
+      "description": "What started a recording. Stored in `recordings.trigger`.",
+      "oneOf": [
+        {
+          "const": "manual",
+          "description": "A person pressed Record (the start route).",
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "An auto-record room's first join.",
+          "type": "string"
+        },
+        {
+          "const": "required",
+          "description": "The room reached two people while recording is required.",
+          "type": "string"
+        }
+      ]
+    },
+    "StopReason": {
+      "description": "Why a recording stopped. Stored in `recordings.stop_reason`.",
+      "oneOf": [
+        {
+          "const": "stopped",
+          "description": "The stop route.",
+          "type": "string"
+        },
+        {
+          "const": "room_empty",
+          "description": "No standard voice entries left in the room.",
+          "type": "string"
+        },
+        {
+          "const": "call_ended",
+          "description": "The DM call ended.",
+          "type": "string"
+        },
+        {
+          "const": "max_duration",
+          "description": "`recording.max_duration_ms` reached.",
+          "type": "string"
+        },
+        {
+          "const": "recorder_failed",
+          "description": "The recorder failed (join timeout, certificate, unreachable, too many rejoins).",
+          "type": "string"
+        },
+        {
+          "const": "media_restarted",
+          "description": "The engine room was lost beyond the re-admit grace.",
+          "type": "string"
+        },
+        {
+          "const": "storage_full",
+          "description": "Three consecutive `storage_full` segment writes.",
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "Recording was disabled (policy, config, archive, `sew recording disable`).",
+          "type": "string"
+        },
+        {
+          "const": "max_bytes",
+          "description": "`recording.max_bytes` reached.",
+          "type": "string"
+        },
+        {
+          "const": "mgmt_stopped",
+          "description": "Stopped over the management API (the App or K2 governing the room).",
+          "type": "string"
+        }
+      ]
+    },
+    "TranscriptState": {
+      "description": "The transcript. Stored in `recordings.transcript_state`.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "No segment transcribed yet.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Turns are being posted.",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "Final, complete.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "Final, with gaps or failed segments.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Final, no turn posted and at least one segment failed.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `GET /mgmt/v1/spaces/{space_id}/recordings`: oldest first.",
+  "properties": {
+    "items": {
+      "description": "The recordings.",
+      "items": {
+        "$ref": "#/$defs/MgmtRecordingSummary"
+      },
+      "type": "array"
+    },
+    "next": {
+      "description": "The `after` of the next page; absent on the last.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "MgmtRecordingsPage",
+  "type": "object"
+}

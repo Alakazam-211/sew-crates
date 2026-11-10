@@ -58,6 +58,13 @@
         "null"
       ]
     },
+    "recording_required": {
+      "description": "Voice channels only: set or clear (inherit) \"record every call with more than one\nperson\". `false` never removes a rule the Space, its App or the org sets. Needs\nMANAGE_CHANNELS and RECORD_CALLS; on another channel type `400 validation_failed`,\nfield `recording_required`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "slug": {
       "description": "A new slug.",
       "pattern": "^[a-z0-9][a-z0-9-]{0,79}$",

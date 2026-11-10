@@ -13,7 +13,7 @@ use hpke::kem::{DhP256HkdfSha256, X25519HkdfSha256};
 use hpke::{Deserializable, HpkeError, Kem, OpModeR, OpModeS, Serializable};
 use openmls_traits::types::{HpkeAeadType, HpkeConfig, HpkeKdfType, HpkeKemType};
 
-use crate::rng::Rng09;
+use crate::rng::Rng10;
 
 /// Why an HPKE operation failed; each `OpenMlsCrypto` method maps it to its own `CryptoError`
 /// the way `openmls_rust_crypto` mapped `hpke-rs`' errors.
@@ -87,8 +87,14 @@ fn seal_t<A: Aead, K: Kdf, M: Kem>(
     rng: &mut (impl rand_core::RngCore + rand_core::CryptoRng),
 ) -> Result<(Vec<u8>, Vec<u8>), Fail> {
     let pk = M::PublicKey::from_bytes(pk_r)?;
-    let (enc, ct) =
-        hpke::single_shot_seal::<A, K, M, _>(&OpModeS::Base, &pk, info, pt, aad, &mut Rng09(rng))?;
+    let (enc, ct) = hpke::single_shot_seal_with_rng::<A, K, M>(
+        &OpModeS::Base,
+        &pk,
+        info,
+        pt,
+        aad,
+        &mut Rng10(rng),
+    )?;
     Ok((enc.to_bytes().to_vec(), ct))
 }
 
@@ -149,7 +155,8 @@ fn sender_export_t<A: Aead, K: Kdf, M: Kem>(
     rng: &mut (impl rand_core::RngCore + rand_core::CryptoRng),
 ) -> Result<(Vec<u8>, Vec<u8>), Fail> {
     let pk = M::PublicKey::from_bytes(pk_r)?;
-    let (enc, ctx) = hpke::setup_sender::<A, K, M, _>(&OpModeS::Base, &pk, info, &mut Rng09(rng))?;
+    let (enc, ctx) =
+        hpke::setup_sender_with_rng::<A, K, M>(&OpModeS::Base, &pk, info, &mut Rng10(rng))?;
     let mut out = vec![0u8; len];
     ctx.export(exporter_context, &mut out)?;
     Ok((enc.to_bytes().to_vec(), out))
@@ -185,7 +192,10 @@ fn receiver_export_t<A: Aead, K: Kdf, M: Kem>(
     Ok(out)
 }
 
-/// DeriveKeyPair(ikm) of the suite's KEM: `(private, public)`.
+/// DeriveKeyPair(ikm) of the suite's KEM: `(private, public)`. An X25519 private key comes out
+/// clamped (RFC 9180 §7.1.2: SerializePrivateKey clamps; `hpke` 0.14 and later do), where
+/// `hpke` 0.13 and `openmls_rust_crypto` gave the unclamped bytes; the public key is the same,
+/// and either form of the private key opens the same ciphertexts (DeserializePrivateKey clamps).
 pub(crate) fn derive_keypair(config: HpkeConfig, ikm: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Fail> {
     // The KDF and AEAD do not take part in DeriveKeyPair (the KEM has its own KDF); dispatching
     // on the whole config still refuses an unsupported KEM the same way.
@@ -235,6 +245,19 @@ mod tests {
     }
 
     impl rand_core::CryptoRng for Replay {}
+
+    /// The vector's private key as DeriveKeyPair serializes it: an X25519 key clamped
+    /// (RFC 9180 §7.1.2; the published vectors list it unclamped).
+    #[cfg(feature = "rfc9180-vectors")]
+    fn serialized_sk(v: &Value, sk: Vec<u8>) -> Vec<u8> {
+        let mut sk = sk;
+        if v["kem_id"] == 0x20 {
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
+        }
+        sk
+    }
 
     #[cfg(feature = "rfc9180-vectors")]
     fn h(v: &Value, k: &str) -> Vec<u8> {
@@ -290,14 +313,15 @@ mod tests {
             let (sk_r, pk_r) = (h(v, "skRm"), h(v, "pkRm"));
             let info = h(v, "info");
             // DeriveKeyPair, both key pairs.
+            let (sk_r_derived, pk_r_derived) = derive_keypair(config(v), &h(v, "ikmR")).unwrap();
             assert_eq!(
-                derive_keypair(config(v), &h(v, "ikmR")).unwrap(),
-                (sk_r.clone(), pk_r.clone()),
+                (sk_r_derived.clone(), pk_r_derived),
+                (serialized_sk(v, sk_r.clone()), pk_r.clone()),
                 "{name}: DeriveKeyPair(ikmR)"
             );
             assert_eq!(
                 derive_keypair(config(v), &h(v, "ikmE")).unwrap(),
-                (h(v, "skEm"), h(v, "pkEm")),
+                (serialized_sk(v, h(v, "skEm")), h(v, "pkEm")),
                 "{name}: DeriveKeyPair(ikmE)"
             );
             let enc = h(v, "enc");

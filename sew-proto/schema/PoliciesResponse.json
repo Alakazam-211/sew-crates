@@ -351,6 +351,11 @@
           "description": "Declining the recording notice means not joining.",
           "type": "boolean"
         },
+        "recording.required": {
+          "$ref": "#/$defs/RecordingRequiredPolicy",
+          "default": "off",
+          "description": "Whether every call with two or more people is recorded: `multi_person` starts a\nrecording when a room reaches two people (DM calls too while `recording.dm_enabled` is\non). Apps, Spaces and voice channels may require it where this is `off`. Old payloads\nread `off`."
+        },
         "retention.default_days": {
           "description": "Company retention default in days; 0 = forever.",
           "format": "uint32",
@@ -384,6 +389,21 @@
         "agents.allowed_in_dms"
       ],
       "type": "object"
+    },
+    "RecordingRequiredPolicy": {
+      "description": "Org policy `recording.required`: whether rooms record every call with two or more\npeople.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "Not required by the org (the default; Apps, Spaces and channels may still require\nit).",
+          "type": "string"
+        },
+        {
+          "const": "multi_person",
+          "description": "Every call with two or more people is recorded.",
+          "type": "string"
+        }
+      ]
     },
     "SpacesCreate": {
       "description": "`spaces.create`: who can create spaces.",

@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "MgmtTranscriptTurn": {
+      "description": "One transcript turn as an App's server reads it.",
+      "properties": {
+        "end_ms": {
+          "description": "End, ms from the recording start.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message_id": {
+          "description": "The turn's message (a reply in the record message's thread).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "speaker_external_id": {
+          "description": "The speaker's external id.",
+          "maxLength": 128,
+          "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63}|erased:[1-9][0-9]{0,18})$",
+          "type": "string"
+        },
+        "start_ms": {
+          "description": "Start, ms from the recording start.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "What was said, as posted in the turn message (markdown-escaped).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message_id",
+        "speaker_external_id",
+        "start_ms",
+        "end_ms",
+        "text"
+      ],
+      "type": "object"
+    },
+    "TranscriptState": {
+      "description": "The transcript. Stored in `recordings.transcript_state`.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "No segment transcribed yet.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Turns are being posted.",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "Final, complete.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "Final, with gaps or failed segments.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Final, no turn posted and at least one segment failed.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `GET /mgmt/v1/recordings/{id}/transcript`: turns in spoken order.",
+  "properties": {
+    "next": {
+      "description": "The `after` of the next page; absent on the last page posted so far.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "recording_id": {
+      "description": "The recording.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "transcript_state": {
+      "$ref": "#/$defs/TranscriptState",
+      "description": "The transcript's state (`running`: more turns may come)."
+    },
+    "turns": {
+      "description": "The turns.",
+      "items": {
+        "$ref": "#/$defs/MgmtTranscriptTurn"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "recording_id",
+    "transcript_state",
+    "turns"
+  ],
+  "title": "MgmtTranscriptPage",
+  "type": "object"
+}

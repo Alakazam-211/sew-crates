@@ -208,6 +208,18 @@ impl VoiceControl {
         self.service.withdraw_consent().await
     }
 
+    /// Record (Sew 0.9.0), as the `start_recording` command: the person's own act, sent by
+    /// the host's provider; the `recording` event (and `on_recording`) follow Sew's answer.
+    pub async fn start_recording(&self) -> Result<(), ErrorInfo> {
+        self.service.start_recording().await
+    }
+
+    /// Stop (Sew 0.9.0), as the `stop_recording` command. Refused `recording_required` while
+    /// the room requires its recording and two or more people are in it.
+    pub async fn stop_recording(&self) -> Result<(), ErrorInfo> {
+        self.service.stop_recording().await
+    }
+
     /// The state now: state, target, room, participants, call_id and recording. Sync and
     /// cheap; safe from any thread except inside a listener method.
     pub fn snapshot(&self) -> StateSnapshot {

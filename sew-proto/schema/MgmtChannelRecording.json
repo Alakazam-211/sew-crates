@@ -1,0 +1,72 @@
+{
+  "$defs": {
+    "RecordingRule": {
+      "description": "The rule a voice room records under, as its settings and their sources resolve it.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "People press Record.",
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "The room records from its first join.",
+          "type": "string"
+        },
+        {
+          "const": "required",
+          "description": "The room records every call with two or more people.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A voice room's recording settings: the answer of\n`POST /mgmt/v1/channels/{channel_id}/recording`.",
+  "properties": {
+    "audio_days": {
+      "description": "The room's default audio keep days; absent when it inherits the org's.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "auto": {
+      "description": "Records from the room's first join.",
+      "type": "boolean"
+    },
+    "channel_id": {
+      "description": "The voice channel.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "require_consent": {
+      "description": "Declining means not joining; absent when it inherits the org policy.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "required": {
+      "description": "The room's own \"record every call with two or more people\"; absent when it inherits.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "rule": {
+      "$ref": "#/$defs/RecordingRule",
+      "description": "The rule the room records under now, every source applied."
+    }
+  },
+  "required": [
+    "channel_id",
+    "auto",
+    "rule"
+  ],
+  "title": "MgmtChannelRecording",
+  "type": "object"
+}

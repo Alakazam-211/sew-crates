@@ -7,7 +7,6 @@ all-features = false
 [advisories]
 version = 2
 ignore = [
-  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 through p256 0.13. Sew's assessment, from source review: sew-e2ee's device-key signing (ECDSA P-256, on every join whatever the MLS suite) and sew-mls-crypto's P-256 suite reach only crypto-bigint 0.5.5 operations outside the affected code. Not verified with cargo checkct. The fix needs p256 0.14 (crypto-bigint 0.7.9+), a planned RustCrypto upgrade; see sew-e2ee's README." },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 is unmaintained. Sew's assessment: it comes only through Tauri's GTK3 stack (glib-macros, gtk3-macros) and is a proc-macro, run at compile time only, with no code in the built binary." },
   { id = "RUSTSEC-2026-0370", reason = "zvariant 4.2.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names 3.0.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },

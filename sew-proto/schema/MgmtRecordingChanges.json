@@ -1,0 +1,101 @@
+{
+  "$defs": {
+    "MgmtRecordingChange": {
+      "description": "One event of an App's recording feed. No content.",
+      "properties": {
+        "at": {
+          "description": "When it happened.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "channel_id": {
+          "description": "Its voice channel.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RecordingEventKind",
+          "description": "What happened."
+        },
+        "recording_id": {
+          "description": "The recording.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "seq": {
+          "description": "The event's place in the App's feed (increasing; gaps are never skipped events).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "space_id": {
+          "description": "Its Space (one the App governed when it happened).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "kind",
+        "recording_id",
+        "space_id",
+        "channel_id",
+        "at"
+      ],
+      "type": "object"
+    },
+    "RecordingEventKind": {
+      "description": "What an event of an App's recording feed is. Stored in `recording_events.kind`.",
+      "oneOf": [
+        {
+          "const": "started",
+          "description": "A recording started.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "A recording stopped.",
+          "type": "string"
+        },
+        {
+          "const": "transcript_ready",
+          "description": "Its transcript became final.",
+          "type": "string"
+        },
+        {
+          "const": "audio_expired",
+          "description": "Its audio expired.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "Its record message was deleted.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `GET /mgmt/v1/apps/{app_id}/recordings/changes`.",
+  "properties": {
+    "items": {
+      "description": "The events, oldest first.",
+      "items": {
+        "$ref": "#/$defs/MgmtRecordingChange"
+      },
+      "type": "array"
+    },
+    "next": {
+      "description": "The `after` of the next call (the last event's `seq`, or the query's `after` when\nthere was none).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "items",
+    "next"
+  ],
+  "title": "MgmtRecordingChanges",
+  "type": "object"
+}

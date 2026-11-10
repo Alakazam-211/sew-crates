@@ -169,6 +169,11 @@
           "type": "string"
         },
         {
+          "const": "recording.required",
+          "description": "Whether every call with two or more people is recorded (`off` or `multi_person`).",
+          "type": "string"
+        },
+        {
           "const": "meetings.enabled",
           "description": "Meetings on/off.",
           "type": "string"

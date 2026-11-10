@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/recordings/{id}/stop`.",
+  "properties": {
+    "app_id": {
+      "description": "Always absent: an App never stops a recording, so a stop naming one is refused\n(`400 validation_failed`, field `app_id`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "MgmtRecordingStopRequest",
+  "type": "object"
+}

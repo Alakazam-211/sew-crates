@@ -201,6 +201,7 @@ pub struct ReadyCategory {
 
 /// A channel in READY: every channel the member belongs to, plus DMs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ReadyChannel {
     /// The channel id.
     pub id: Id,
@@ -259,6 +260,48 @@ pub struct ReadyChannel {
     /// absent = the org policy `recording.require_consent_to_join`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_require_consent: Option<bool>,
+    /// Voice channels: the channel's own "record every call with more than one person";
+    /// absent = it inherits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_required: Option<bool>,
+    /// The rule the room records under, every source applied (`auto`, `required`); absent =
+    /// `none`.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::recording::RecordingRule::is_none"
+    )]
+    pub recording_rule: crate::recording::RecordingRule,
+}
+
+impl ReadyChannel {
+    /// A READY channel with its required fields and the member's perms: position 0, head 0,
+    /// no DM members, every optional field unset.
+    pub fn new(id: Id, kind: ChannelType, visibility: Visibility, my_perms: Perms) -> Self {
+        ReadyChannel {
+            id,
+            space_id: None,
+            category_id: None,
+            kind,
+            visibility,
+            slug: None,
+            name: None,
+            position: 0,
+            head_seq: 0,
+            last_message_id: None,
+            my_perms,
+            dm_member_ids: Vec::new(),
+            slow_mode_s: None,
+            retention_days: None,
+            file_retention_days: None,
+            has_guests: false,
+            assistant_reader_ids: Vec::new(),
+            recording_auto: false,
+            recording_audio_days: None,
+            recording_require_consent: None,
+            recording_required: None,
+            recording_rule: crate::recording::RecordingRule::None,
+        }
+    }
 }
 
 /// The threads inbox summary (READY, `GET /api/v1/me/threads/summary`, thread events).

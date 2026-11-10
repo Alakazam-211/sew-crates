@@ -9,6 +9,11 @@
 //! is held at [`CallState::ConsentRequired`] (no media, no keys, nothing captured) until the
 //! host answers or leaves. No answer is never consent: this device's key reaches the recorder
 //! only after Sew says `granted`.
+//!
+//! Record and Stop (Sew 0.9.0): [`Call::start_recording`] and [`Call::stop_recording`], the
+//! person's own acts, also through the host ([`JoinProvider::recording`]). The recording says
+//! what started it ([`CallRecording::trigger`]) and whether the room requires it
+//! ([`CallRecording::required`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,8 +26,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::config::ClientConfig;
 use crate::e2ee::E2eeProvider;
 use crate::engine;
-use crate::provider::{ConsentRequired, JoinProvider, JoinRequest, ProviderError};
+use crate::provider::{
+    ConsentRequired, JoinProvider, JoinRequest, ProviderError, RecordingControl,
+};
 use crate::stats::{CallStatsReport, PlayoutStats, StatsWindow};
+use sew_proto::recording::RecordingTrigger;
 
 /// Frames the send queue holds (20 ms each: one second).
 pub(crate) const SEND_QUEUE: usize = 50;
@@ -190,12 +198,39 @@ pub struct CallRecording {
     pub consent_prompt: Option<sew_proto::recording::ConsentPrompt>,
     /// Everyone in it.
     pub participants: Vec<RecordingMember>,
+    /// What started it (Sew 0.9.0): a person pressing Record (`manual`), an auto-record
+    /// room's first join (`auto`), or the room reaching two people while it requires recording
+    /// (`required`). From `auto` against an older Sew.
+    pub trigger: RecordingTrigger,
+    /// The room requires its recording (Sew 0.9.0): it records every call with two or more
+    /// people in it, so Sew refuses a Stop (`recording_required`) while two or more are in the
+    /// room. "Stop recording me" ([`Call::withdraw_consent`]) always works. True when Sew
+    /// started it under that rule (`trigger: required`) or its notice says so
+    /// (`consent_prompt.required`).
+    pub required: bool,
+}
+
+/// What started `r`: Sew's `trigger`. An older Sew sends none (read as `manual`), so an
+/// automatic start there shows only in `auto`: `auto` with `manual` reads as `auto` (Sew 0.9.0
+/// never sends that pair: a required start has `auto` and `required`).
+fn trigger_of(r: &sew_proto::recording::Recording) -> RecordingTrigger {
+    if r.auto && r.trigger == RecordingTrigger::Manual {
+        RecordingTrigger::Auto
+    } else {
+        r.trigger
+    }
+}
+
+/// The notice says the room requires recording (its `required` slot).
+fn prompt_required(p: &sew_proto::recording::ConsentPrompt) -> bool {
+    p.required
 }
 
 impl CallRecording {
     /// The recording in Sew's shape (the member's own view).
     pub fn from_sew(r: &sew_proto::recording::Recording) -> CallRecording {
         use sew_proto::recording::Capture;
+        let trigger = trigger_of(r);
         CallRecording {
             recording_id: r.id.to_string(),
             auto: r.auto,
@@ -211,6 +246,9 @@ impl CallRecording {
                     recorded: p.capture == Some(Capture::Recorded),
                 })
                 .collect(),
+            trigger,
+            required: trigger == RecordingTrigger::Required
+                || r.consent_prompt.as_ref().is_some_and(prompt_required),
         }
     }
 
@@ -222,20 +260,33 @@ impl CallRecording {
                 let mut out = CallRecording::from_sew(r);
                 out.consent_prompt = Some(c.consent_prompt.clone());
                 out.my_consent = RecordingConsent::Pending;
+                out.required |= prompt_required(&c.consent_prompt);
                 out
             }
-            None => CallRecording {
-                recording_id: c.consent_prompt.recording_id.to_string(),
-                auto: c.auto,
-                started_by: c
-                    .consent_prompt
-                    .started_by
-                    .as_ref()
-                    .map(|m| m.member_id.to_string()),
-                my_consent: RecordingConsent::Pending,
-                consent_prompt: Some(c.consent_prompt.clone()),
-                participants: Vec::new(),
-            },
+            // No recording yet: the answer is held for the one the room starts (an
+            // auto-record room's first join, or a room that requires recording once a second
+            // person joins).
+            None => {
+                let required = prompt_required(&c.consent_prompt);
+                CallRecording {
+                    recording_id: c.consent_prompt.recording_id.to_string(),
+                    auto: c.auto,
+                    started_by: c
+                        .consent_prompt
+                        .started_by
+                        .as_ref()
+                        .map(|m| m.member_id.to_string()),
+                    my_consent: RecordingConsent::Pending,
+                    consent_prompt: Some(c.consent_prompt.clone()),
+                    participants: Vec::new(),
+                    trigger: if required && !c.auto {
+                        RecordingTrigger::Required
+                    } else {
+                        RecordingTrigger::from_auto(c.auto)
+                    },
+                    required,
+                }
+            }
         }
     }
 }
@@ -612,6 +663,11 @@ pub(crate) enum Cmd {
         notice_version: Option<u32>,
         reply: oneshot::Sender<Result<(), CallError>>,
     },
+    /// The person's Record or Stop.
+    Recording {
+        control: RecordingControl,
+        reply: oneshot::Sender<Result<(), CallError>>,
+    },
     NetworkChanged,
     /// A video sink opened, changed, asked for a keyframe or closed.
     Video(crate::video::subscribe::SinkCmd),
@@ -962,6 +1018,35 @@ impl Call {
     /// answer it is a decline.
     pub async fn withdraw_consent(&self) -> Result<(), CallError> {
         self.answer(false, None).await
+    }
+
+    /// Record (Sew 0.9.0): the person starts recording the call's room through the host
+    /// ([`JoinProvider::recording`], with the person's own session). Pressing Record is the
+    /// person's own consent, so show the notice as a confirmation first; everyone else stays
+    /// unrecorded until they answer. Sew's answer is the call's recording at once
+    /// ([`Call::recording`], [`CallEvent::Recording`]). Refusals are Sew's, as
+    /// `Provider(Refused { code, .. })` (`recording_active`, `recording_disabled`,
+    /// `cap_ceiling`, …); while the join is held for a notice the person is not in the room
+    /// yet, and it is refused `not_in_voice` without asking Sew.
+    pub async fn start_recording(&self) -> Result<(), CallError> {
+        self.control(RecordingControl::Start).await
+    }
+
+    /// Stop (Sew 0.9.0): the person stops the room's active recording through the host
+    /// ([`JoinProvider::recording`]). [`CallError::NoRecording`] when none is active. Sew
+    /// refuses `recording_required` while the room requires its recording and two or more
+    /// people are in it ([`CallRecording::required`]); "Stop recording me"
+    /// ([`Call::withdraw_consent`]) still works then.
+    pub async fn stop_recording(&self) -> Result<(), CallError> {
+        self.control(RecordingControl::Stop).await
+    }
+
+    async fn control(&self, control: RecordingControl) -> Result<(), CallError> {
+        let (reply, rx) = oneshot::channel();
+        self.cmd
+            .send(Cmd::Recording { control, reply })
+            .map_err(|_| CallError::Ended)?;
+        rx.await.map_err(|_| CallError::Ended)?
     }
 
     async fn answer(&self, granted: bool, notice_version: Option<u32>) -> Result<(), CallError> {

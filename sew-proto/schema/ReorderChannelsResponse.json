@@ -154,6 +154,17 @@
             "null"
           ]
         },
+        "recording_required": {
+          "description": "Voice channels: the channel's own \"record every call with more than one person\";\nabsent = it inherits (its Space, its governing App and the org policy may still require\nit; `false` never removes their rule).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "recording_rule": {
+          "$ref": "#/$defs/RecordingRule",
+          "description": "Voice channels, DMs and group DMs: the rule the room records under, every source\napplied: `auto` (a recording starts on the first join), `required` (every call with\nmore than one person is recorded) or `none` (people press Record). Absent = `none`."
+        },
         "retention_days": {
           "description": "Effective message retention in days (holds ignored). Absent = forever.",
           "format": "uint32",
@@ -265,6 +276,26 @@
         {
           "const": "group_dm",
           "description": "A group DM of up to 9 people.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecordingRule": {
+      "description": "The rule a voice room records under, as its settings and their sources resolve it.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "People press Record.",
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "The room records from its first join.",
+          "type": "string"
+        },
+        {
+          "const": "required",
+          "description": "The room records every call with two or more people.",
           "type": "string"
         }
       ]

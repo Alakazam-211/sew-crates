@@ -37,6 +37,7 @@ pub const REASON_CAP_CEILING: &str = "cap_ceiling";
 
 /// A cap Sew knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum PassCap {
     /// `chat:read`: read what the member's permissions show. Required in every claim.
     ChatRead,
@@ -52,16 +53,22 @@ pub enum PassCap {
     /// (a join's `self_video` is dropped) and a lease request answers the cap refusal.
     /// `voice:join` is still what lets a session join at all.
     VoiceVideo,
+    /// `voice:record`: start and stop recordings, set a recording's audio keep days and a
+    /// channel's recording fields, but only for a session whose App requires it
+    /// (`recording.cap_required`). A ceiling only: it never grants RECORD_CALLS, and
+    /// answering or withdrawing consent is never gated.
+    VoiceRecord,
 }
 
 impl PassCap {
     /// Every cap, in bit order.
-    pub const ALL: [PassCap; 5] = [
+    pub const ALL: [PassCap; 6] = [
         PassCap::ChatRead,
         PassCap::ChatPost,
         PassCap::ChatRespond,
         PassCap::VoiceJoin,
         PassCap::VoiceVideo,
+        PassCap::VoiceRecord,
     ];
 
     /// The wire string.
@@ -72,6 +79,7 @@ impl PassCap {
             PassCap::ChatRespond => "chat:respond",
             PassCap::VoiceJoin => "voice:join",
             PassCap::VoiceVideo => "voice:video",
+            PassCap::VoiceRecord => "voice:record",
         }
     }
 
@@ -99,6 +107,13 @@ impl PassCap {
                  self_video is dropped) and the join answer's media shows camera_allowed and \
                  screen_allowed false"
             }
+            PassCap::VoiceRecord => {
+                "only when the session's App sets recording.cap_required: POST \
+                 /api/v1/channels/{id}/recording/start, /recordings/{id}/stop, \
+                 /recordings/{id}/audio/retention, and /channels/{id}/update with a recording \
+                 field; without it RECORD_CALLS is left out of the session's reported perms. \
+                 Consent is never gated"
+            }
         }
     }
 
@@ -109,6 +124,7 @@ impl PassCap {
             PassCap::ChatRespond => 4,
             PassCap::VoiceJoin => 8,
             PassCap::VoiceVideo => 16,
+            PassCap::VoiceRecord => 32,
         }
     }
 }
@@ -125,7 +141,7 @@ pub struct CapSet(u8);
 
 impl CapSet {
     /// Every known bit.
-    const MASK: u8 = 0b1_1111;
+    const MASK: u8 = 0b11_1111;
 
     /// No caps.
     pub const fn empty() -> CapSet {
@@ -344,15 +360,20 @@ mod tests {
     #[test]
     fn cap_set_bits() {
         let all: CapSet = PassCap::ALL.into_iter().collect();
-        assert_eq!(all.bits(), 0b1_1111);
+        assert_eq!(all.bits(), 0b11_1111);
         for c in PassCap::ALL {
             assert_eq!(PassCap::parse(c.as_str()), Some(c));
             let one = CapSet::empty().with(c);
             assert_eq!(CapSet::from_bits(one.bits()), Some(one));
             assert!(one.contains(c));
         }
-        assert_eq!(CapSet::from_bits(0b10_0000), None);
+        assert_eq!(CapSet::from_bits(0b100_0000), None);
         assert_eq!(PassCap::parse("voice:video"), Some(PassCap::VoiceVideo));
+        assert_eq!(PassCap::parse("voice:record"), Some(PassCap::VoiceRecord));
+        assert_eq!(
+            CapSet::from_bits(32).map(CapSet::names),
+            Some(vec!["voice:record"])
+        );
         let a = CapSet::empty()
             .with(PassCap::ChatRead)
             .with(PassCap::VoiceJoin);

@@ -61,7 +61,7 @@ use crate::e2ee::{
 use crate::pc::{IceState, Pc, PcEvent};
 use crate::provider::{
     CallCredential, ConsentAnswer, ConsentRequired, JoinAnswer, JoinProvider, JoinRequest,
-    ProviderError, RejoinReason,
+    ProviderError, RecordingControl, RecordingRequest, RejoinReason,
 };
 use crate::signal::{self, ConnectError, SignalIn, SignalLink};
 use crate::stats::{BeaconOutcome, CallStatsReport, Meter, PlayoutStats, StatsWindow};
@@ -344,6 +344,13 @@ async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
                 }
                 // Held: no media, so no video.
                 Some(Cmd::Publish(v)) => v.refuse(),
+                // Held: the person has no voice entry in the room yet.
+                Some(Cmd::Recording { reply, .. }) => {
+                    let _ = reply.send(Err(CallError::Provider(ProviderError::Refused {
+                        code: sew_proto::recording::reasons::NOT_IN_VOICE.to_owned(),
+                        detail: serde_json::Value::Null,
+                    })));
+                }
                 Some(Cmd::Mute {
                     muted,
                     deafened,
@@ -476,11 +483,14 @@ fn held_failed(p: &Parts, e: &ProviderError) {
     held_end(p, reason);
 }
 
-/// A consent answer sent through the host, back to the engine.
+/// A consent answer, or a Record or Stop (`control`), sent through the host, back to the
+/// engine.
 struct Consented {
     result: Result<Recording, ProviderError>,
     granted: bool,
     notice_version: Option<u32>,
+    /// A Record or Stop's answer (`granted` and `notice_version` unused).
+    control: Option<RecordingControl>,
     reply: tokio::sync::oneshot::Sender<Result<(), CallError>>,
 }
 
@@ -1022,6 +1032,9 @@ impl Engine {
                     notice_version,
                     reply,
                 })) => self.start_consent(granted, notice_version, reply),
+                Step::Cmd(Some(Cmd::Recording { control, reply })) => {
+                    self.start_control(control, reply);
+                }
                 Step::Consented(Some(d)) => self.on_consented(d),
                 Step::Consented(None) => {}
                 Step::Push(Some(f)) => self.send_frame(now, f),
@@ -1420,14 +1433,62 @@ impl Engine {
                 result,
                 granted,
                 notice_version,
+                control: None,
+                reply,
+            });
+        });
+    }
+
+    /// The person's Record or Stop, sent through the provider off the loop. A Stop needs the
+    /// active recording.
+    fn start_control(
+        &mut self,
+        control: RecordingControl,
+        reply: tokio::sync::oneshot::Sender<Result<(), CallError>>,
+    ) {
+        let mut req = match control {
+            RecordingControl::Start => {
+                RecordingRequest::start(&self.req.target, &self.req.room, self.channel)
+            }
+            RecordingControl::Stop => {
+                let Some(rec) = &self.recording else {
+                    let _ = reply.send(Err(CallError::NoRecording));
+                    return;
+                };
+                RecordingRequest::stop(&self.req.target, &self.req.room, rec.channel_id, rec.id)
+            }
+        };
+        req.device_id = self.keys.as_ref().and_then(|k| k.device_id());
+        tracing::info!(target: "sew_call_client", ?control, "sending the recording control");
+        let provider = self.provider.clone();
+        let tx = self.consent_tx.clone();
+        tokio::spawn(async move {
+            let result = provider.recording(req).await;
+            let _ = tx.send(Consented {
+                result,
+                granted: false,
+                notice_version: None,
+                control: Some(control),
                 reply,
             });
         });
     }
 
     /// Sew's answer to a consent: its recording view is the call's (a grant releases the key
-    /// from here on, a withdrawal rekeys); the answer is kept for re-joins.
+    /// from here on, a withdrawal rekeys); the answer is kept for re-joins. Sew's answer to a
+    /// Record or Stop is the call's recording too (a stopped one clears it).
     fn on_consented(&mut self, d: Consented) {
+        if d.control.is_some() {
+            let out = match d.result {
+                Ok(rec) => {
+                    self.apply_recording(Some(rec));
+                    Ok(())
+                }
+                Err(e) => Err(CallError::Provider(e)),
+            };
+            let _ = d.reply.send(out);
+            return;
+        }
         match d.result {
             Ok(rec) => {
                 match (d.notice_version, &mut self.req.recording_notice) {

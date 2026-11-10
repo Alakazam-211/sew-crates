@@ -43,10 +43,13 @@ fn no_video<T>() -> Result<T, EngineError> {
 /// `recording_notice`, returns Sew's `409 recording_consent_required` as
 /// [`ProviderError::ConsentRequired`] ([`ProviderError::from_sew_error`] reads Sew's error body,
 /// or an App server route's that passes it on unchanged), and sends the person's consent
-/// answers ([`JoinProvider::consent`], [`ConsentAnswer`]) with the person's own session.
+/// answers ([`JoinProvider::consent`], [`ConsentAnswer`]) with the person's own session. Sew
+/// 0.9.0: it also sends the person's Record and Stop ([`JoinProvider::recording`],
+/// [`RecordingRequest`]) the same way.
 pub use sew_call_client::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
-    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RejoinReason,
+    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED, RecordingControl,
+    RecordingRequest, RejoinReason,
 };
 
 /// Reads the App server route's `200` body, `{"join": <Sew's VoiceJoinResponse, unchanged>,
@@ -239,6 +242,21 @@ pub trait CallHandle: Send + Sync + 'static {
     fn withdraw_consent(&self) -> BoxFuture<'_, Result<(), EngineError>> {
         Box::pin(std::future::ready(Err(EngineError::failed(
             crate::wire::code::CONSENT_UNSUPPORTED,
+        ))))
+    }
+    /// Record (Sew 0.9.0): the person starts recording the call's room through the host's
+    /// provider ([`JoinProvider::recording`]); Sew's answer becomes the `recording` event.
+    /// The default answers `recording_unsupported`.
+    fn start_recording(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(std::future::ready(Err(EngineError::failed(
+            crate::wire::code::RECORDING_UNSUPPORTED,
+        ))))
+    }
+    /// Stop (Sew 0.9.0): the person stops the room's active recording through the host's
+    /// provider. The default answers `recording_unsupported`.
+    fn stop_recording(&self) -> BoxFuture<'_, Result<(), EngineError>> {
+        Box::pin(std::future::ready(Err(EngineError::failed(
+            crate::wire::code::RECORDING_UNSUPPORTED,
         ))))
     }
     /// The device's network changed (a phone's `NWPathMonitor` or `ConnectivityManager`): run

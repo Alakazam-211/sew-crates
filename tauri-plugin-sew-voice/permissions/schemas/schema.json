@@ -535,6 +535,18 @@
           "markdownDescription": "Denies the set_video_device command without any pre-configured scope."
         },
         {
+          "description": "Enables the start_recording command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-recording",
+          "markdownDescription": "Enables the start_recording command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_recording command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-recording",
+          "markdownDescription": "Denies the start_recording command without any pre-configured scope."
+        },
+        {
           "description": "Enables the state command without any pre-configured scope.",
           "type": "string",
           "const": "allow-state",
@@ -545,6 +557,18 @@
           "type": "string",
           "const": "deny-state",
           "markdownDescription": "Denies the state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_recording command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-recording",
+          "markdownDescription": "Enables the stop_recording command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_recording command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-recording",
+          "markdownDescription": "Denies the stop_recording command without any pre-configured scope."
         },
         {
           "description": "Enables the video_caps command without any pre-configured scope.",
@@ -635,6 +659,12 @@
           "type": "string",
           "const": "device-keys",
           "markdownDescription": "The device-key commands, for a window that signs the person out: `forget_server` (deletes the\ndevices of one Sew install, the hardware keys included, and answers the removed keys) and\n`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant\nit, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the\nwindow that needs it.\n\n#### This permission set includes:\n\n- `allow-forget-server`\n- `allow-known-device-keys`"
+        },
+        {
+          "description": "The recording commands (Sew 0.9.0), for a call UI with Record and Stop buttons:\n`start_recording` and `stop_recording`. Each is the person's own act, which the host's provider\nsends to Sew with the person's session; Sew decides who may. Answering a recording's notice\n(`consent`, `withdraw_consent`) is in `sew-voice:default` and needs nothing more. Not in\n`sew-voice:default`: grant it to the call window, or `sew-voice:allow-start-recording` /\n`sew-voice:allow-stop-recording` one by one.\n\n#### This permission set includes:\n\n- `allow-start-recording`\n- `allow-stop-recording`",
+          "type": "string",
+          "const": "recording",
+          "markdownDescription": "The recording commands (Sew 0.9.0), for a call UI with Record and Stop buttons:\n`start_recording` and `stop_recording`. Each is the person's own act, which the host's provider\nsends to Sew with the person's session; Sew decides who may. Answering a recording's notice\n(`consent`, `withdraw_consent`) is in `sew-voice:default` and needs nothing more. Not in\n`sew-voice:default`: grant it to the call window, or `sew-voice:allow-start-recording` /\n`sew-voice:allow-stop-recording` one by one.\n\n#### This permission set includes:\n\n- `allow-start-recording`\n- `allow-stop-recording`"
         },
         {
           "description": "The video commands, for a window that shows or sends video: `video_caps`, `video_devices`,\n`set_video_device`, `camera`, `screen_sources`, `screen`, `preview`, `video_sink`,\n`video_sink_update`, `video_sink_close`, `request_keyframe`, `camera_permission` and\n`request_camera_permission`, and the video codec setting `set_video_codec_preference`. The\nframes reach only the window\nthat opened the sink (its own channel). Not in `sew-voice:default`: grant it to the call\nwindow, or single `sew-voice:allow-<command>` permissions (a window that only shows video needs\n`allow-video-sink`, `allow-video-sink-update`, `allow-video-sink-close` and\n`allow-request-keyframe`). The OS asks for the camera and screen recording itself.\n\n#### This permission set includes:\n\n- `allow-video-caps`\n- `allow-video-devices`\n- `allow-set-video-device`\n- `allow-camera`\n- `allow-screen-sources`\n- `allow-screen`\n- `allow-preview`\n- `allow-video-sink`\n- `allow-video-sink-update`\n- `allow-video-sink-close`\n- `allow-request-keyframe`\n- `allow-camera-permission`\n- `allow-request-camera-permission`\n- `allow-set-video-codec-preference`",

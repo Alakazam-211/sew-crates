@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use openmls::prelude::MlsGroup;
-use openmls_basic_credential::SignatureKeyPair;
+use sew_mls_crypto::SignatureKeyPair;
 use sew_proto::e2ee::{CallKeysInit, CallKeysMessage, KeyResyncReason, VerificationCode};
 
 use crate::bridge::{KeyEvent, KeyRing};

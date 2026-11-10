@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-mls-crypto"
-version = "0.8.3"
+version = "0.9.0"
 build = false
 include = [
     "src/**",
@@ -70,11 +70,13 @@ version = "0.12"
 version = "0.12"
 
 [dependencies.hpke]
-version = "=0.13.0"
+version = "=0.15.1"
 features = [
     "alloc",
     "x25519",
-    "p256",
+    "nistp",
+    "aes",
+    "chacha",
 ]
 default-features = false
 
@@ -85,12 +87,12 @@ version = "=0.6.0"
 version = "=0.6.0"
 
 [dependencies.p256]
-version = "0.13"
+version = "0.14"
 features = [
     "ecdsa",
-    "std",
     "arithmetic",
     "pem",
+    "alloc",
 ]
 default-features = false
 
@@ -101,6 +103,10 @@ version = "0.3"
 version = "0.6"
 features = ["getrandom"]
 
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
 [dependencies.sha2]
 version = "0.10"
 
@@ -109,8 +115,16 @@ version = "2"
 
 [dependencies.tls_codec]
 version = "0.5"
-features = ["std"]
+features = [
+    "std",
+    "derive",
+    "serde",
+]
 default-features = false
+
+[dependencies.zeroize]
+version = "1"
+features = ["derive"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.getrandom_02]
 version = "0.2"

@@ -327,6 +327,11 @@
           "const": "recording_consent_violation",
           "description": "A segment of an ungranted identity reached `sew` in the last 24 h.",
           "type": "string"
+        },
+        {
+          "const": "recording_required_failed",
+          "description": "A room that must record every call with two or more people could not: three\nrequired starts failed in 10 min for one channel, or recording is required where it\ncannot run (the recorder is not installed, `recording.enabled` is off, or the\ngoverning App has `uploads: false`) in the last hour.",
+          "type": "string"
         }
       ]
     },
