@@ -17,7 +17,10 @@
 //! The same key formats (RFC 9180 `SerializePrivateKey`/`SerializePublicKey`, Ed25519 32-byte
 //! seeds, P-256 32-byte scalars, SEC1 uncompressed public keys, DER ECDSA signatures), the same
 //! errors, and the same RNG: one `ChaCha20Rng` per provider, seeded from the OS, behind a lock.
-//! HPKE's ephemeral keys come from that RNG too. The post-quantum draft suites and the
+//! HPKE's ephemeral keys come from that RNG too. One difference: `derive_hpke_keypair` returns
+//! X25519 private keys clamped (RFC 9180 §7.1.2), where `openmls_rust_crypto` returns them
+//! unclamped; the public key is the same and either form opens the same ciphertexts (see
+//! CHANGELOG). The post-quantum draft suites and the
 //! `targeted-messages-draft` / `virtual-clients-draft` methods are not built (openmls'
 //! features for them are forbidden in Sew), and P-384 signatures, which no supported
 //! suite uses, are refused.

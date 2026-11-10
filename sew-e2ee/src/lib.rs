@@ -14,13 +14,19 @@
 //!   exporter by leaf index, slots `(slot_base + e) mod 64`, the two-phase install → ready →
 //!   activate switch, retirement after 10 s, recovery without user action, the recorder release.
 //! - **Bridges** ([`bridge`]): the [`KeyEvent`] contract every SDK bridge applies, the
-//!   [`KeyRing`] shadow, [`Caps`], and the test [`bridge::virtual_sdk::VirtualSdk`].
+//!   [`KeyRing`] shadow and [`Caps`] (and, with the `testing` feature only, the simulated SDK
+//!   `bridge::virtual_sdk::VirtualSdk`).
 //! - **The recorder side** ([`recorder`]): [`ReleaseOpener`], [`RecorderKeyPair`],
 //!   [`identity::verify_table`] for the recorder; [`open_recording_chunk`] for the admin download.
 //!
-//! Sans-IO: no IO, no clock, no threads, no `Send` requirement. Sew's test driver
-//! (not published) wires a session to Sew's Rust client; the WASM build
-//! (`@sew/e2ee`, not published here) wraps it for browsers.
+//! Sans-IO: no IO, no clock, no threads, no `Send` requirement. The host wires a session to its
+//! own HTTP client and gateway connection: `sew-call-client` is a complete native host, and
+//! Sew's WASM build for browsers (`@sew/e2ee`) wraps it too (not published here).
+//!
+//! The `testing` feature (an in-process delivery service model, a simulated SDK, test
+//! certificates and crafted protocol messages) is for tests only: it is unstable and not covered
+//! by semver, it exposes secret key material, and it builds malicious protocol messages. Never
+//! enable it outside tests.
 
 pub mod bridge;
 pub mod chunk;
@@ -76,10 +82,9 @@ pub use wire::{ApiFailure, KeyReply, KeyRequest};
 /// It has one constructor and no empty form.
 pub type Scope = sew_proto::e2ee::CallScope;
 
-/// For Sew's own bridges in other crates (the LiveKit Rust SDK and WASM bridges, not published)
-/// only: builds [`Caps`]. Not part of the supported API (`caps_only_from_bridge`). An app that
-/// calls it declares a capability its SDK may lack, which the server then refuses only by
-/// observation.
+/// For Sew's own bridges in other crates (not published) only: builds [`Caps`]. Not part of the
+/// supported API (`caps_only_from_bridge`). An app that calls it declares a capability its SDK
+/// may lack, which the server then refuses only by observation.
 #[doc(hidden)]
 pub mod __bridge {
     use crate::bridge::Caps;

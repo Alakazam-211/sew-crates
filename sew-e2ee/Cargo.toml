@@ -23,14 +23,15 @@ include = [
     "README.md",
     "CHANGELOG.md",
 ]
-publish = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "The client library for end-to-end encrypted Sew calls: MLS (openmls) per call, per-sender frame keys, the 64-slot ring and the two-phase switch, recovery, the recorder key handoff, and the key-provider bridge contract. Sans-IO; builds for Linux, macOS and wasm32."
+description = "The client library for end-to-end encrypted Sew calls: MLS (openmls) per call, per-sender frame keys, the 64-slot ring and the two-phase switch, recovery, the recorder key handoff, and the key-provider bridge contract. Sans-IO; builds for Linux, macOS, Windows and wasm32."
+documentation = "https://docs.rs/sew-e2ee"
 readme = "README.md"
+categories = ["cryptography"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 

@@ -73,10 +73,10 @@ that crate.
 
 ## Using the crates
 
-They depend on each other by version. `sew-proto`, `sew-lkproto` and `sew-lk-compat` are
-published on crates.io as well, so on their own they need only a dependency line. The other four
-are not on crates.io yet (`sew-call-client` and `tauri-plugin-sew-voice` also need the
-forks below). To use
+They depend on each other by version. `sew-proto`, `sew-lkproto`, `sew-mls-crypto`,
+`sew-e2ee` and `sew-lk-compat` are published on crates.io as well, so on their own they need
+only a dependency line. `sew-call-client` and `tauri-plugin-sew-voice` are not on crates.io
+yet (they also need the forks below). To use
 them from this directory, in your workspace's root
 `Cargo.toml`, add this one `[patch.crates-io]` block (a `[patch]` applies only from the
 workspace root; if you already have one, add these rows to it, since a second block is a TOML

@@ -1,6 +1,6 @@
-//! Fuzz entry points (feature `testing`). The binaries in the root `fuzz/` crate read one input
-//! each and call these; Sew's nightly fuzzing lane wraps the same functions in libFuzzer, and
-//! `fuzz_targets_build_and_seed_corpus_pass` replays every seed through them.
+//! Fuzz entry points (feature `testing`). A fuzz target reads one input and calls one of these
+//! (Sew's own fuzz targets, which run them under libFuzzer, are not published), and Sew's tests
+//! replay every seed through them.
 //!
 //! Invariants: no panic on any input; decode∘encode is the identity on accepted input; every
 //! session output keeps I1–I5. The fixture is deterministic (fixed keys, the fixture
@@ -724,8 +724,7 @@ pub fn e2ee_bridge_inputs(data: &[u8]) {
     }
 }
 
-/// Seeds made from the fixture (`(name, bytes)`; the fuzzing lane writes them to the corpus). The
-/// checked-in `fuzz/corpus/<target>/` files are replayed beside them.
+/// Seeds made from the fixture (`(name, bytes)`), for a fuzz target's starting corpus.
 pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
     with_fixture(|fx| {
         let mut out: Vec<(String, Vec<u8>)> = vec![("empty".into(), Vec::new())];

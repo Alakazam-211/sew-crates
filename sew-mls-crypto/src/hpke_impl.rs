@@ -193,7 +193,7 @@ fn receiver_export_t<A: Aead, K: Kdf, M: Kem>(
 }
 
 /// DeriveKeyPair(ikm) of the suite's KEM: `(private, public)`. An X25519 private key comes out
-/// clamped (RFC 9180 §7.1.2: SerializePrivateKey clamps; `hpke` 0.14 and later do), where
+/// clamped (RFC 9180 §7.1.2: SerializePrivateKey clamps; `hpke` 0.15 does), where
 /// `hpke` 0.13 and `openmls_rust_crypto` gave the unclamped bytes; the public key is the same,
 /// and either form of the private key opens the same ciphertexts (DeserializePrivateKey clamps).
 pub(crate) fn derive_keypair(config: HpkeConfig, ikm: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Fail> {
@@ -215,7 +215,7 @@ fn derive_t<A: Aead, K: Kdf, M: Kem>(ikm: &[u8]) -> Result<(Vec<u8>, Vec<u8>), F
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "rfc9180-vectors")]
+    #[cfg(sew_rfc9180_vectors)]
     use serde_json::Value;
 
     /// Returns the bytes it was given, then panics (a test RNG; never a CSPRNG).
@@ -248,7 +248,7 @@ mod tests {
 
     /// The vector's private key as DeriveKeyPair serializes it: an X25519 key clamped
     /// (RFC 9180 §7.1.2; the published vectors list it unclamped).
-    #[cfg(feature = "rfc9180-vectors")]
+    #[cfg(sew_rfc9180_vectors)]
     fn serialized_sk(v: &Value, sk: Vec<u8>) -> Vec<u8> {
         let mut sk = sk;
         if v["kem_id"] == 0x20 {
@@ -259,12 +259,12 @@ mod tests {
         sk
     }
 
-    #[cfg(feature = "rfc9180-vectors")]
+    #[cfg(sew_rfc9180_vectors)]
     fn h(v: &Value, k: &str) -> Vec<u8> {
         hex::decode(v[k].as_str().unwrap_or_else(|| panic!("{k}"))).unwrap()
     }
 
-    #[cfg(feature = "rfc9180-vectors")]
+    #[cfg(sew_rfc9180_vectors)]
     fn config(v: &Value) -> HpkeConfig {
         let kem = match v["kem_id"].as_u64().unwrap() {
             0x10 => HpkeKemType::DhKemP256,
@@ -287,14 +287,15 @@ mod tests {
         HpkeConfig(kem, kdf, aead)
     }
 
-    // The vectors are in Sew's repository, not in the package (feature `rfc9180-vectors`).
-    #[cfg(feature = "rfc9180-vectors")]
+    // The vectors are in Sew's repository, not in the package: build.rs sets
+    // `sew_rfc9180_vectors` only when they are there.
+    #[cfg(sew_rfc9180_vectors)]
     fn vectors() -> Vec<Value> {
         let v: Value = serde_json::from_str(include_str!("../tests/vectors/rfc9180.json")).unwrap();
         v.as_array().unwrap().clone()
     }
 
-    #[cfg(feature = "rfc9180-vectors")]
+    #[cfg(sew_rfc9180_vectors)]
     #[test]
     fn rfc9180_base_mode_vectors() {
         let all = vectors();

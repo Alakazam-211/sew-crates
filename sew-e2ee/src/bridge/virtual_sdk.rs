@@ -1,10 +1,12 @@
 //! `VirtualSdk`: LiveKit's key-ring semantics, exactly, for tests.
 //!
+//! Test-only (feature `testing`): unstable, not covered by semver, never for a release build.
+//!
 //! Two flavours:
 //! - [`Flavour::Js`] (`livekit-client` 2.22.3): installing the **local** identity's key at any
 //!   index switches the sender at once; a local `Retire` is ignored by the bridge.
-//! - [`Flavour::Rust`] (`livekit` 0.9.3 with Sew's patch to it, which remembers the send slot
-//!   for a new local cryptor): `set_key` never switches the sender;
+//! - [`Flavour::Rust`] (`livekit` 0.9.3 with a patch, not published, that remembers the send
+//!   slot for a new local cryptor): `set_key` never switches the sender;
 //!   `Activate` sets the key then `set_key_index` on every local cryptor; a new local cryptor
 //!   starts at the remembered slot (patched) or at index 0 (unpatched, `patched = false`).
 //!

@@ -2,7 +2,11 @@
 
 ## 0.9.0 (2026-11-10)
 
-- The version follows Sew 0.9.0.
+- The version follows Sew 0.9.0. The first release on crates.io (0.7.2 to 0.8.3 were in the
+  sew-crates mirror only).
+- The `rfc9180-vectors` feature is gone. It only compiled a test of Sew's repository, whose
+  vectors are not in the package, so turning it on broke the build; the test now runs in Sew's
+  repository without a feature.
 - `SignatureKeyPair` (and its `StorageId`): the signature key pair of a basic credential,
   replacing `openmls_basic_credential`'s with the same API (`new`, `from_raw`, `public`,
   `to_public_vec`, `signature_scheme`, `id`, `store`, `read`, `delete`, `Signer`) and the same
@@ -41,7 +45,7 @@
 
 ## 0.7.2 (2026-11-03)
 
-- First published version.
+- First mirror release.
 - `MlsCrypto`, an implementation of `openmls_traits` 0.6's `OpenMlsCrypto` and `OpenMlsRand` over
   RustCrypto crates, with HPKE (RFC 9180, base mode) from the `hpke` crate 0.13.0.
 - `MlsProvider`, `MlsCrypto` with `openmls_memory_storage`'s `MemoryStorage`, as an OpenMLS

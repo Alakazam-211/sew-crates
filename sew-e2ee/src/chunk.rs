@@ -1,8 +1,8 @@
 //! `open_recording_chunk`: for the admin download of an encrypted recording.
 //!
-//! Opens one chunk of a recorder-sealed segment or mix part: Sew's blob stream format (Sew's
-//! server-side stream cipher, not published), reimplemented on the **open** side only, in pure
-//! Rust (aes-gcm), so it builds for wasm32 and never depends on aws-lc-rs.
+//! Opens one chunk of a recorder-sealed segment or mix part: Sew's blob stream format (the
+//! server's side of it is not published), reimplemented on the **open** side only, in pure Rust
+//! (aes-gcm), so it builds for wasm32 and never depends on aws-lc-rs.
 //!
 //! ```text
 //! header (16): "SEWB" | version 0x01 | chunk_size_log2 (16..=24) | reserved 0x0000 | nonce_prefix (8)

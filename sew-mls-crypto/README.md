@@ -11,7 +11,8 @@ drop-in replacement whose whole dependency graph is MIT and/or Apache-2.0:
   `openmls_rust_crypto::OpenMlsRustCrypto`.
 
 It behaves as `openmls_rust_crypto` 0.6.0 does (the same key formats, errors and RNG: one
-`ChaCha20Rng` per provider, seeded from the OS) for the three ciphersuites it supports:
+`ChaCha20Rng` per provider, seeded from the OS), except that derived X25519 private keys are
+clamped (see CHANGELOG), for the three ciphersuites it supports:
 
 - `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (0x0001);
 - `MLS_128_DHKEMP256_AES128GCM_SHA256_P256` (0x0002);
@@ -23,19 +24,18 @@ Linux, macOS, Windows and wasm32 (in browsers, through `getrandom`'s `js` backen
 It is part of Sew, Alakazam Labs' self-hosted team chat server, where it is the MLS provider of
 the end-to-end encrypted calls (`sew-e2ee`).
 
-## Usage
+- Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
+  repository at each release, so pull requests are not merged there)
+- API documentation: <https://docs.rs/sew-mls-crypto>
+- Security problems: report them privately, as
+  <https://github.com/Alakazam-211/sew-crates/security/policy> says.
 
-The crate is not published on crates.io yet. Until it is, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository: clone
-it into your project (for example as `third_party/sew-crates`), and point Cargo at it from your
-workspace's root `Cargo.toml`:
+## Usage
 
 ```toml
 [dependencies]
 sew-mls-crypto = "0.9.0"
 openmls = "=0.9.0"
-
-[patch.crates-io]
-sew-mls-crypto = { path = "third_party/sew-crates/sew-mls-crypto" }
 ```
 
 ```rust
@@ -56,7 +56,8 @@ MIT OR Apache-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.
 
 `src/crypto.rs` and, in part, `src/lib.rs` (`MlsProvider` and its `OpenMlsProvider` impl) are
 derived from `openmls_rust_crypto` 0.6.0, and `src/credential.rs` (`SignatureKeyPair`) from
-`openmls_basic_credential` 0.6.0 (both MIT, Copyright (c) 2020 OpenMLS Authors); `NOTICE` carries
-their copyright line and permission notice, which must travel with the code.
+`openmls_basic_credential` 0.6.0 (both MIT, Copyright (c) 2020 OpenMLS Authors); `src/rng.rs`
+follows the shape of `openmls_rust_crypto`'s `rand_shim`. `NOTICE` carries their copyright line
+and permission notice, which must travel with the code.
 
 Copyright 2026 Alakazam Labs.

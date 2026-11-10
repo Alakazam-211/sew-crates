@@ -1,7 +1,7 @@
 //! The key-provider bridge contract.
 //!
-//! Keys leave the core only as [`KeyEvent`]s. A bridge (`@sew/e2ee`'s `JsBridge` over
-//! WASM, Sew's LiveKit Rust SDK bridge (not published), or the test [`virtual_sdk::VirtualSdk`])
+//! Keys leave the core only as [`KeyEvent`]s. A bridge (one over a LiveKit client SDK, in the
+//! browser or native, or the simulated SDK `virtual_sdk::VirtualSdk` of the `testing` feature)
 //! applies them to its SDK in order and answers each [`KeyEvent::Fence`] with
 //! `Input::Installed { fence }` once every earlier event is in effect.
 //!
@@ -13,6 +13,8 @@
 pub mod caps;
 pub mod epochs;
 pub mod keyring;
+// Test-only: a simulated SDK for the `testing` feature's harness (unstable, not semver-covered).
+#[cfg(feature = "testing")]
 pub mod virtual_sdk;
 
 use crate::ids::{FenceId, LkIdentity, Slot};

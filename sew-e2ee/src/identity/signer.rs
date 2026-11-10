@@ -16,8 +16,11 @@ pub trait DeviceSigner {
     fn public_key_sec1(&self) -> [u8; 65];
 }
 
-/// A software P-256 device key (tests, Sew's Rust SDK test lane, the driver). The private scalar is
-/// zeroized on drop.
+/// A software P-256 device key: the private scalar lives in this process's memory (zeroized on
+/// drop) and [`SoftwareSigner::to_bytes`] exports it. It is not hardware-backed, so it gives none
+/// of a platform keystore's protection: use it where no platform key is available (a native host
+/// may persist it in the OS credential store, as `sew-call-client` does) and in tests. Prefer a
+/// platform [`DeviceSigner`] where one exists.
 pub struct SoftwareSigner {
     key: SigningKey,
 }
