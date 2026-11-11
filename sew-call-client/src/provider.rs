@@ -161,7 +161,7 @@ pub enum RecordingControl {
 /// stopping are the person's acts, with Sew's permission checks and audit.
 ///
 /// Its JSON, `{target, room, action: "start" | "stop", recording_id?, device_id?}`, is what a
-/// provider forwards to its own server (the web kit's native lane:
+/// provider forwards to its own server (the Sew App kit's native lane:
 /// `POST /sew/native/voice/recording`), which maps `room` to Sew's channel as its join does.
 ///
 /// Sew decides who may: a refusal comes back with Sew's reason (`not_in_voice`,

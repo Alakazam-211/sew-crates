@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.2 (2026-11-11)
+
+- The version follows Sew 0.9.2. No API or behaviour change.
+
 ## 0.9.0 (2026-11-10)
 
 - The version follows Sew 0.9.0. The first release on crates.io (0.7.2 to 0.8.3 were in the

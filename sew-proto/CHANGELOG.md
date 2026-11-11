@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.9.2 (2026-11-11)
+
+Additive: no public field or type changes shape, and a payload of 0.9.0 reads as before.
+
+### Added
+
+- **Group DM names.** `UpdateChannelRequest.name` on a group DM sets its name (1–100
+  characters once trimmed); `null`, `""` or blanks clear it (a present `null` reads as
+  `Some("")`, so a Rust client clears with an empty string). Any other field on a DM, and any
+  change to a 1:1 DM, still answers `422 dm_immutable`. `Channel.name` is set on a named group
+  DM and absent otherwise.
+- **System messages.** `Message.system: Option<MessageKind>` (absent on ordinary messages and
+  tombstones); `MessageKind` (`#[non_exhaustive]`, tagged by `kind`) has `GroupDmRenamed { name }`
+  (`group_dm_renamed`; no `name` when it was cleared) and the forward-compat `Unknown`. A system
+  message's `body` is empty. `api::messages::reasons::SYSTEM_MESSAGE_IMMUTABLE`
+  (`system_message_immutable`): an edit of one answers `422 invalid_state` with it.
+- **DMs by latest activity.** `GET /api/v1/me/channels` reads `MyChannelsPageQuery`
+  (`#[non_exhaustive]`; `MyChannelsQuery`'s fields plus `order` and `before`, `From` the old
+  query) and answers `MyChannelsPage` (`#[non_exhaustive]`; `items`, `has_more` and `next`). The
+  enum `MyChannelsOrder` (`id`, the default; `activity`). `order=activity` (with `kind=dm`) lists
+  the DMs newest first by `last_message_id` (a call's record message counts; a DM with no message
+  by its own id), `limit` 1–200 (`MY_CHANNELS_ACTIVITY_LIMIT_MAX`, default 50), paged by the
+  opaque `before` cursor the previous page's `next` gives; each page continues strictly below
+  it, and a DM that gets new activity while a client pages moves above the cursor, so clients
+  move it to the top from their live events. The `order=id` answer is unchanged (no `next`).
+- **Feature flags** `group_dm_names` and `dm_order_activity`, now in `FEATURES`
+  (`api::channels::FEATURE_GROUP_DM_NAMES`, `api::channels::FEATURE_DM_ORDER_ACTIVITY`), so a
+  client knows the server has them.
+- `UpdateChannelRequest`'s validation lets an empty `name` through (the server refuses it on a
+  space channel, `400 validation_failed`, field `name`, as before).
+
+### Correction to 0.9.0's notes
+
+- 0.9.0 also broke exhaustive matches on `PolicyKey`: `PolicyKey` is not `#[non_exhaustive]`,
+  so a `match` on it written for 0.8.x no longer compiles once `PolicyKey::RecordingRequired`
+  exists. The new variant sits after `RecordingRequireConsentToJoin`, so the implicit
+  discriminants of every later variant (from `MeetingsEnabled` on) moved by one; code that casts
+  a `PolicyKey` to an integer sees different values. 0.9.0's Breaking list named the variant
+  but said only `PassCap` and `StopReason` matches stop compiling.
+
 ## 0.9.0 (2026-11-10)
 
 **The first crates.io release since 0.8.1.** 0.8.2 and 0.8.3 were mirror-only, so coming from
@@ -174,7 +214,7 @@ default, and a payload of 0.8.x reads as before.
 ## 0.7.4 (2026-11-05)
 
 - `ConsentPrompt::title_en`, `feature_en`, `lines_en`, `text_en` and `choices_en`, with
-  `recording::ConsentAsk` (`Join`, `InCall`) and `recording::ConsentChoice`: the web kit's
+  `recording::ConsentAsk` (`Join`, `InCall`) and `recording::ConsentChoice`: the Sew App kit's
   consent modal in English, word for word, for native hosts. No wire change.
 
 ## 0.7.3 (2026-11-04)

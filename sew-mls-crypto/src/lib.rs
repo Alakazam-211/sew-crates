@@ -21,9 +21,11 @@
 //! X25519 private keys clamped (RFC 9180 §7.1.2), where `openmls_rust_crypto` returns them
 //! unclamped; the public key is the same and either form opens the same ciphertexts (see
 //! CHANGELOG). The post-quantum draft suites and the
-//! `targeted-messages-draft` / `virtual-clients-draft` methods are not built (openmls'
-//! features for them are forbidden in Sew), and P-384 signatures, which no supported
-//! suite uses, are refused.
+//! `targeted-messages-draft` / `virtual-clients-draft` methods are not built, and P-384
+//! signatures, which no supported suite uses, are refused. Those two openmls features add
+//! required methods to `OpenMlsCrypto` (through `openmls_traits`' features of the same names),
+//! so a build that turns either on does not compile with this crate: leave them off, or use a
+//! provider that implements those methods.
 //!
 //! [`SignatureKeyPair`] is the signature key pair of a basic credential, the drop-in for
 //! `openmls_basic_credential`'s (same key, signature, serde, TLS and storage formats; Ed25519

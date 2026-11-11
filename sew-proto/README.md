@@ -30,7 +30,7 @@ Windows).
 
 ```toml
 [dependencies]
-sew-proto = "0.9.0"
+sew-proto = "0.9.2"
 serde_json = "1" # for the example below
 ```
 

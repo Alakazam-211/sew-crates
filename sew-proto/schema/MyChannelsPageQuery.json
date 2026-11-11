@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "MyChannelsKind": {
+      "description": "`GET /api/v1/me/channels?kind=`: DMs and group DMs, or space channels.",
+      "oneOf": [
+        {
+          "const": "dm",
+          "description": "DMs and group DMs.",
+          "type": "string"
+        },
+        {
+          "const": "space",
+          "description": "Space channels.",
+          "type": "string"
+        }
+      ]
+    },
+    "MyChannelsOrder": {
+      "description": "`GET /api/v1/me/channels?order=`: by id (the default), or by latest activity.",
+      "oneOf": [
+        {
+          "const": "id",
+          "description": "By id ascending (creation order), with the `after` cursor.",
+          "type": "string"
+        },
+        {
+          "const": "activity",
+          "description": "DMs by latest activity, newest first, with the `before` cursor (`kind=dm` only).\nActivity is the DM's `last_message_id` (a call's record message counts), or the\nDM's own id while it has no message.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Query of `GET /api/v1/me/channels` as the server reads it: [`MyChannelsQuery`]'s fields\nplus `order` and `before`.\n\nWith `order=activity` (and `kind=dm`) the DMs come newest first by activity, `limit`\n1–200 (default 50); `after` is refused there and `before` is refused with `order=id`.",
+  "properties": {
+    "after": {
+      "description": "`order=id`: channels with a larger id.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "before": {
+      "description": "`order=activity`: the `next` of the page before; the answer continues strictly below\nit. Opaque.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MyChannelsKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Only DMs or only space channels; `order=activity` needs `dm`."
+    },
+    "limit": {
+      "description": "Page size: 1–100 by id, 1–200 by activity (default 50).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "order": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MyChannelsOrder"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`id` (the default) or `activity`."
+    }
+  },
+  "title": "MyChannelsPageQuery",
+  "type": "object"
+}

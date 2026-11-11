@@ -12,7 +12,7 @@
       ]
     },
     "name": {
-      "description": "A new name, 1–100 characters.",
+      "description": "A new name, 1–100 characters once trimmed. On a group DM it is the only field the\nroute takes, and `null`, `\"\"` or blanks clear the name (`null` reads as `Some(\"\")`). A\nspace channel's name cannot be cleared.",
       "type": [
         "string",
         "null"

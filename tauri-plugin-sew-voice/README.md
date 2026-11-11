@@ -103,7 +103,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.6.0"
+tauri-plugin-sew-voice = "0.6.1"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -181,6 +181,21 @@ consent and nobody else's:
 ```js
 await invoke("plugin:sew-voice|start_recording");   // the recording event follows Sew's answer
 await invoke("plugin:sew-voice|stop_recording");    // refused `recording_required` in a room that requires it
+```
+
+Which of the two to show (0.6.1): send the person's rights in the room with
+`set_recording_rights` (in `sew-voice:recording`), and the plugin says whether Sew would take a
+Record or a Stop now, following the call as it changes:
+
+```js
+await invoke("plugin:sew-voice|set_recording_rights", {
+  room: channelId, my_perms: channel.my_perms, dm: false,
+  recording_enabled: policy.recording_enabled, recording_dm_enabled: policy.recording_dm_enabled,
+});
+await listen("sew-voice://recording_controls", (e) => {
+  showRecord(e.payload.can_record);
+  showStop(e.payload.can_stop);
+});
 ```
 
 On macOS the app needs `NSMicrophoneUsageDescription` in its `Info.plist`, and the

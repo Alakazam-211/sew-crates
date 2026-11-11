@@ -7,6 +7,13 @@
 //! (→ `connecting` → `connected`) or `leave`; a re-join that Sew refuses for the notice holds
 //! the same way. The `recording` event follows the call's recording.
 //!
+//! **Recording controls (0.6.1).** With the host's rights for the call's room
+//! (`set_recording_rights`), the plugin works out whether Sew would take a Record or a Stop
+//! now (`crate::rights`): the `recording_controls` event when either changes, and the
+//! `recording` event's `can_record` and `can_stop`. They are worked out again on every change
+//! of the rights, the state, the room, the participants (a required room's headcount) and the
+//! recording. The rights are forgotten when the call ends.
+//!
 //! Devices are the engine's from the first use on: the first `devices`, `set_device` or
 //! `join` subscribes to the engine's device events (and so starts its device listing), not
 //! [`VoiceService::start`]. Cameras likewise: the first `video_devices`, `set_video_device`,
@@ -59,10 +66,11 @@ use crate::video::{
 use crate::wire::{
     CallState, CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceChoice, DeviceList, ErrorInfo,
     JoinArgs, JoinOptions, JoinResult, LocalVideo, LocalVideoState, MuteArgs, Participant,
-    PermissionState, PluginEvent, PreviewAnswer, PreviewArgs, RecordingInfo, ScreenArgs,
-    ScreenSource, SelfMute, SetDeviceArgs, SetVideoCodecPreferenceArgs, SetVideoDeviceArgs,
-    SinkIdArgs, SinkMode, Speaking, StateEvent, StateSnapshot, VideoCaps, VideoDevices,
-    VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoTrack, code, reason, video_code,
+    PermissionState, PluginEvent, PreviewAnswer, PreviewArgs, RecordingControls, RecordingInfo,
+    RecordingRights, ScreenArgs, ScreenSource, SelfMute, SetDeviceArgs,
+    SetVideoCodecPreferenceArgs, SetVideoDeviceArgs, SinkIdArgs, SinkMode, Speaking, StateEvent,
+    StateSnapshot, VideoCaps, VideoDevices, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
+    VideoTrack, code, reason, video_code,
 };
 
 /// The `speaking` event's floor: at most 10 a second.
@@ -151,8 +159,12 @@ struct Slot {
     target: Option<String>,
     room: Option<String>,
     participants: Vec<Participant>,
-    /// The call's active recording (Sew 0.7.3).
+    /// The call's active recording (Sew 0.7.3), with its `can_record` and `can_stop`.
     recording: Option<RecordingInfo>,
+    /// The host's rights for a room (`set_recording_rights`), until the call ends.
+    rights: Option<RecordingRights>,
+    /// The `recording_controls` event's last value.
+    controls: RecordingControls,
     call: Option<Arc<dyn CallHandle>>,
     call_id: Option<String>,
     /// Bumped by every join and leave; a task or answer from an older generation is ignored.
@@ -238,6 +250,8 @@ impl VoiceService {
                     room: None,
                     participants: Vec::new(),
                     recording: None,
+                    rights: None,
+                    controls: RecordingControls::default(),
                     call: None,
                     call_id: None,
                     generation: 0,
@@ -488,6 +502,7 @@ impl VoiceService {
             }
             let call = slot.call.take();
             slot.call_id = None;
+            slot.rights = None;
             set_participants(&self.inner, &mut slot, Vec::new());
             set_recording(&self.inner, &mut slot, None);
             clear_details(&self.inner, &mut slot);
@@ -580,6 +595,25 @@ impl VoiceService {
     pub async fn stop_recording(&self) -> Result<(), ErrorInfo> {
         let call = self.live_call()?;
         call.stop_recording().await.map_err(|e| e.to_info())
+    }
+
+    /// `set_recording_rights {room, my_perms, dm?, recording_enabled?, recording_dm_enabled?,
+    /// record_capped?, agent?}` (0.6.1): the host's word on the person's rights in `room`,
+    /// which the `recording_controls` event (and the `recording` event's `can_record` and
+    /// `can_stop`) follow. Any time, with or without a call: they apply while the call is in
+    /// `room`, replace the last ones, and are forgotten when the call ends. Errors:
+    /// `invalid_args` (`my_perms` is not a decimal number).
+    pub async fn set_recording_rights(&self, rights: RecordingRights) -> Result<(), ErrorInfo> {
+        if rights.perms().is_none() {
+            return Err(ErrorInfo::with_detail(
+                code::INVALID_ARGS,
+                "set_recording_rights needs my_perms, a decimal string",
+            ));
+        }
+        let mut slot = self.lock();
+        slot.rights = Some(rights);
+        refresh_controls(&self.inner, &mut slot);
+        Ok(())
     }
 
     fn live_call(&self) -> Result<Arc<dyn CallHandle>, ErrorInfo> {
@@ -1391,6 +1425,7 @@ impl VoiceService {
             local_video: slot.local_video.clone(),
             policy: slot.policy.clone(),
             has_video: slot.has_video,
+            recording_controls: slot.controls,
         }
     }
 
@@ -1439,6 +1474,8 @@ fn notify(inner: &Inner, slot: &mut Slot, event: &PluginEvent) {
         | PluginEvent::LocalVideo(_)
         | PluginEvent::VideoDevices(_)
         | PluginEvent::Policy(_) => {}
+        // The webview's: the listener reads `on_recording`'s `can_record` and `can_stop`.
+        PluginEvent::RecordingControls(_) => {}
     }
 }
 
@@ -1543,11 +1580,37 @@ fn set_room(inner: &Inner, slot: &mut Slot, room: String) {
     }
 }
 
-fn set_recording(inner: &Inner, slot: &mut Slot, recording: Option<RecordingInfo>) {
+/// The recording now (the engine's: its `can_record` and `can_stop` are worked out here), then
+/// the controls with it.
+fn set_recording(inner: &Inner, slot: &mut Slot, mut recording: Option<RecordingInfo>) {
+    let controls = crate::rights::controls(
+        slot.rights.as_ref(),
+        &crate::rights::CallView {
+            state: &slot.state,
+            room: slot.room.as_deref(),
+            participants: &slot.participants,
+        },
+        recording.as_ref(),
+    );
+    if let Some(r) = recording.as_mut() {
+        r.can_record = controls.can_record;
+        r.can_stop = controls.can_stop;
+    }
     if slot.recording != recording {
         slot.recording.clone_from(&recording);
         notify(inner, slot, &PluginEvent::Recording(recording));
     }
+    if slot.controls != controls {
+        slot.controls = controls;
+        notify(inner, slot, &PluginEvent::RecordingControls(controls));
+    }
+}
+
+/// Something the controls read changed (the rights, the state, the room, the participants):
+/// the `recording` and `recording_controls` events again when they changed.
+fn refresh_controls(inner: &Inner, slot: &mut Slot) {
+    let recording = slot.recording.clone();
+    set_recording(inner, slot, recording);
 }
 
 /// A call held for the notice has its room once Sew let it in.
@@ -1572,6 +1635,7 @@ fn end(inner: &Inner, slot: &mut Slot, reason: String) {
     slot.call = None;
     slot.call_id = None;
     slot.stop = None;
+    slot.rights = None;
     set_participants(inner, slot, Vec::new());
     set_recording(inner, slot, None);
     clear_video(inner, slot);
@@ -1661,6 +1725,7 @@ impl Pump {
                         return;
                     }
                     set_participants(&self.inner, &mut slot, p);
+                    refresh_controls(&self.inner, &mut slot);
                 }
                 Ok(CallEvent::Moved { room }) => {
                     let mut slot = lock(&self.inner.slot);
@@ -1668,6 +1733,7 @@ impl Pump {
                         return;
                     }
                     set_room(&self.inner, &mut slot, room);
+                    refresh_controls(&self.inner, &mut slot);
                 }
                 Ok(CallEvent::Recording(r)) => {
                     let mut slot = lock(&self.inner.slot);
@@ -1765,6 +1831,7 @@ impl Pump {
                             refresh_call_id(&mut slot, self.call.as_ref());
                             let up = state == CallState::Connected;
                             set_state(&self.inner, &mut slot, state);
+                            refresh_controls(&self.inner, &mut slot);
                             if up && slot.pending_camera.is_some() {
                                 drop(slot);
                                 kick_pending_camera(&self.inner);

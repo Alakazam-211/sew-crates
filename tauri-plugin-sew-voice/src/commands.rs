@@ -1,6 +1,6 @@
 //! The Tauri commands: the eight of `sew-voice:default`, the two device-key commands, the
-//! three call-detail commands, the fourteen video commands and the two recording commands,
-//! each set behind its own permissions. Each one is a thin call into [`VoiceService`]; the argument names are the JSON
+//! three call-detail commands, the fourteen video commands and the three recording commands
+//! (Record, Stop and the host's recording rights), each set behind its own permissions. Each one is a thin call into [`VoiceService`]; the argument names are the JSON
 //! keys the webview sends (`invoke('plugin:sew-voice|join', {target, room, muted, deafened})`,
 //! `invoke('plugin:sew-voice|consent', {granted, notice_version})`: snake_case, as every other
 //! key on the wire).
@@ -17,9 +17,10 @@ use crate::video::ParentWindow;
 use crate::wire::{
     CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceKeyInfo, DeviceList, ErrorInfo,
     ForgetServerArgs, JoinArgs, JoinOptions, JoinResult, MuteArgs, PermissionState, PreviewAnswer,
-    PreviewArgs, ScreenArgs, ScreenSource, SetDeviceArgs, SetVideoCodecPreferenceArgs,
-    SetVideoDeviceArgs, SinkIdArgs, SinkStats, StateSnapshot, Tile, VideoCapsAnswer, VideoCodec,
-    VideoCodecPreference, VideoDevices, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
+    PreviewArgs, RecordingRights, ScreenArgs, ScreenSource, SetDeviceArgs,
+    SetVideoCodecPreferenceArgs, SetVideoDeviceArgs, SinkIdArgs, SinkStats, StateSnapshot, Tile,
+    VideoCapsAnswer, VideoCodec, VideoCodecPreference, VideoDevices, VideoSinkAnswer,
+    VideoSinkArgs, VideoSinkUpdateArgs,
 };
 
 #[tauri::command]
@@ -85,6 +86,28 @@ pub(crate) async fn start_recording(service: State<'_, VoiceService>) -> Result<
 #[tauri::command]
 pub(crate) async fn stop_recording(service: State<'_, VoiceService>) -> Result<(), ErrorInfo> {
     service.stop_recording().await
+}
+
+/// Behind `sew-voice:allow-set-recording-rights` (or the set `sew-voice:recording`).
+#[tauri::command(rename_all = "snake_case")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn set_recording_rights(
+    service: State<'_, VoiceService>,
+    room: String,
+    my_perms: String,
+    dm: Option<bool>,
+    recording_enabled: Option<bool>,
+    recording_dm_enabled: Option<bool>,
+    record_capped: Option<bool>,
+    agent: Option<bool>,
+) -> Result<(), ErrorInfo> {
+    let mut rights = RecordingRights::new(room, my_perms);
+    rights.dm = dm.unwrap_or(false);
+    rights.recording_enabled = recording_enabled.unwrap_or(false);
+    rights.recording_dm_enabled = recording_dm_enabled.unwrap_or(false);
+    rights.record_capped = record_capped.unwrap_or(false);
+    rights.agent = agent.unwrap_or(false);
+    service.set_recording_rights(rights).await
 }
 
 #[tauri::command]

@@ -854,6 +854,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "system": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What this system message records (a group DM renamed); absent on ordinary messages and\non tombstones. A system message's `body` is empty, and it cannot be edited."
+        },
         "thread": {
           "anyOf": [
             {
@@ -899,6 +910,31 @@
         "created_at"
       ],
       "type": "object"
+    },
+    "MessageKind": {
+      "description": "What a system message records (`Message.system`), tagged by `kind`. A client shows a kind\nit does not know ([`MessageKind::Unknown`]) as nothing, or as a plain notice.",
+      "oneOf": [
+        {
+          "description": "The author renamed the group DM, or cleared its name.",
+          "properties": {
+            "kind": {
+              "const": "group_dm_renamed",
+              "type": "string"
+            },
+            "name": {
+              "description": "The new name; absent when the name was cleared (clients show the members again).",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "MessageReference": {
       "description": "A message's reference to another message.",

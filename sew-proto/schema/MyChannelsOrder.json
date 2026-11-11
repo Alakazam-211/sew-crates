@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`GET /api/v1/me/channels?order=`: by id (the default), or by latest activity.",
+  "oneOf": [
+    {
+      "const": "id",
+      "description": "By id ascending (creation order), with the `after` cursor.",
+      "type": "string"
+    },
+    {
+      "const": "activity",
+      "description": "DMs by latest activity, newest first, with the `before` cursor (`kind=dm` only).\nActivity is the DM's `last_message_id` (a call's record message counts), or the\nDM's own id while it has no message.",
+      "type": "string"
+    }
+  ],
+  "title": "MyChannelsOrder"
+}

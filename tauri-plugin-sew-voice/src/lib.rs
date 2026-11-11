@@ -31,6 +31,12 @@
 //! Stop through the host's provider ([`JoinProvider::recording`]) with the person's own
 //! session, as consent goes.
 //!
+//! **Which buttons (0.6.1).** The host tells the plugin the person's rights in the call's room
+//! with `set_recording_rights` ([`RECORDING_RIGHTS_COMMANDS`], in `sew-voice:recording`;
+//! [`RecordingRights`]); the plugin then says whether Sew would take a Record or a Stop now,
+//! in the `recording_controls` event ([`RecordingControls`]) and the `recording` event's
+//! `can_record` and `can_stop`, and updates them as the call changes.
+//!
 //! **Phones (0.3.0).** A CallKit or Telecom shim registers a [`VoiceListener`]
 //! (`Builder::listener`), which sees the call whether or not a webview is awake, and acts
 //! through [`VoiceControl`] (Tauri state): join, leave, mute, consent, the snapshot on wake,
@@ -57,6 +63,7 @@ pub mod listener;
 pub mod native;
 #[cfg(feature = "audio-core")]
 pub mod real;
+mod rights;
 /// The iPhone screen share's ring (feature `ios-screen-ring` with `video-core`; iOS, and Linux
 /// for tests off the device).
 #[cfg(all(
@@ -102,7 +109,7 @@ pub use sew_call_client::device::{
 /// The hardware device key (`Builder::hardware_device_key`: Secure Enclave, StrongBox/TEE) and
 /// the enrolment platform (`Builder::device_platform`), re-exported.
 pub use sew_call_client::device::{DevicePlatform, HardwareDeviceKey};
-/// The consent notice in the web kit's words (`ConsentPrompt::title_en`, `text_en`,
+/// The consent notice in the Sew App kit's words (`ConsentPrompt::title_en`, `text_en`,
 /// `choices_en`), from `sew-proto`.
 pub use sew_proto::recording::{ConsentAsk, ConsentChoice};
 pub use sink::FrameChannel;
@@ -114,8 +121,8 @@ pub use video::{
 pub use wire::{
     CallState, ConsentArgs, ConsentPrompt, DEFAULT_DEVICE, Device, DeviceChoice, DeviceKeyInfo,
     DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs, JoinOptions, JoinResult, MuteArgs,
-    Participant, PluginEvent, RecordingInfo, RecordingParticipant, SelfMute, SetDeviceArgs,
-    Speaking, StateEvent, StateSnapshot,
+    Participant, PluginEvent, RecordingControls, RecordingInfo, RecordingParticipant,
+    RecordingRights, SelfMute, SetDeviceArgs, Speaking, StateEvent, StateSnapshot,
 };
 pub use wire::{
     Camera, CameraArgs, CodecPreferenceInfo, CodecPreferenceReason, Facing, LocalVideo,
@@ -165,6 +172,14 @@ pub const DEVICE_KEY_COMMANDS: [&str; 2] = ["forget_server", "known_device_keys"
 /// the host's provider with the person's session ([`JoinProvider::recording`]); Sew decides
 /// who may.
 pub const RECORDING_COMMANDS: [&str; 2] = ["start_recording", "stop_recording"];
+
+/// The recording rights' command (plugin 0.6.1), in the `sew-voice:recording` set after
+/// [`RECORDING_COMMANDS`] (its own permission `sew-voice:allow-set-recording-rights`):
+/// `set_recording_rights {room, my_perms, dm?, recording_enabled?, recording_dm_enabled?,
+/// record_capped?, agent?}` ([`RecordingRights`]) gives the plugin what it needs for
+/// [`RecordingControls`]. It answers `null`, or `invalid_args` when `my_perms` is not a
+/// decimal number.
+pub const RECORDING_RIGHTS_COMMANDS: [&str; 1] = ["set_recording_rights"];
 
 /// The video commands, outside `sew-voice:default`: a window gets them with the set
 /// `sew-voice:video` (all thirteen, and [`VIDEO_CODEC_COMMANDS`]) or each one's own

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 (2026-11-11, Sew 0.9.2)
+
+- On sew-proto 0.9.2, whose changes are additive (group DM names, system messages, DMs by
+  latest activity). No API or behaviour change of its own. The Apple H.264 hardware guard
+  stays (kessel-video 0.1.5 is still the current release).
+
 ## 0.6.0 (2026-11-10, Sew 0.9.0)
 
 ### Breaking
@@ -20,7 +26,7 @@
   person's own acts, sent through the host with the person's session by the new provided
   method `JoinProvider::recording` (`RecordingRequest`, with `RecordingControl::Start` or
   `Stop` as `action`, `path()`, `body()` and `recording_from_json()`; its JSON, `{target, room,
-  action, recording_id?, device_id?}`, is the web kit's native lane body). Its default sends nothing and
+  action, recording_id?, device_id?}`, is the Sew App kit's native lane body). Its default sends nothing and
   answers `recording_unsupported` (`RECORDING_UNSUPPORTED`). Sew's answer is the call's
   recording at once; Sew's refusals come back as `ProviderError::Refused` with Sew's reason. A
   Stop with no active recording is `CallError::NoRecording`; a Record while the join is held

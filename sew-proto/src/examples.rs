@@ -925,7 +925,18 @@ fn message_full() -> Message {
         call: Some(calls::call_summary_full()),
         recording: Some(recording::recording_summary_full()),
         transcript: Some(recording::transcript_turn_full()),
+        system: None,
     }
+}
+
+/// A group DM's rename notice: a system message with an empty body.
+fn message_system() -> Message {
+    let mut m = message_min();
+    m.body = String::new();
+    m.system = Some(MessageKind::GroupDmRenamed {
+        name: Some("Launch crew".into()),
+    });
+    m
 }
 
 fn message_min() -> Message {
@@ -959,12 +970,17 @@ fn message_min() -> Message {
         call: None,
         recording: None,
         transcript: None,
+        system: None,
     }
 }
 
 impl Example for Message {
     fn examples() -> Vec<(&'static str, Self)> {
-        vec![("full", message_full()), ("min", message_min())]
+        vec![
+            ("full", message_full()),
+            ("full_system", message_system()),
+            ("min", message_min()),
+        ]
     }
 }
 

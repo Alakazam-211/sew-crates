@@ -8,14 +8,14 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tauri_plugin_sew_voice::fake::fake_answer;
-use tauri_plugin_sew_voice::wire::{EVENT_NAMES, EVENT_PREFIX};
+use tauri_plugin_sew_voice::wire::{EVENT_NAMES, EVENT_PREFIX, RECORDING_EVENTS};
 use tauri_plugin_sew_voice::{
     COMMANDS, CallState, ConsentArgs, DEFAULT_DEVICE, DETAIL_COMMANDS, DETAIL_EVENTS,
     DEVICE_KEY_COMMANDS, Device, DeviceChoice, DeviceList, EngineError, ErrorInfo, JoinArgs,
     JoinRequest, JoinResult, MuteArgs, PLUGIN_NAME, Participant, PluginEvent, ProviderError,
-    RECORDING_COMMANDS, RecordingControl, RecordingInfo, RecordingRequest, RejoinReason,
-    SetDeviceArgs, Speaking, StateEvent, StateSnapshot, VIDEO_CODEC_COMMANDS, VIDEO_COMMANDS,
-    app_server_answer,
+    RECORDING_COMMANDS, RECORDING_RIGHTS_COMMANDS, RecordingControl, RecordingControls,
+    RecordingInfo, RecordingRequest, RecordingRights, RejoinReason, SetDeviceArgs, Speaking,
+    StateEvent, StateSnapshot, VIDEO_CODEC_COMMANDS, VIDEO_COMMANDS, app_server_answer,
 };
 use tauri_plugin_sew_voice::{
     CameraArgs, FrameHeader, LocalVideo, LocalVideoState, PreviewArgs, ScreenKind, ScreenSource,
@@ -524,6 +524,72 @@ fn fixture_recording_controls_round_trip() {
     }
 }
 
+/// Plugin 0.6.1: the recording rights' command, the `recording_controls` event, the `recording`
+/// event's `can_record` and `can_stop` and the `state` command's `recording_controls`, as the
+/// fixture writes them; older payloads (no `can_*`) still read.
+#[test]
+fn fixture_recording_rights_round_trip() {
+    let f = fixture();
+    let r = &f["recording"]["controls"]["rights"];
+    assert_eq!(r["command"], json!("set_recording_rights"));
+    assert_eq!(RECORDING_RIGHTS_COMMANDS, ["set_recording_rights"]);
+    assert_eq!(r["permission"], json!("sew-voice:recording"));
+    let args: RecordingRights = serde_json::from_value(r["args"].clone()).expect("args");
+    exact(&args, r["args"].clone());
+    assert_eq!(args.room, "48831765147549698");
+    let bits = sew_proto::perms::Perms(args.perms().expect("decimal"));
+    assert!(bits.contains(sew_proto::perms::Perms::RECORD_CALLS));
+    assert!(args.recording_enabled && !args.dm && !args.record_capped && !args.agent);
+    // Only `room` and `my_perms` are required; the flags read `false`.
+    let short: RecordingRights =
+        serde_json::from_value(json!({"room": "1", "my_perms": "0"})).expect("short");
+    assert_eq!(short, RecordingRights::new("1", "0"));
+    refused::<RecordingRights>(json!({"room": "1"}));
+    refused::<RecordingRights>(json!({"my_perms": "0"}));
+    refused::<RecordingRights>(json!({"room": "1", "my_perms": "0", "name": "Avery"}));
+    assert_eq!(RecordingRights::new("1", "lots").perms(), None);
+
+    assert_eq!(r["event"], json!("sew-voice://recording_controls"));
+    for (k, want) in [
+        ("may_record", (true, false)),
+        ("may_stop", (false, true)),
+        ("neither", (false, false)),
+    ] {
+        let c: RecordingControls = serde_json::from_value(r[k].clone()).expect(k);
+        exact(&c, r[k].clone());
+        assert_eq!((c.can_record, c.can_stop), want, "{k}");
+        assert_eq!(c.is_none(), k == "neither");
+        assert_eq!(PluginEvent::RecordingControls(c).payload(), r[k]);
+    }
+    refused::<RecordingControls>(json!({"can_record": true}));
+    // The recording event: `can_stop` written only when true, the rest as Sew 0.9.0 wrote it.
+    for k in ["started", "granted", "required_two", "required_alone"] {
+        let info: RecordingInfo = serde_json::from_value(r[k].clone()).expect(k);
+        exact(&info, r[k].clone());
+        assert!(!info.can_record, "{k}: never while a recording is active");
+        assert_eq!(info.can_stop, k != "required_two", "{k}");
+        assert_eq!(r[k].get("can_stop").is_some(), info.can_stop, "{k}");
+    }
+    let mut old = r["started"].clone();
+    old.as_object_mut().expect("object").remove("can_stop");
+    assert_eq!(old, f["recording"]["controls"]["start"]["recording"]);
+    let old: RecordingInfo = serde_json::from_value(old).expect("old");
+    assert!(!old.can_record && !old.can_stop);
+    // The `state` command: `recording_controls` while either is true, absent otherwise.
+    let s: StateSnapshot = serde_json::from_value(r["state_snapshot"].clone()).expect("snapshot");
+    assert_eq!(
+        (
+            s.recording_controls.can_record,
+            s.recording_controls.can_stop
+        ),
+        (true, false)
+    );
+    assert_eq!(serde_json::to_value(&s).expect("json"), r["state_snapshot"]);
+    let none: StateSnapshot =
+        serde_json::from_value(f["state_snapshot"]["moved"].clone()).expect("no controls");
+    assert!(none.recording_controls.is_none());
+}
+
 /// A notice that changed before the answer reached Sew: the command error carries Sew's
 /// refusal details for the app to show the new notice.
 #[test]
@@ -583,6 +649,15 @@ fn event_names_are_frozen() {
     assert_eq!(names, DETAIL_EVENTS);
     assert_eq!(details[2].payload(), json!({"quality": "unknown"}));
     assert_eq!(details[3].event_name(), "sew-voice://incoming");
+    // The recording controls' event (0.6.1).
+    assert_eq!(RECORDING_EVENTS, ["recording_controls"]);
+    let controls = PluginEvent::RecordingControls(RecordingControls::default());
+    assert_eq!(controls.name(), RECORDING_EVENTS[0]);
+    assert_eq!(controls.event_name(), "sew-voice://recording_controls");
+    assert_eq!(
+        controls.payload(),
+        json!({"can_record": false, "can_stop": false})
+    );
     assert_eq!(events[0].payload(), json!({"state": "idle"}));
     assert_eq!(events[1].payload(), json!([]));
 }
@@ -646,11 +721,12 @@ fn commands_build_script_and_permissions_agree() {
         .chain(VIDEO_COMMANDS.iter())
         .chain(VIDEO_CODEC_COMMANDS.iter())
         .chain(RECORDING_COMMANDS.iter())
+        .chain(RECORDING_RIGHTS_COMMANDS.iter())
         .copied()
         .collect();
     assert_eq!(
         listed, all,
-        "build.rs's COMMANDS: the eight, the device-key commands, the call-detail ones, the video commands, the codec setting, then the recording commands"
+        "build.rs's COMMANDS: the eight, the device-key commands, the call-detail ones, the video commands, the codec setting, the recording commands, then the recording rights"
     );
     for c in all {
         let generated = manifest_file(&format!("permissions/autogenerated/commands/{c}.toml"));
@@ -690,6 +766,7 @@ fn commands_build_script_and_permissions_agree() {
         .iter()
         .chain(DETAIL_COMMANDS.iter())
         .chain(RECORDING_COMMANDS.iter())
+        .chain(RECORDING_RIGHTS_COMMANDS.iter())
     {
         let perm = format!("allow-{}", c.replace('_', "-"));
         assert!(
@@ -697,10 +774,14 @@ fn commands_build_script_and_permissions_agree() {
             "sew-voice:default must not allow {c}"
         );
     }
-    // The recording commands (Sew 0.9.0) are the `recording` set, and only them.
+    // The recording commands (Sew 0.9.0) and the recording rights (0.6.1) are the `recording`
+    // set, and only them.
     let recording = manifest_file("permissions/recording.toml");
     assert!(recording.contains("identifier = \"recording\""));
-    for c in RECORDING_COMMANDS {
+    for c in RECORDING_COMMANDS
+        .iter()
+        .chain(RECORDING_RIGHTS_COMMANDS.iter())
+    {
         let perm = format!("\"allow-{}\"", c.replace('_', "-"));
         assert!(
             recording.contains(&perm),
@@ -709,7 +790,7 @@ fn commands_build_script_and_permissions_agree() {
     }
     assert_eq!(
         recording.matches("\"allow-").count(),
-        RECORDING_COMMANDS.len()
+        RECORDING_COMMANDS.len() + RECORDING_RIGHTS_COMMANDS.len()
     );
     // The call-detail commands are the `call-details` set (0.4.1).
     let details = manifest_file("permissions/call-details.toml");

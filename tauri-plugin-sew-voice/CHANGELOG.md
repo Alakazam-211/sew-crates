@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.1 (2026-11-11, Sew 0.9.2)
+
+Additions only. On sew-call-client 0.6.1 and sew-proto 0.9.2 (additive: group DM names,
+system messages, DMs by latest activity).
+
+### Added
+
+- Which recording buttons to show: the command `set_recording_rights {room, my_perms, dm?,
+  recording_enabled?, recording_dm_enabled?, record_capped?, agent?}` (`RecordingRights`,
+  `VoiceControl::set_recording_rights`, `VoiceService::set_recording_rights`;
+  `RECORDING_RIGHTS_COMMANDS`, permission `sew-voice:allow-set-recording-rights`, in the set
+  `sew-voice:recording`) takes the host's word on the person's rights in the call's room. From
+  it and the call (its state and room, who is in it, the recording and who started it) the
+  plugin works out whether Sew would take a Record or a Stop now, as Sew checks them: the new
+  event `sew-voice://recording_controls` `{can_record, can_stop}` (`RecordingControls`,
+  `PluginEvent::RecordingControls`, `wire::RECORDING_EVENTS`) when either changes, the `state`
+  command's `recording_controls` (absent while both are `false`), and the `recording` event's
+  `can_record` and `can_stop` (`RecordingInfo`'s new fields; each written only when `true` and
+  read as `false` when absent, so older payloads still parse). They are worked out again on
+  every change of the rights, the state, the room, the participants (a required room's
+  headcount) and the recording, and are `false` until the host sends the rights. The rights
+  apply while the call is in their `room` and are forgotten when the call ends.
+- The fake's `FakeCall::remove_remote`.
+
 ## 0.6.0 (2026-11-10, Sew 0.9.0)
 
 Additions, and two breaks (below): `RecordingInfo` gains fields and is now non-exhaustive, and
@@ -390,7 +414,7 @@ Additive. Needs sew-call-client 0.4.1 and sew-proto 0.8.1.
     `Call::network_changed`. Its `audio_session` still does nothing: kessel-audio's phone
     session hooks are not in the pinned kessel-audio yet.
   - `ConsentAsk` and `ConsentChoice` re-exported from sew-proto (`ConsentPrompt::title_en`,
-    `text_en`, `choices_en`: the web kit's consent words).
+    `text_en`, `choices_en`: the Sew App kit's consent words).
 - A held join's `state` event (`consent_required`) now comes before its `recording` event with
   the notice (it came after), for a fresh join and a re-join alike.
 - iOS and Android: no device enumeration between calls (`CallClientEngine::with_mls` sets no

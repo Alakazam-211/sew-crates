@@ -1,8 +1,8 @@
 //! Examples for the wire types of spaces, categories, channel listings and membership.
 
 use super::{
-    ID_BOB, ID_CAROL, ID_CATEGORY, ID_CHANNEL, ID_ME, ID_OTHER_CHANNEL, ID_SPACE, channel_full,
-    overwrite, space_min, t,
+    ID_BOB, ID_CAROL, ID_CATEGORY, ID_CHANNEL, ID_DM, ID_ME, ID_MESSAGE, ID_OTHER_CHANNEL,
+    ID_SPACE, channel_full, channel_min, overwrite, space_min, t,
 };
 use crate::api::channels::*;
 use crate::api::members::*;
@@ -226,6 +226,61 @@ impl Example for MyChannelsQuery {
                 },
             ),
             ("min", MyChannelsQuery::default()),
+        ]
+    }
+}
+
+impl Example for MyChannelsPageQuery {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MyChannelsPageQuery {
+                    kind: Some(MyChannelsKind::Dm),
+                    order: Some(MyChannelsOrder::Activity),
+                    after: None,
+                    before: Some("48831765147549701.48831765147549711".into()),
+                    limit: Some(100),
+                },
+            ),
+            (
+                "full_by_id",
+                MyChannelsPageQuery {
+                    kind: Some(MyChannelsKind::Space),
+                    order: Some(MyChannelsOrder::Id),
+                    after: Some(ID_CHANNEL),
+                    before: None,
+                    limit: Some(20),
+                },
+            ),
+            ("min", MyChannelsPageQuery::default()),
+        ]
+    }
+}
+
+/// A named group DM, as `order=activity` lists it.
+fn group_dm_named() -> Channel {
+    Channel {
+        kind: ChannelType::GroupDm,
+        name: Some("Launch crew".into()),
+        last_message_id: Some(ID_MESSAGE),
+        dm_member_ids: vec![ID_ME, ID_BOB, ID_CAROL],
+        ..channel_min()
+    }
+}
+
+impl Example for MyChannelsPage {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                MyChannelsPage {
+                    items: vec![group_dm_named(), channel_min()],
+                    has_more: true,
+                    next: Some(format!("{}.{}", ID_DM, ID_DM)),
+                },
+            ),
+            ("min", MyChannelsPage::new(vec![], false)),
         ]
     }
 }

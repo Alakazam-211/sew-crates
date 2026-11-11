@@ -384,6 +384,34 @@ pub struct Message {
     /// absent on tombstones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<crate::recording::TranscriptTurn>,
+    /// What this system message records (a group DM renamed); absent on ordinary messages and
+    /// on tombstones. A system message's `body` is empty, and it cannot be edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<MessageKind>,
+}
+
+/// What a system message records (`Message.system`), tagged by `kind`. A client shows a kind
+/// it does not know ([`MessageKind::Unknown`]) as nothing, or as a plain notice.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum MessageKind {
+    /// The author renamed the group DM, or cleared its name.
+    GroupDmRenamed {
+        /// The new name; absent when the name was cleared (clients show the members again).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// A kind this build does not know.
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
+}
+
+/// `details.reason` values of message refusals.
+pub mod reasons {
+    /// `422 invalid_state`: a system message (`Message.system`) cannot be edited.
+    pub const SYSTEM_MESSAGE_IMMUTABLE: &str = "system_message_immutable";
 }
 
 impl Message {
@@ -420,6 +448,7 @@ impl Message {
             call: None,
             recording: None,
             transcript: None,
+            system: None,
         }
     }
 }

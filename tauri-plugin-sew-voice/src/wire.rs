@@ -527,6 +527,10 @@ pub struct RecordingParticipant {
 /// Sew 0.9.0 adds `trigger` (what started it: [`trigger`]) and `required` (the room requires
 /// its recording: Stop is refused `recording_required` while two or more people are in it).
 ///
+/// Plugin 0.6.1 adds `can_record` and `can_stop`: whether Sew would take this person's Record
+/// and Stop now, worked out from the host's [`RecordingRights`] (both `false` until the host
+/// gives them). Each is written only when `true`.
+///
 /// Non-exhaustive (Sew 0.9.0): later releases add fields without a breaking change; outside
 /// this crate, read it (or build it from JSON).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -561,6 +565,108 @@ pub struct RecordingInfo {
     /// as `false` when absent.
     #[serde(default)]
     pub required: bool,
+    /// Record would not be refused now (plugin 0.6.1; [`RecordingControls::can_record`]).
+    /// Always `false` here: Sew refuses a second recording (`recording_active`). Written only
+    /// when `true`; read as `false` when absent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub can_record: bool,
+    /// Stop would not be refused now (plugin 0.6.1; [`RecordingControls::can_stop`]): show
+    /// Stop while it is `true`. "Stop recording me" (`withdraw_consent`) is separate and always
+    /// works. Written only when `true`; read as `false` when absent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub can_stop: bool,
+}
+
+/// What the person may do about the call's recording now (plugin 0.6.1): the
+/// `recording_controls` event and the `state` command's `recording_controls`.
+///
+/// `{"can_record": true, "can_stop": false}`. The plugin works both out from the host's
+/// [`RecordingRights`] (`set_recording_rights`) and what it knows of the call: the state, who
+/// is in the room, the recording and who started it. Both are `false` with no call, while the
+/// join is held for a notice, and until the host gives the rights. They follow Sew's own
+/// checks; Sew still decides, so show its refusal if one comes.
+///
+/// Non-exhaustive: later releases add fields without a breaking change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RecordingControls {
+    /// Record would not be refused now: in the call, no recording active, recording on for the
+    /// org (and for DMs, in a DM), RECORD_CALLS held, and neither an agent nor a session whose
+    /// pass may not record.
+    pub can_record: bool,
+    /// Stop would not be refused now: a recording is active, and the person is its starter,
+    /// holds RECORD_CALLS or MANAGE_CHANNELS (in a DM: is in the call), is neither an agent
+    /// nor a session whose pass may not record, and the recording is not a required one with
+    /// two or more people in the room.
+    pub can_stop: bool,
+}
+
+impl RecordingControls {
+    /// Neither (the `state` command leaves it out then).
+    pub fn is_none(&self) -> bool {
+        !self.can_record && !self.can_stop
+    }
+}
+
+/// `set_recording_rights`' arguments (plugin 0.6.1): what the host knows of the person's
+/// rights in the call's room, for [`RecordingControls`].
+///
+/// `{"room": "48831765147549698", "my_perms": "8388608", "dm": false,
+/// "recording_enabled": true, "recording_dm_enabled": false, "record_capped": false,
+/// "agent": false}`. Only `room` and `my_perms` are required; the others read `false` when
+/// absent. Send it on (or before) each join, and again whenever one of them changes (Sew's
+/// permission updates for the channel, a policy change, a move: the `state` event's new
+/// `room`). It applies while the call is in `room`, and is forgotten when the call ends.
+///
+/// Non-exhaustive: later releases add fields (each optional) without a breaking change.
+/// Outside this crate, build one with [`RecordingRights::new`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RecordingRights {
+    /// The room the rights are for, as `join`'s `room` (or the `state` event's after a move).
+    pub room: String,
+    /// The person's permissions on the room's voice channel or DM, as Sew reports them (the
+    /// channel's `my_perms`, a decimal string). A session whose pass may not record already
+    /// has RECORD_CALLS left out there.
+    pub my_perms: String,
+    /// The room is a DM or group DM call.
+    #[serde(default)]
+    pub dm: bool,
+    /// The org policy `recording.enabled` (the policy digest's `recording_enabled`).
+    #[serde(default)]
+    pub recording_enabled: bool,
+    /// The org policy `recording.dm_enabled` (the policy digest's `recording_dm_enabled`).
+    #[serde(default)]
+    pub recording_dm_enabled: bool,
+    /// The session's pass lacks `voice:record` where its App requires it: Sew refuses both
+    /// Record and Stop with `cap_ceiling`.
+    #[serde(default)]
+    pub record_capped: bool,
+    /// The person is an agent (or the session acts as one): Sew refuses agents both.
+    #[serde(default)]
+    pub agent: bool,
+}
+
+impl RecordingRights {
+    /// Rights for `room` with `my_perms` (a decimal string); every flag `false`.
+    pub fn new(room: impl Into<String>, my_perms: impl Into<String>) -> RecordingRights {
+        RecordingRights {
+            room: room.into(),
+            my_perms: my_perms.into(),
+            dm: false,
+            recording_enabled: false,
+            recording_dm_enabled: false,
+            record_capped: false,
+            agent: false,
+        }
+    }
+
+    /// `my_perms` as bits, or `None` when it is not a decimal number.
+    pub fn perms(&self) -> Option<u64> {
+        self.my_perms.parse().ok()
+    }
 }
 
 /// The `recording` event's `trigger` values (Sew 0.9.0).
@@ -609,6 +715,8 @@ impl RecordingInfo {
             recorder_present,
             trigger: trigger::of(r.trigger),
             required: r.required,
+            can_record: false,
+            can_stop: false,
         }
     }
 }
@@ -723,6 +831,10 @@ pub struct StateSnapshot {
     /// true (the listener's `video_changed`). Absent while false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_video: bool,
+    /// What the person may do about the recording now (plugin 0.6.1), as the
+    /// `recording_controls` event; absent while both are `false`.
+    #[serde(default, skip_serializing_if = "RecordingControls::is_none")]
+    pub recording_controls: RecordingControls,
 }
 
 impl StateSnapshot {
@@ -740,6 +852,7 @@ impl StateSnapshot {
             local_video: LocalVideo::default(),
             policy: None,
             has_video: false,
+            recording_controls: RecordingControls::default(),
         }
     }
 }
@@ -781,6 +894,8 @@ pub enum PluginEvent {
     VideoDevices(VideoDevices),
     /// `policy`: the room's new `MediaPolicy` (Sew's `media_policy_updated`).
     Policy(Value),
+    /// `recording_controls`: [`RecordingControls`], when either changed (plugin 0.6.1).
+    RecordingControls(RecordingControls),
 }
 
 /// The prefix of every event name the plugin emits: `sew-voice://state` and so on.
@@ -800,9 +915,13 @@ pub const EVENT_NAMES: [&str; 10] = [
     "policy",
 ];
 
+/// The recording controls' event (plugin 0.6.1), beside [`EVENT_NAMES`].
+pub const RECORDING_EVENTS: [&str; 1] = ["recording_controls"];
+
 impl PluginEvent {
     /// The event's frozen name: `state`, `participants`, `speaking`, `errors`, `devices`,
-    /// `recording`, `video`, `local_video`, `video_devices` or `policy`.
+    /// `recording`, `video`, `local_video`, `video_devices` or `policy` (and
+    /// [`RECORDING_EVENTS`], the details' `crate::DETAIL_EVENTS`).
     pub fn name(&self) -> &'static str {
         match self {
             PluginEvent::State(_) => "state",
@@ -819,6 +938,7 @@ impl PluginEvent {
             PluginEvent::LocalVideo(_) => "local_video",
             PluginEvent::VideoDevices(_) => "video_devices",
             PluginEvent::Policy(_) => "policy",
+            PluginEvent::RecordingControls(_) => "recording_controls",
         }
     }
 
@@ -844,6 +964,7 @@ impl PluginEvent {
             PluginEvent::LocalVideo(l) => serde_json::to_value(l),
             PluginEvent::VideoDevices(d) => serde_json::to_value(d),
             PluginEvent::Policy(p) => Ok(p.clone()),
+            PluginEvent::RecordingControls(c) => serde_json::to_value(c),
         };
         // These types are plain structs of strings, bools and numbers; serde_json cannot fail
         // on them (a NaN level is written as null).

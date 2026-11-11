@@ -35,7 +35,7 @@ the end-to-end encrypted calls (`sew-e2ee`).
 
 ```toml
 [dependencies]
-sew-mls-crypto = "0.9.0"
+sew-mls-crypto = "0.9.2"
 openmls = "=0.9.0"
 ```
 
@@ -46,6 +46,17 @@ use sew_mls_crypto::MlsProvider;
 let provider = MlsProvider::new();
 // Use `provider` wherever OpenMLS takes an `OpenMlsProvider`.
 ```
+
+The version numbers don't clash. OpenMLS numbers its helper crates apart from `openmls`
+itself: `openmls` 0.9.0 depends on `openmls_traits` 0.6, and this crate implements
+`openmls_traits` 0.6.0's traits and uses `openmls_memory_storage` 0.6.0 (built on the same
+`openmls_traits`). This crate pins both at exactly `=0.6.0`, so Cargo resolves one
+`openmls_traits` for your `openmls` 0.9.0 and this provider.
+
+Leave openmls' `targeted-messages-draft` and `virtual-clients-draft` features off: they add
+required methods to `OpenMlsCrypto` that this provider does not implement.
+
+MSRV: Rust 1.95.
 
 `SignatureKeyPair` is the signature key pair of a basic credential (Ed25519 or ECDSA P-256), in
 place of `openmls_basic_credential`'s: the same keys, signatures, serde and TLS forms and storage

@@ -68,7 +68,8 @@ pub struct Channel {
     /// The slug; absent for DMs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<Slug>,
-    /// The name; absent for DMs.
+    /// The name; absent for 1:1 DMs and for group DMs nobody has named (clients then show
+    /// the members of `dm_member_ids`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The topic.
@@ -274,8 +275,14 @@ pub struct UpdateChannelRequest {
     /// A new slug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<Slug>,
-    /// A new name, 1–100 characters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A new name, 1–100 characters once trimmed. On a group DM it is the only field the
+    /// route takes, and `null`, `""` or blanks clear the name (`null` reads as `Some("")`). A
+    /// space channel's name cannot be cleared.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "name_or_clear"
+    )]
     pub name: Option<String>,
     /// Set or clear the topic (≤ 250).
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
@@ -313,6 +320,12 @@ pub struct UpdateChannelRequest {
     pub recording_required: Patch<bool>,
 }
 
+/// `UpdateChannelRequest.name`: an absent field stays `None` (serde's default); a present
+/// `null` reads as `Some("")`, the clear.
+fn name_or_clear<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Some(Option::<String>::deserialize(d)?.unwrap_or_default()))
+}
+
 impl Validate for UpdateChannelRequest {
     fn validate(&self) -> Result<(), ValidationError> {
         crate::voice::check_user_limit(self.user_limit)?;
@@ -324,7 +337,7 @@ impl Validate for UpdateChannelRequest {
                 format!("recording_audio_days must be 0–{RECORDING_AUDIO_DAYS_MAX}"),
             ));
         }
-        check_opt_chars("name", self.name.as_deref(), 1, NAME_MAX_CHARS)?;
+        check_opt_chars("name", self.name.as_deref(), 0, NAME_MAX_CHARS)?;
         check_opt_chars(
             "topic",
             self.topic.as_set().map(String::as_str),
@@ -505,6 +518,154 @@ impl Validate for MyChannelsQuery {
             check_known("kind", k)?;
         }
         crate::api::spaces::check_page_limit(self.limit)
+    }
+}
+
+impl From<MyChannelsQuery> for MyChannelsPageQuery {
+    fn from(q: MyChannelsQuery) -> MyChannelsPageQuery {
+        MyChannelsPageQuery {
+            kind: q.kind,
+            after: q.after,
+            limit: q.limit,
+            ..MyChannelsPageQuery::default()
+        }
+    }
+}
+
+unit_enum! {
+    /// `GET /api/v1/me/channels?order=`: by id (the default), or by latest activity.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
+    pub enum MyChannelsOrder {
+        /// By id ascending (creation order), with the `after` cursor.
+        Id = "id",
+        /// DMs by latest activity, newest first, with the `before` cursor (`kind=dm` only).
+        /// Activity is the DM's `last_message_id` (a call's record message counts), or the
+        /// DM's own id while it has no message.
+        Activity = "activity",
+    }
+}
+
+/// Feature flag: group DM names (`UpdateChannelRequest.name` on a group DM, `Channel.name` on
+/// a named one, the `group_dm_renamed` system message).
+pub const FEATURE_GROUP_DM_NAMES: &str = "group_dm_names";
+/// Feature flag: `GET /api/v1/me/channels?kind=dm&order=activity` (DMs by latest activity,
+/// `before`/`next` paging).
+pub const FEATURE_DM_ORDER_ACTIVITY: &str = "dm_order_activity";
+
+/// Largest `limit` of `GET /api/v1/me/channels?order=activity`.
+pub const MY_CHANNELS_ACTIVITY_LIMIT_MAX: u32 = 200;
+/// Longest `before` cursor in bytes.
+pub const MY_CHANNELS_CURSOR_MAX_BYTES: usize = 64;
+
+/// Query of `GET /api/v1/me/channels` as the server reads it: [`MyChannelsQuery`]'s fields
+/// plus `order` and `before`.
+///
+/// With `order=activity` (and `kind=dm`) the DMs come newest first by activity, `limit`
+/// 1–200 (default 50); `after` is refused there and `before` is refused with `order=id`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct MyChannelsPageQuery {
+    /// Only DMs or only space channels; `order=activity` needs `dm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MyChannelsKind>,
+    /// `id` (the default) or `activity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<MyChannelsOrder>,
+    /// `order=id`: channels with a larger id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Id>,
+    /// `order=activity`: the `next` of the page before; the answer continues strictly below
+    /// it. Opaque.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// Page size: 1–100 by id, 1–200 by activity (default 50).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl MyChannelsPageQuery {
+    /// Whether this is an `order=activity` query.
+    pub fn by_activity(&self) -> bool {
+        self.order == Some(MyChannelsOrder::Activity)
+    }
+}
+
+impl Validate for MyChannelsPageQuery {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(k) = self.kind {
+            check_known("kind", k)?;
+        }
+        if let Some(o) = self.order {
+            check_known("order", o)?;
+        }
+        if !self.by_activity() {
+            if self.before.is_some() {
+                return Err(ValidationError::invalid(
+                    "before",
+                    "before is for order=activity",
+                ));
+            }
+            return crate::api::spaces::check_page_limit(self.limit);
+        }
+        if self.kind != Some(MyChannelsKind::Dm) {
+            return Err(ValidationError::invalid(
+                "kind",
+                "order=activity needs kind=dm",
+            ));
+        }
+        if self.after.is_some() {
+            return Err(ValidationError::invalid(
+                "after",
+                "order=activity pages with before",
+            ));
+        }
+        if let Some(b) = &self.before
+            && (b.is_empty() || b.len() > MY_CHANNELS_CURSOR_MAX_BYTES)
+        {
+            return Err(ValidationError::invalid("before", "before is not a cursor"));
+        }
+        if let Some(l) = self.limit
+            && !(1..=MY_CHANNELS_ACTIVITY_LIMIT_MAX).contains(&l)
+        {
+            return Err(ValidationError::invalid(
+                "limit",
+                format!("limit must be 1–{MY_CHANNELS_ACTIVITY_LIMIT_MAX}"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A page of `GET /api/v1/me/channels`, with `next` (`order=activity`) the cursor of the next
+/// page, absent on the last one: each page continues strictly below its cursor, so paging never
+/// repeats or skips a DM, and a DM that gets a message while a client pages moves above the
+/// cursor, so the client moves it to the top of its list from `message_created` (or a call's
+/// events, by the DM's `last_message_id`) instead of paging again.
+///
+/// The `order=id` answer is the same `{"items", "has_more"}` page as before, without `next`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct MyChannelsPage {
+    /// The channels.
+    pub items: Vec<Channel>,
+    /// Whether more channels exist past this page.
+    pub has_more: bool,
+    /// `order=activity`: the `before` of the next page; absent on the last page and with
+    /// `order=id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+}
+
+impl MyChannelsPage {
+    /// A page with no `next`.
+    pub fn new(items: Vec<Channel>, has_more: bool) -> MyChannelsPage {
+        MyChannelsPage {
+            items,
+            has_more,
+            next: None,
+        }
     }
 }
 

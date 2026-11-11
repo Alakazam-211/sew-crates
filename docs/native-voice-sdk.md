@@ -225,7 +225,7 @@ A host without such a route keeps `consent`'s default: the answer is refused
 
 Record and Stop (Sew 0.9.0) are the person's acts too, so they go the same way, never with the
 call credential. The example's provider uses a third route for them
-(`SEW_VOICE_RECORDING_URL`); the web kit's native lane serves the same body at
+(`SEW_VOICE_RECORDING_URL`); the Sew App kit's native lane serves the same body at
 `POST /sew/native/voice/recording` (beside `/sew/native/voice/join` and `…/consent`; its
 `/sew/native/info` says `recording: true`), and `tauri-plugin-sew-app`'s provider uses it:
 
@@ -252,15 +252,16 @@ Commands are invoked as `plugin:sew-voice|<name>`. Every command rejects with `{
 | Command | Arguments | Answer |
 |---|---|---|
 | `join` | `{target, room, muted?, deafened?, decode?}` | `{call_id}`. One call per app: a second `join` while one is live rejects with `already_in_call`. `decode`: the video codecs the webview decodes (its WebCodecs probe, `["vp8", "h264"]`); the engine offers to receive only what it or the webview decodes (VP8 always; H.264 never on Linux). Without it nothing is assumed about the webview |
-| `leave` | — | `null`. The state goes `ended {reason: "left"}` at once. A no-op with no call. If Sew's leave fails, an `errors` event says so |
+| `leave` | — | `null`. The state goes `ended {reason: "left"}` at once. A no-op with no call. If Sew's leave fails, an `errors` event says so. It never waits on a camera or screen command that waits on a device (a slow or suspended camera), and a `join` right after it is never refused `already_in_call` |
 | `mute` | `{muted?, deafened?}` (at least one) | `null`. Deafened implies muted; un-deafening returns `muted` to its value before the deafen. `not_in_call` with no call |
 | `devices` | — | `{inputs: [{id, name, default}], outputs: [...], input, output}` (`input`/`output`: `null` = the OS default) |
 | `set_device` | `{input?, output?}` (at least one): a device id, or `"default"` for the OS default (followed when it changes later; `devices` then says `null`). An absent or `null` direction stays as it is | `null`. Hot-swaps the stream without leaving the call. On an input, it resolves while the OS permission prompt is up and rejects `mic_denied` once the microphone was refused (§5) |
-| `state` | — | `{state, attempt?, reason?, recording_id?, notice_version?, target?, room?, participants, call_id, recording?}`. Use it when a window opens mid-call |
+| `state` | — | `{state, attempt?, reason?, recording_id?, notice_version?, target?, room?, participants, call_id, recording?, recording_controls?}`. Use it when a window opens mid-call (`recording_controls` from plugin 0.6.1, only while one of them is `true`) |
 | `consent` | `{granted, notice_version}` | `null`. The person's answer to the recording notice (§3a). Rejects `not_in_call`, `no_recording`, `recording_consent_required` (the notice changed: `detail` has the new one), `consent_unsupported`, or your provider's refusal |
 | `withdraw_consent` | — | `null`. "Stop recording me" (§3a). Rejects as `consent` |
 | `start_recording` | — | `null`. Record (Sew 0.9.0, §3a): the person's own act, sent by your provider; the `recording` event follows Sew's answer. Not in `sew-voice:default` (§4). Rejects `not_in_call`, `not_in_voice` (the join is held for a notice), `recording_unsupported`, or Sew's refusal as your provider gave it (`recording_active`, `recording_disabled`, `cap_ceiling`, …) |
 | `stop_recording` | — | `null`. Stop (Sew 0.9.0, §3a). Not in `sew-voice:default`. Rejects `not_in_call`, `no_recording`, `recording_unsupported`, or Sew's refusal (`recording_required` while the room requires its recording and two or more people are in it) |
+| `set_recording_rights` | `{room, my_perms, dm?, recording_enabled?, recording_dm_enabled?, record_capped?, agent?}` | `null`. The person's rights in `room` (plugin 0.6.1, §3a, Which buttons): the `recording_controls` event and the `recording` event's `can_record` and `can_stop` follow them. Any time, with or without a call. Not in `sew-voice:default` (in `sew-voice:recording`). Rejects `invalid_args` (`my_perms` is not a decimal string) |
 | `forget_server` | `{install_id}` (a decimal string) | `[{install_id, member_id, device_scope, account}]`, the device keys removed (§6). Not in `sew-voice:default` (§4). Rejects `in_call`, `invalid_args`, `device_store` |
 | `known_device_keys` | — | `[{install_id, member_id, device_scope, account}]`, every key the device store holds (§6). Not in `sew-voice:default`. Rejects `device_store` |
 
@@ -273,7 +274,8 @@ Events go to every window as `sew-voice://<name>`:
 | `sew-voice://speaking` | `[{member_id, level}]`, `level` 0–1, at most 10 a second, your own member included |
 | `sew-voice://devices` | the `devices` answer, on hot-plug, a default change or a `set_device` |
 | `sew-voice://errors` | `{code, detail}` |
-| `sew-voice://recording` | `{recording_id, auto, started_by?, my_consent, consent_prompt?, participants: [{member_id, consent, recorded}], recorder_present, trigger, required}`, or `null` once no recording is active (Sew 0.7.3, §3a; `trigger` and `required` Sew 0.9.0) |
+| `sew-voice://recording` | `{recording_id, auto, started_by?, my_consent, consent_prompt?, participants: [{member_id, consent, recorded}], recorder_present, trigger, required, can_record?, can_stop?}`, or `null` once no recording is active (Sew 0.7.3, §3a; `trigger` and `required` Sew 0.9.0; `can_record` and `can_stop` plugin 0.6.1, each only when `true`) |
+| `sew-voice://recording_controls` | `{can_record, can_stop}`: whether Sew would take a Record or a Stop from this person now, sent when either changes (plugin 0.6.1, §3a, Which buttons) |
 
 **States.**
 - `idle` → `connecting` (on `join`) → `connected` ⇄ `reconnecting {attempt}` → `ended {reason}`.
@@ -359,7 +361,7 @@ none).
 | `video_caps` | — | `{camera, screen: {supported, system_picker, list, windows}, publish_codecs: ["vp8", "h264"], decode_codecs, receive, self_view, live_switch, backend}`. `self_view`: the `local:camera` and `local:screen` sinks are fed during a call (the published camera's and screen's own layers) as well as by `preview`; `false` or missing: only `preview` feeds `local:camera`. `live_switch`: `set_video_device` switches a camera that is being published now; `false` or missing: the choice applies at the next `camera {on}`. `decode_codecs` are the engine's own decoders; the webview's are its WebCodecs probe. `receive`: the engine receives remote cameras and screens for the sinks (the plugin's `video-core`); missing in an older plugin's answer. `publish_backup` and `codec_preference`: see "Codec choice and the VP8 backup" below (missing in an older plugin's answer) |
 | `video_devices` | — | `{cameras: [{id, name, facing, default}], camera, permission: {camera, screen}}`. `facing`: `front`, `back`, `external`, `unknown`. `camera`: the chosen one (`null`: the OS default). Each permission is `"granted"`, `"denied"` (the OS's restricted state too), `"prompt"` (the OS will ask) or `"unsupported"` (no such capture on this OS or in this build: screen capture on Linux without the portal or libpipewire, a build without video) |
 | `set_video_device` | `{camera}`: an id or `"default"` | `null`. Switches a live camera without a republish (when `video_caps.live_switch`); kept for the next call or preview (a running preview keeps its camera until `preview` is called again). Rejects `camera_not_found` (`detail.camera`) |
-| `camera` | `{on, device?}` | `null` once publishing (or off). Rejects `video_unsupported` (no camera here: checked first, before the permission), `not_in_call`, `video_not_allowed`, `video_disabled`, `camera_permission_denied` and `camera_permission_not_determined` (the plugin never prompts: below), `camera_denied` (the OS refused the device itself), `camera_busy`, `camera_not_found`, `video_slots_full`, `media_busy` (`detail.retry_after`), `media_capacity`, `codec_unavailable` |
+| `camera` | `{on, device?}` | `null` once publishing (or off). Rejects `video_unsupported` (no camera here: checked first, before the permission), `not_in_call`, `video_not_allowed`, `video_disabled`, `camera_permission_denied` and `camera_permission_not_determined` (the plugin never prompts: below), `camera_denied` (the OS refused the device itself), `camera_busy`, `camera_not_found`, `no_frames` (the camera opened but gave no frame within 2.5 s: closed, nothing published), `video_slots_full`, `media_busy` (`detail.retry_after`), `media_capacity`, `codec_unavailable`. Without `device` and with none chosen, it prefers the camera that last gave frames while it is listed and not suspended, else the OS default (a suspended default is passed over). The track is published from the camera's first frame |
 | `screen_sources` | — | `[{id, kind: "display" \| "window", title, app?, width, height, thumbnail_png?}]` (`thumbnail_png`: an 8-bit RGBA PNG at most 320 px wide, aspect kept, base64 with the standard alphabet and no `data:` prefix; absent when the OS gives no preview). `[]` where only the OS picker exists. Rejects `screen_unsupported`, `screen_denied` |
 | `screen` | `{on, source?}` | `null` once publishing (or off). Without `source`, the OS picker (on Windows its parent is the calling window). The share runs at most 1080p15 (lower when `policy.screen` says so) with the screen content hint, under the `self_stream` lease. Rejects as `camera`, plus `screen_denied`, `screen_slots_full`, `picker_cancelled`, `screen_unsupported` (no screen capture here: Linux without the xdg portal or libpipewire, phones; or no OS picker and no `source`), `screen_not_found` (the listed `source` is gone) |
 | `preview` | `{on, device?}` | `{sink_track: "local:camera"}`. The camera before or outside a call (a pre-join check): one encoder at up to 640x360 (the camera's aspect kept; VP8, kessel-video's pure-Rust encoder), nothing sent, no lease. The camera opens only on this command, never on its own between calls, and only with the OS permission granted (the plugin never prompts); `{on: false}` (or a new `preview`) closes it at once (the light goes off). One opener holds the camera: `camera {on}` takes it over from the preview (the `local:camera` sinks go on from the call's own keyframe), and `preview {on}` while the camera is published opens nothing (the call's self-view already feeds `local:camera`). Rejects `camera_permission_denied` and `camera_permission_not_determined` as `camera`, `camera_denied`, `camera_busy`, `camera_not_found`, `codec_unavailable`, `video_unsupported` (no camera here) |
@@ -407,7 +409,7 @@ say something, so a window opened mid-call can draw everything.
 | Event | Payload |
 |---|---|
 | `sew-voice://video` | the whole list on any change: `[{member_id, is_self, source: "camera" \| "screen", track, codec, width, height, muted, paused: null \| "congestion" \| "background" \| "policy", unsupported?}]` (`unsupported` only when `true`) |
-| `sew-voice://local_video` | `{camera: "off" \| "asking" \| "on" \| "paused", screen: same, reason?}`. `reason`: a reject code, `hidden` (a shared window is minimised: `paused`, the share stays), `background`, `thermal`, `user_stopped` (stopped from the OS's own UI), `source_closed` (the shared window closed or the display went away), `camera_lost`, `camera_denied` / `screen_denied` (the OS permission was revoked while sending) or `video_disabled` |
+| `sew-voice://local_video` | `{camera: "off" \| "asking" \| "on" \| "paused", screen: same, reason?}`. `reason`: a reject code, `hidden` (a shared window is minimised: `paused`, the share stays), `background`, `thermal`, `user_stopped` (stopped from the OS's own UI), `source_closed` (the shared window closed or the display went away), `suspended` (`paused`: the camera says it is suspended, as a MacBook's built-in camera with the lid closed; `on` again when it comes back; no error), `camera_lost` (`off`: the camera went away; the track is unpublished, the lease released and the call goes on), `camera_denied` / `screen_denied` (the OS permission was revoked while sending) or `video_disabled` |
 | `sew-voice://video_devices` | the `video_devices` answer, on hot-plug or a `set_video_device` |
 | `sew-voice://policy` | the room's media policy (Sew's `MediaPolicy`, as the join answer has it), when Sew changes it |
 | `sew-voice://errors` | as for voice. Video adds `video_stalled`, `encoder_lost` and `camera_lost` |
@@ -432,13 +434,14 @@ code, such as `os` or `invalid`) for a camera or screen failure none of the code
 | `camera_busy` | `camera`, `preview`, `local_video.reason` | another app holds the camera (as a reason: it took it, `paused`) |
 | `camera_not_found` | `camera`, `preview`, `set_video_device` | no such camera (`detail.camera` for `set_video_device`) |
 | `camera_lost` | `local_video.reason`, `errors` | the camera went away while sending |
+| `no_frames` | `camera` | the camera opened but gave no frame within 2.5 s (closed, the lease released, nothing published) |
 | `screen_unsupported` | `screen`, `screen_sources` | no screen capture here, or no OS picker and no `source` |
 | `picker_cancelled` | `screen` | the person cancelled the OS picker |
 | `screen_not_found` | `screen` | the listed `source` is gone |
 | `encoder_lost` | `preview` (its channel), `errors` | an encoder failed and could not be reopened |
 | `capture_failed` | any capture | a camera or screen failure none of the codes says; `detail.error` is the video backend's own code (`os`, `invalid`, …) |
 | `decoded_unsupported`, `decoded_tiles_full`, `unknown_track`, `unknown_sink` | `video_sink`, `video_sink_update`, `request_keyframe` | the sinks' refusals (above) |
-| `hidden`, `background`, `thermal`, `paused` | `local_video.reason` (`paused`) | a shared window is minimised or hidden; the app went to the background; thermal pressure; another pause. The track stays; back, every layer restarts on a keyframe |
+| `hidden`, `background`, `thermal`, `suspended`, `paused` | `local_video.reason` (`paused`) | a shared window is minimised or hidden; the app went to the background; thermal pressure; the camera is suspended (a laptop lid closed); another pause. The track stays; back, every layer restarts on a keyframe |
 | `user_stopped`, `source_closed`, `unpublished` | `local_video.reason` (`off`) | stopped from the OS's own UI; the shared window or display went away; turned off by `camera` / `screen` |
 
 **Codec choice and the VP8 backup.** What a device publishes follows the media policy and what
@@ -613,11 +616,11 @@ command's error with Sew's reason. In Rust they are `Call::start_recording` and
 - **Record is the starter's own consent, and nobody else's.** Show the modal as a confirmation
   first (its notice is the same one the others get). Everyone else in the room is `pending`
   until they answer, as for any recording started mid-call.
-- **Show the buttons from Sew's answers.** The plugin doesn't know the person's permissions.
-  Offer Record while there's no recording and Stop while there is one, and show a refusal's
-  code as a message: `recording_active` (someone started one first), `recording_disabled`,
-  `dm_recording_disabled`, `recording_capacity`, `not_in_voice` (the join is still held for
-  a notice), `cap_ceiling` (the App's pass may not record), or a missing permission.
+- **Show the buttons from `recording_controls` (plugin 0.6.1).** See Which buttons, below.
+  Sew still decides, so show a refusal's code as a message: `recording_active` (someone
+  started one first), `recording_disabled`, `dm_recording_disabled`, `recording_capacity`,
+  `not_in_voice` (the join is still held for a notice), `cap_ceiling` (the App's pass may not
+  record), or a missing permission.
 - **Rooms that require recording.** An admin can require every call with two or more people
   in it to be recorded. Sew then starts the recording itself when the second person joins
   (`trigger: "required"`), and refuses Stop with `recording_required` while two or more are in
@@ -639,6 +642,47 @@ command's error with Sew's reason. In Rust they are `Call::start_recording` and
 Without the recording route your provider keeps `recording`'s default and both commands
 reject `recording_unsupported`.
 
+### Which buttons (plugin 0.6.1)
+
+The plugin can't read the person's permissions itself (the call socket carries none), so your
+app tells it what it knows of the room with `set_recording_rights` (in Rust,
+`VoiceControl::set_recording_rights` with a `RecordingRights`):
+
+```js
+await voice("set_recording_rights", {
+  room: channelId,                      // as join's room (the state event's after a move)
+  my_perms: channel.my_perms,           // the voice channel's or DM's, as Sew reports them
+  dm: isDm,
+  recording_enabled: policy.recording_enabled,        // the policy digest's
+  recording_dm_enabled: policy.recording_dm_enabled,
+  record_capped: false,                 // the pass lacks voice:record where its App requires it
+  agent: false,                         // the person is an agent
+});
+```
+
+Send it on (or before) each join and again whenever one of them changes: Sew's permission
+updates for the channel or the person's roles, a policy change, a move (the `state` event's new
+`room`). It applies while the call is in `room` and is forgotten when the call ends.
+
+The plugin then sends `sew-voice://recording_controls` `{can_record, can_stop}` whenever
+either changes, puts the same two in the `recording` event (`can_stop` is the one that matters
+there: `can_record` is always `false` while a recording is active) and in the `state`
+command's `recording_controls`. Show Record while `can_record`, Stop while `can_stop`, and
+"Stop recording me" while `my_consent` is `granted`, whatever `can_stop` says. They follow
+Sew's own checks:
+
+| | `true` when |
+|---|---|
+| both | the call is `connected` or `reconnecting` in `room`, and the person is not an `agent` and not `record_capped` |
+| `can_record` | no recording is active, `recording_enabled`, in a DM also `recording_dm_enabled`, and `my_perms` holds RECORD_CALLS |
+| `can_stop` | a recording is active and, in a DM, always (anyone in the call); elsewhere the person started it, or `my_perms` holds RECORD_CALLS or MANAGE_CHANNELS. Never for a recording Sew started because the room requires one (`trigger: "required"`) while two or more people are in the call |
+
+They change as the call does: the rights, the state, the room, the participants (a required
+room's headcount) and the recording. Both are `false` with no call, while a join is held for a
+notice, and until you send the rights. Sew still decides, and checks things the plugin can't
+see (the recorder switched off on the server, an App's Space without uploads, capacity), so
+show its refusal when one comes.
+
 ## 3b. Phones: the native listener and control (plugin 0.3.0)
 
 A CallKit (iOS) or Telecom (Android) shim needs the call when no webview is awake. The plugin
@@ -654,7 +698,8 @@ gives it two things, both in Rust; the objc2 or JNI bridge is the host's.
   and hop to your own queue. There is no `on_speaking`.
 - **`VoiceControl`** (Tauri state: `app.state::<VoiceControl>().inner().clone()`): async
   `join`, `leave` (safe to repeat), `set_muted`, `set_deafened` (both `not_in_call` without a
-  call), `consent`, `withdraw_consent`, `start_recording` and `stop_recording` (Sew 0.9.0);
+  call), `consent`, `withdraw_consent`, `start_recording` and `stop_recording` (Sew 0.9.0),
+  `set_recording_rights` (plugin 0.6.1);
   sync `snapshot` (read it on wake instead of replaying events); `network_changed` (the live call resumes now); `session_activated`,
   `session_deactivated`, `suspend`, `resume` and `route_changed`, which go to kessel-audio
   (below); for a sign-out, async `forget_server(install_id)` and `known_device_keys()`
@@ -1024,8 +1069,8 @@ The plugin ships Tauri 2 permission files. Put them in your capability:
 | `sew-voice:allow-join`, `allow-leave`, `allow-mute`, `allow-devices`, `allow-set-device`, `allow-state`, `allow-consent`, `allow-withdraw-consent` | one command each (`deny-*` exist too) |
 | `sew-voice:device-keys` | `forget_server` and `known_device_keys` (0.4.1; not in `default`) |
 | `sew-voice:allow-forget-server`, `allow-known-device-keys` | one each (`deny-*` too) |
-| `sew-voice:recording` | `start_recording` and `stop_recording` (Sew 0.9.0; not in `default`, §3a). Grant it only to a window with Record and Stop buttons, and only when your provider sends them |
-| `sew-voice:allow-start-recording`, `allow-stop-recording` | one each (`deny-*` too) |
+| `sew-voice:recording` | `start_recording` and `stop_recording` (Sew 0.9.0), and `set_recording_rights` (plugin 0.6.1); not in `default`, §3a. Grant it only to a window with Record and Stop buttons, and only when your provider sends them |
+| `sew-voice:allow-start-recording`, `allow-stop-recording`, `allow-set-recording-rights` | one each (`deny-*` too). A host that sends the rights from Rust (`VoiceControl`) needs no `allow-set-recording-rights` |
 | `sew-voice:call-details` | `call_details`, `ring` and `ring_ended` (0.4.1; not in `default`, §3c) |
 | `sew-voice:allow-call-details`, `allow-ring`, `allow-ring-ended` | one each (`deny-*` too) |
 | `sew-voice:video` | the thirteen video commands (§3, Video; not in `default`) |

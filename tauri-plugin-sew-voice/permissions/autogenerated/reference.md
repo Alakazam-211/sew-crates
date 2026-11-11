@@ -498,6 +498,32 @@ Denies the set_device command without any pre-configured scope.
 <tr>
 <td>
 
+`sew-voice:allow-set-recording-rights`
+
+</td>
+<td>
+
+Enables the set_recording_rights command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-set-recording-rights`
+
+</td>
+<td>
+
+Denies the set_recording_rights command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `sew-voice:allow-set-video-codec-preference`
 
 </td>
@@ -829,10 +855,12 @@ window that needs it.
 
 The recording commands (Sew 0.9.0), for a call UI with Record and Stop buttons:
 `start_recording` and `stop_recording`. Each is the person's own act, which the host's provider
-sends to Sew with the person's session; Sew decides who may. Answering a recording's notice
-(`consent`, `withdraw_consent`) is in `sew-voice:default` and needs nothing more. Not in
-`sew-voice:default`: grant it to the call window, or `sew-voice:allow-start-recording` /
-`sew-voice:allow-stop-recording` one by one.
+sends to Sew with the person's session; Sew decides who may. With them (0.6.1)
+`set_recording_rights`, the host's word on the person's rights in the room, from which the
+plugin says which of the two Sew would take now. Answering a recording's notice (`consent`,
+`withdraw_consent`) is in `sew-voice:default` and needs nothing more. Not in
+`sew-voice:default`: grant it to the call window, or `sew-voice:allow-start-recording`,
+`sew-voice:allow-stop-recording` and `sew-voice:allow-set-recording-rights` one by one.
 
 
 </td>

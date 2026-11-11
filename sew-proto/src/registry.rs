@@ -186,6 +186,7 @@ pub const NESTED: &[&str] = &[
     "MemberChange",
     "MemberListSub",
     "MentionTargets",
+    "MessageKind",
     "MessageReference",
     "MgmtPrincipal",
     "OnBehalfApproval",
@@ -1569,7 +1570,7 @@ pub fn all() -> Vec<WireType> {
             Response,
             "api/channels",
             ChannelPage,
-            "GET /api/v1/spaces/{id}/channels, GET /api/v1/me/channels"
+            "GET /api/v1/spaces/{id}/channels"
         ),
         wire!(Enum, "api/channels", ChannelListScope, ""),
         wire!(
@@ -1579,10 +1580,23 @@ pub fn all() -> Vec<WireType> {
             "GET /api/v1/spaces/{id}/channels"
         ),
         wire!(Enum, "api/channels", MyChannelsKind, ""),
+        wire!(Enum, "api/channels", MyChannelsOrder, ""),
         wire!(
             Request,
             "api/channels",
             MyChannelsQuery,
+            "GET /api/v1/me/channels (order=id; the subset of MyChannelsPageQuery)"
+        ),
+        wire!(
+            Request,
+            "api/channels",
+            MyChannelsPageQuery,
+            "GET /api/v1/me/channels"
+        ),
+        wire!(
+            Response,
+            "api/channels",
+            MyChannelsPage,
             "GET /api/v1/me/channels"
         ),
         wire!(

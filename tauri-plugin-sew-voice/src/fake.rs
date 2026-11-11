@@ -18,7 +18,10 @@
 //! `withdraw_consent` are recorded ([`FakeCall::consents`]) and the test says what Sew answered
 //! with [`FakeCall::set_recording`]. Sew 0.9.0: `start_recording` and `stop_recording` are
 //! recorded too ([`FakeCall::controls`]); a Start records this member alone (the `recording`
-//! event), a Stop ends it, and [`FakeCall::fail_next_control`] gives Sew's refusals.
+//! event), a Stop ends it, and [`FakeCall::fail_next_control`] gives Sew's refusals. The
+//! recording's `can_record` and `can_stop` are the plugin's (from the host's rights), so the
+//! fake leaves them `false`; [`FakeCall::add_remote`] and [`FakeCall::remove_remote`] change
+//! the room's headcount.
 //!
 //! Video: off until [`FakeEngine::enable_video`] (then the demo cameras and capabilities). A
 //! call's frame channel is fed with [`FakeCall::push_video`]; its tracks, camera and policy are
@@ -1382,6 +1385,9 @@ impl FakeCall {
                     recorder_present: true,
                     trigger: crate::wire::trigger::MANUAL.to_owned(),
                     required: false,
+                    // The plugin works these out from the host's rights.
+                    can_record: false,
+                    can_stop: false,
                 })
             }
             _ if !active => return Err(EngineError::failed(crate::wire::code::NO_RECORDING)),
@@ -1522,6 +1528,13 @@ impl FakeCall {
             server_deafened: false,
             speak_denied: false,
         });
+        self.emit(CallEvent::Participants(p));
+    }
+
+    /// Remove a remote member (they left the room).
+    pub fn remove_remote(&self, member_id: &str) {
+        let mut p = self.snapshot().participants;
+        p.retain(|p| p.is_self || p.member_id != member_id);
         self.emit(CallEvent::Participants(p));
     }
 

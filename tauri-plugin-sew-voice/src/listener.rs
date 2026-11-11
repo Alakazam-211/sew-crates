@@ -18,7 +18,7 @@ use crate::engine::{AppScene, AudioSessionEvent};
 use crate::service::VoiceService;
 use crate::wire::{
     CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceList, ErrorInfo, JoinArgs, JoinOptions,
-    JoinResult, MuteArgs, Participant, PermissionState, RecordingInfo, SelfMute,
+    JoinResult, MuteArgs, Participant, PermissionState, RecordingInfo, RecordingRights, SelfMute,
     SetVideoCodecPreferenceArgs, StateEvent, StateSnapshot, VideoCodecPreference,
 };
 
@@ -218,6 +218,14 @@ impl VoiceControl {
     /// the room requires its recording and two or more people are in it.
     pub async fn stop_recording(&self) -> Result<(), ErrorInfo> {
         self.service.stop_recording().await
+    }
+
+    /// The host's word on the person's rights in `rights.room` (0.6.1), as the
+    /// `set_recording_rights` command: the `recording` event's `can_record` and `can_stop`
+    /// (and `on_recording`'s) follow them. `invalid_args` when `my_perms` is not a decimal
+    /// number.
+    pub async fn set_recording_rights(&self, rights: RecordingRights) -> Result<(), ErrorInfo> {
+        self.service.set_recording_rights(rights).await
     }
 
     /// The state now: state, target, room, participants, call_id and recording. Sync and

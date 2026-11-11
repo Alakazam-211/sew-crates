@@ -1374,3 +1374,204 @@ fn device_key_wire_shapes() {
             .is_err()
     );
 }
+
+/// The fixture's `recording.controls.rights`.
+fn rights_fixture() -> Value {
+    fixture()["recording"]["controls"]["rights"].clone()
+}
+
+/// `my_perms` with CONNECT and SPEAK, plus `extra`.
+fn perms(extra: sew_proto::perms::Perms) -> String {
+    use sew_proto::perms::Perms;
+    (Perms::CONNECT.0 | Perms::SPEAK.0 | extra.0).to_string()
+}
+
+fn rights(my_perms: String) -> tauri_plugin_sew_voice::RecordingRights {
+    let mut r = tauri_plugin_sew_voice::RecordingRights::new(CHANNEL, my_perms);
+    r.recording_enabled = true;
+    r
+}
+
+/// The last `recording_controls` the webview got.
+fn last_controls(w: &World) -> Option<Value> {
+    w.sink.of("recording_controls").last().cloned()
+}
+
+/// Plugin 0.6.1: the host's rights turn the controls on; Record, a permission change, a
+/// required room's headcount, Stop and the call's end move them, each as one event when
+/// something changed (the fixture's payloads).
+#[tokio::test]
+async fn recording_controls_follow_the_rights_the_room_and_the_recording() {
+    use sew_proto::perms::Perms;
+    let r = rights_fixture();
+    let w = joined().await;
+    let call = w.engine.last_call().expect("call");
+    // No rights yet: nothing to say, and the recording event has no `can_*`.
+    assert!(w.sink.of("recording_controls").is_empty());
+
+    let given: tauri_plugin_sew_voice::RecordingRights =
+        serde_json::from_value(r["args"].clone()).expect("args");
+    w.svc
+        .set_recording_rights(given.clone())
+        .await
+        .expect("rights");
+    assert_eq!(
+        w.sink.of("recording_controls"),
+        vec![r["may_record"].clone()]
+    );
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert_eq!(snap, r["state_snapshot"]);
+    // The same rights again: nothing changes, nothing is sent.
+    w.svc.set_recording_rights(given).await.expect("again");
+    assert_eq!(w.sink.of("recording_controls").len(), 1);
+
+    // Record: the recording says Stop, and the controls follow.
+    w.sink.clear();
+    w.svc.start_recording().await.expect("start");
+    until("started", || w.svc.snapshot().recording.is_some()).await;
+    assert_eq!(
+        w.sink.events(),
+        vec![
+            ("recording".into(), r["started"].clone()),
+            ("recording_controls".into(), r["may_stop"].clone()),
+        ]
+    );
+    // The starter keeps Stop without RECORD_CALLS.
+    w.svc
+        .set_recording_rights(rights(perms(Perms(0))))
+        .await
+        .expect("rights");
+    assert_eq!(last_controls(&w), Some(r["may_stop"].clone()));
+    assert_eq!(w.sink.of("recording").len(), 1, "unchanged: not sent");
+    w.svc.stop_recording().await.expect("stop");
+    until("stopped", || w.svc.snapshot().recording.is_none()).await;
+    // No RECORD_CALLS: no Record either.
+    assert_eq!(last_controls(&w), Some(r["neither"].clone()));
+
+    // Someone else's recording: Stop with RECORD_CALLS only. A permission update takes it away
+    // and gives it back.
+    w.svc
+        .set_recording_rights(rights(perms(Perms::RECORD_CALLS)))
+        .await
+        .expect("rights");
+    assert_eq!(last_controls(&w), Some(r["may_record"].clone()));
+    let granted: tauri_plugin_sew_voice::RecordingInfo =
+        serde_json::from_value(fixture()["recording"]["granted"].clone()).expect("granted");
+    call.set_recording(Some(granted));
+    until("granted", || w.svc.snapshot().recording.is_some()).await;
+    assert_eq!(w.sink.of("recording").last(), Some(&r["granted"]));
+    assert_eq!(last_controls(&w), Some(r["may_stop"].clone()));
+    w.sink.clear();
+    w.svc
+        .set_recording_rights(rights(perms(Perms(0))))
+        .await
+        .expect("lost");
+    assert_eq!(
+        w.sink.events(),
+        vec![
+            (
+                "recording".into(),
+                fixture()["recording"]["granted"].clone()
+            ),
+            ("recording_controls".into(), r["neither"].clone()),
+        ]
+    );
+    w.svc
+        .set_recording_rights(rights(perms(Perms::MANAGE_CHANNELS)))
+        .await
+        .expect("manager");
+    assert_eq!(last_controls(&w), Some(r["may_stop"].clone()));
+
+    // A required room's recording: Stop only while the person is alone in the room.
+    let required: tauri_plugin_sew_voice::RecordingInfo = serde_json::from_value(
+        fixture()["recording"]["controls"]["required_room"]["recording"].clone(),
+    )
+    .expect("required");
+    call.set_recording(Some(required));
+    until("required", || {
+        w.svc
+            .snapshot()
+            .recording
+            .as_ref()
+            .map(|r| r.recording_id.as_str())
+            == Some("48831765147549722")
+    })
+    .await;
+    assert_eq!(w.sink.of("recording").last(), Some(&r["required_alone"]));
+    call.add_remote("48831765147549700");
+    until("two", || !w.svc.snapshot().recording_controls.can_stop).await;
+    assert_eq!(w.sink.of("recording").last(), Some(&r["required_two"]));
+    assert_eq!(last_controls(&w), Some(r["neither"].clone()));
+    call.remove_remote("48831765147549700");
+    until("alone", || w.svc.snapshot().recording_controls.can_stop).await;
+    assert_eq!(w.sink.of("recording").last(), Some(&r["required_alone"]));
+    assert_eq!(last_controls(&w), Some(r["may_stop"].clone()));
+
+    // The call ends: the controls go off and the rights are forgotten.
+    w.sink.clear();
+    w.svc.leave().await.expect("leave");
+    assert_eq!(last_controls(&w), Some(r["neither"].clone()));
+    assert!(w.svc.snapshot().recording_controls.is_none());
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert!(snap.get("recording_controls").is_none(), "{snap}");
+    w.svc.join(args()).await.expect("again");
+    until("connected", || {
+        w.svc.snapshot().state == CallState::Connected
+    })
+    .await;
+    assert!(w.svc.snapshot().recording_controls.is_none(), "forgotten");
+}
+
+/// The rights apply to their room only: a move needs the new room's, and rights sent before the
+/// join apply once the call is in.
+#[tokio::test]
+async fn recording_rights_are_per_room_and_may_come_first() {
+    let r = rights_fixture();
+    let w = world();
+    let given: tauri_plugin_sew_voice::RecordingRights =
+        serde_json::from_value(r["args"].clone()).expect("args");
+    w.svc
+        .set_recording_rights(given.clone())
+        .await
+        .expect("early");
+    assert!(w.sink.events().is_empty(), "no call: nothing to say");
+    w.svc.join(args()).await.expect("join");
+    until("controls", || {
+        w.svc.snapshot().recording_controls.can_record
+    })
+    .await;
+    assert_eq!(last_controls(&w), Some(r["may_record"].clone()));
+
+    let call = w.engine.last_call().expect("call");
+    call.move_to("48831765147549710");
+    until("moved", || !w.svc.snapshot().recording_controls.can_record).await;
+    assert_eq!(last_controls(&w), Some(r["neither"].clone()));
+    let mut moved = given;
+    moved.room = "48831765147549710".into();
+    w.svc.set_recording_rights(moved).await.expect("new room");
+    assert_eq!(last_controls(&w), Some(r["may_record"].clone()));
+
+    // DMs: the DM policy; agents and capped sessions get nothing.
+    let mut dm = rights(perms(sew_proto::perms::Perms::RECORD_CALLS));
+    dm.room = "48831765147549710".into();
+    dm.dm = true;
+    w.svc.set_recording_rights(dm.clone()).await.expect("dm");
+    assert_eq!(last_controls(&w), Some(r["neither"].clone()));
+    dm.recording_dm_enabled = true;
+    w.svc.set_recording_rights(dm.clone()).await.expect("dm on");
+    assert_eq!(last_controls(&w), Some(r["may_record"].clone()));
+    for (agent, capped) in [(true, false), (false, true)] {
+        let mut x = dm.clone();
+        x.agent = agent;
+        x.record_capped = capped;
+        w.svc.set_recording_rights(x).await.expect("x");
+        assert_eq!(last_controls(&w), Some(r["neither"].clone()));
+    }
+
+    let e = w
+        .svc
+        .set_recording_rights(tauri_plugin_sew_voice::RecordingRights::new(CHANNEL, "x"))
+        .await
+        .expect_err("not a number");
+    assert_eq!(e.code, "invalid_args");
+}

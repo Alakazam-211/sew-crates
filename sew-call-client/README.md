@@ -89,7 +89,7 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.6.0"
+sew-call-client = "0.6.1"
 ```
 
 **Known issue without the `str0m` fork.** The fork's `[patch.crates-io]` rows carry a fix to

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-recording-rights"
+description = "Enables the set_recording_rights command without any pre-configured scope."
+commands.allow = ["set_recording_rights"]
+
+[[permission]]
+identifier = "deny-set-recording-rights"
+description = "Denies the set_recording_rights command without any pre-configured scope."
+commands.deny = ["set_recording_rights"]

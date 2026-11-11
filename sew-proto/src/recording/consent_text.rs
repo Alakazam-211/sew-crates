@@ -1,7 +1,7 @@
 //! The consent notice in English words, for native hosts (a lock screen, a notification) that
-//! show [`ConsentPrompt`] without the web kit.
+//! show [`ConsentPrompt`] without the Sew App kit.
 //!
-//! The sentences are the web kit's consent modal's, word for word (sew-web
+//! The sentences are the Sew App kit's consent modal's, word for word (sew-web
 //! `packages/calls/src/strings.ts` `R` and `react.tsx` `ConsentDialog`, at c4f6512): the same
 //! title, the same lines in the same order, the same answers. The prompt's slots fill them;
 //! nothing here is sent to Sew, and the answer still echoes [`ConsentPrompt::notice_version`].

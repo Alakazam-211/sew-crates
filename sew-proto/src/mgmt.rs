@@ -788,6 +788,10 @@ pub const FEATURES: &[&str] = &[
     FEATURE_CALL_CREDENTIAL,
     // Since 0.7.1: the beacon's client `native` and audio fields (`stats.audio_fields`).
     FEATURE_CALL_STATS_NATIVE,
+    // Since 0.9.2: the DMs by latest activity (`GET /api/v1/me/channels?order=activity`).
+    crate::api::channels::FEATURE_DM_ORDER_ACTIVITY,
+    // Since 0.9.2: group DM names (the update's `name` on a group DM, the rename notice).
+    crate::api::channels::FEATURE_GROUP_DM_NAMES,
     // `/mgmt/v1/home-client` and `hidden_from_home`.
     FEATURE_HOME_CLIENT,
     "home_client_owner_approval", // `POST /mgmt/v1/home-client` needs the owner's approval.
