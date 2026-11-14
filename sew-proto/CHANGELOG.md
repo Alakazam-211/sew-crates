@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.3 (2026-11-12)
+
+- The version follows Sew 0.9.3. No API or behaviour change.
+
+### Correction to 0.9.2's notes
+
+- 0.9.2's notes say a payload of 0.9.0 reads as before. One does not: `UpdateChannelRequest`
+  with a present `"name": null` read as `None` in 0.9.0, which keeps the channel's name, and
+  reads as `Some("")` from 0.9.2 on, which clears a group DM's name (as 0.9.2's Group DM names
+  entry says) and which the server refuses on a space channel (`400 validation_failed`, field
+  `name`). An absent `name` still reads as `None`. Every other 0.9.0 payload reads as before,
+  and no public field or type changes shape.
+
 ## 0.9.2 (2026-11-11)
 
 Additive: no public field or type changes shape, and a payload of 0.9.0 reads as before.

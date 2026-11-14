@@ -282,6 +282,8 @@ impl JsonSchema for ExternalId {
 }
 
 #[cfg(test)]
+// The package has no clippy.toml (Sew's allows expect in tests); the module says it itself.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

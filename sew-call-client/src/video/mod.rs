@@ -74,6 +74,7 @@ pub use preview::{
 pub use publish::{
     BackupSpec, EncodedVideo, LayerRate, LayerSpec, LocalVideo, VideoCaps, VideoControl,
     VideoError, VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
+    plan_screen_layers,
 };
 pub use subscribe::{VideoFrameStream, VideoSink};
 pub use types::{

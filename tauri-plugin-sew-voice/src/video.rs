@@ -226,9 +226,22 @@ pub struct PreviewRequest {
 
 // ───────────────────────────── the decoded-frame fallback ─────────────────────────────
 
-/// The decoded fallback's largest frame: each decoded tile is scaled to fit its sink's size,
-/// and never beyond this box.
+/// The decoded fallback's largest frame for a camera: each decoded tile is scaled to fit its
+/// sink's size, and never beyond this box. A screen share's box follows its sink further, up to
+/// [`DECODED_SCREEN_MAX_SIZE`] (see [`decoded_screen_fit`]).
 pub const DECODED_MAX_SIZE: (u32, u32) = (640, 360);
+/// The decoded fallback's largest frame for a screen share: its sink's size (a zoomed viewer
+/// asks for its box times the zoom), never beyond this box nor the received layer's own size.
+pub const DECODED_SCREEN_MAX_SIZE: (u32, u32) = (1920, 1080);
+/// The boxes a decoded screen share steps through when its decoder falls behind real time,
+/// largest first: it steps down one box at a time toward [`DECODED_MAX_SIZE`], and back up one
+/// at a time once it keeps up again.
+pub const DECODED_SCREEN_STEPS: [(u32, u32); 4] = [
+    DECODED_SCREEN_MAX_SIZE,
+    (1280, 720),
+    (960, 540),
+    DECODED_MAX_SIZE,
+];
 /// The decoded fallback's highest frame rate per tile.
 pub const DECODED_MAX_FPS: u32 = 15;
 /// How many sinks may be in decoded mode at once. Beyond that `video_sink` rejects
@@ -277,7 +290,8 @@ pub struct DecoderSpec {
     /// The pixels out.
     pub format: DecodedFormat,
     /// Scale each output to fit this box, keeping the aspect ratio and never scaling up (the
-    /// sink's size, capped at [`DECODED_MAX_SIZE`]).
+    /// sink's size, capped at [`DECODED_MAX_SIZE`] for a camera and as [`decoded_screen_fit`]
+    /// says for a screen share).
     pub fit: (u32, u32),
 }
 
@@ -336,6 +350,30 @@ pub fn decoded_fit(width: u32, height: u32) -> (u32, u32) {
     let (mw, mh) = DECODED_MAX_SIZE;
     let cap = |v: u32, max: u32| if v == 0 { max } else { v.min(max) };
     (cap(width, mw).max(2), cap(height, mh).max(2))
+}
+
+/// The fit box of a decoded screen-share sink of `width` x `height` device pixels: the sink's
+/// size (a zoomed viewer's box times its zoom), capped at `ceiling` (at most
+/// [`DECODED_SCREEN_MAX_SIZE`]: the box the decoder may use now, [`DECODED_SCREEN_STEPS`]) and at
+/// the received layer's size `layer` (`(0, 0)`: not known yet). An unmeasured `0` takes
+/// [`DECODED_MAX_SIZE`]'s side.
+pub fn decoded_screen_fit(
+    width: u32,
+    height: u32,
+    layer: (u32, u32),
+    ceiling: (u32, u32),
+) -> (u32, u32) {
+    let (dw, dh) = DECODED_MAX_SIZE;
+    let (sw, sh) = DECODED_SCREEN_MAX_SIZE;
+    let side = |v: u32, unmeasured: u32, ceiling: u32, max: u32, layer: u32| {
+        let v = if v == 0 { unmeasured } else { v };
+        let v = v.min(ceiling).min(max);
+        if layer == 0 { v } else { v.min(layer) }
+    };
+    (
+        side(width, dw, ceiling.0, sw, layer.0).max(2),
+        side(height, dh, ceiling.1, sh, layer.1).max(2),
+    )
 }
 
 // ───────────────────────────── the sink framing ─────────────────────────────

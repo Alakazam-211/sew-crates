@@ -716,9 +716,10 @@ impl Pc {
         Ok(())
     }
 
-    /// The bitrate str0m's BWE probes up to (the sum of the wanted layers' caps).
+    /// The bitrate str0m's BWE probes up to (the sum of the wanted layers' caps), with no
+    /// minimum transmit rate.
     pub(crate) fn set_desired_bitrate(&mut self, bps: u64) {
-        self.rtc.bwe().set_desired_bitrate(Bitrate::bps(bps));
+        self.rtc.bwe().set_bitrate(Bitrate::ZERO, Bitrate::bps(bps));
     }
 
     /// Closes the PC.

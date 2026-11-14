@@ -90,7 +90,7 @@ malicious protocol messages. Never enable it outside tests.**
 
 ```toml
 [dependencies]
-sew-e2ee = "0.9.2"
+sew-e2ee = "0.9.3"
 ```
 
 Most apps do not use this crate directly: they use it through the native voice engine,

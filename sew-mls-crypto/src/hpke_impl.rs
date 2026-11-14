@@ -213,6 +213,8 @@ fn derive_t<A: Aead, K: Kdf, M: Kem>(ikm: &[u8]) -> Result<(Vec<u8>, Vec<u8>), F
 /// be fed the vector's ephemeral IKM: `hpke` draws Nsk bytes from the RNG and runs
 /// DeriveKeyPair on them, so an RNG that returns `ikmE` reproduces `enc` and the ciphertext.
 #[cfg(test)]
+// The package has no clippy.toml (Sew's allows unwrap in tests); the module says it itself.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     #[cfg(sew_rfc9180_vectors)]

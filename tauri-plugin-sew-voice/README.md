@@ -103,7 +103,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.6.1"
+tauri-plugin-sew-voice = "0.6.2"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"

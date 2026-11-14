@@ -1193,6 +1193,92 @@ mod tests {
         assert_eq!(frames(&out), 1, "the keyframe restarts the track");
     }
 
+    /// A track with frames 10 (key) and 11 delivered, then packets 12..=14 lost and packet 15
+    /// (`key15`) received, then one tick 200 ms later (the reorder window has passed): what that
+    /// tick sent and handed out, with the counters.
+    fn break_then(key15: bool) -> (Out, CallCounters) {
+        let t0 = Instant::now();
+        let mut s = Subscriptions::new(t0);
+        let mut out = Out::default();
+        s.roster(
+            t0,
+            &roster(vec![camera("TR_c", false)]),
+            &HashMap::new(),
+            &mut out,
+        );
+        s.sink(
+            t0,
+            SinkCmd::Open {
+                id: 1,
+                track_sid: "TR_c".to_owned(),
+                spec: VideoSinkSpec::new(640, 360, false),
+            },
+            &mut out,
+        );
+        let mut c = CallCounters::default();
+        let mut out = Out::default();
+        for (seq, key) in [(10, true), (11, false), (15, key15)] {
+            let r = vp8_packet(seq, key);
+            s.on_rtp(
+                t0,
+                "TR_c",
+                "p_a",
+                &r,
+                VideoCodec::Vp8,
+                &EchoKeys,
+                &mut c,
+                &mut out,
+            );
+        }
+        let plis_before = c.video_plis;
+        let mut out = Out::default();
+        s.tick(
+            t0 + Duration::from_millis(200),
+            Some(&EchoKeys),
+            &mut c,
+            &mut out,
+        );
+        assert!(
+            out.items
+                .iter()
+                .any(|i| matches!(i, VideoRecvItem::Broken { .. })),
+            "the loss breaks the track: {:?}",
+            out.items
+        );
+        c.video_plis -= plis_before;
+        (out, c)
+    }
+
+    /// The loss breaks the track and no keyframe follows: a PLI goes out in the same tick.
+    #[test]
+    fn a_break_without_a_keyframe_sends_a_pli() {
+        let (out, c) = break_then(false);
+        assert_eq!(c.video_plis, 1);
+        assert_eq!(out.keyframes, vec![(7, false)]);
+        assert!(
+            !out.items
+                .iter()
+                .any(|i| matches!(i, VideoRecvItem::Frame(_))),
+            "a delta frame after the loss is not handed out"
+        );
+    }
+
+    /// The packet after the loss starts a keyframe: the track restarts on it in the same tick,
+    /// and no PLI goes out (none is needed).
+    #[test]
+    fn a_keyframe_right_after_the_break_sends_no_pli() {
+        let (out, c) = break_then(true);
+        assert_eq!(c.video_plis, 0);
+        assert!(out.keyframes.is_empty(), "{:?}", out.keyframes);
+        assert!(
+            out.items
+                .iter()
+                .any(|i| matches!(i, VideoRecvItem::Frame(f) if f.keyframe)),
+            "the keyframe restarts the track: {:?}",
+            out.items
+        );
+    }
+
     /// A camera whose `TrackInfo` names `primary`, then `codecs` (the simulcast codecs).
     fn camera_in(sid: &str, primary: &str, codecs: &[&str]) -> TrackInfo {
         let mut t = camera(sid, false);

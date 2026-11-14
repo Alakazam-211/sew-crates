@@ -10,7 +10,8 @@
 //!    which it takes the camera over from: one opener holds the camera);
 //! 5. the codec ([`choose_codecs`]: VP8 when the policy lists it and an encoder exists, else
 //!    H.264 from the OS's hardware encoder; never H.264 on Linux, and never from a software
-//!    H.264 encoder) and one encoder per layer of [`crate::plan_layers`], opened from the top
+//!    H.264 encoder) and one encoder per layer of [`crate::plan_layers`] (a screen share's of
+//!    [`crate::plan_screen_layers`]: its top layer at the capture's own size), opened from the top
 //!    down (H.264 hardware-only, each session checked to run on the hardware): a
 //!    `NoResources` (or the codec's `max_instances`) drops the top layer and tries again, down
 //!    to one; nothing opens: `codec_unavailable`, the camera closed and the lease released;
@@ -80,7 +81,7 @@ use super::codec_pref::{
 use super::preview::LocalFrame;
 use super::publish::{
     BackupCaps, BackupSpec, EncodedVideo, LayerRate, LayerSpec, VideoControl, VideoCtl, VideoError,
-    VideoPublication, VideoPublish, VideoSender, backup_layers_for, plan_layers,
+    VideoPublication, VideoPublish, VideoSender, backup_layers_for, plan_source_layers,
 };
 use super::types::{VideoCodec, VideoSource};
 use crate::call::Call;
@@ -1291,7 +1292,8 @@ impl VideoBridge {
         } else {
             1
         };
-        let mut plan = plan_layers(super::publish::hint_of(kind, policy), size.0, size.1);
+        let mut plan =
+            plan_source_layers(kind, super::publish::hint_of(kind, policy), size.0, size.1);
         for l in &mut plan {
             l.temporal_layers = tl;
         }
@@ -2760,6 +2762,31 @@ mod tests {
             ),
             (
                 "VideoToolbox H.264 (hardware, low-latency rate control, encoder com.apple.videotoolbox.videoencoder.h264.rtvc)",
+                false,
+            ),
+            // kessel-video 0.1.6's names: the encoder id and the profile, then the rate control.
+            (
+                "VideoToolbox H.264 (hardware, encoder com.apple.videotoolbox.videoencoder.ave.avc, Constrained High)",
+                true,
+            ),
+            (
+                "VideoToolbox H.264 (hardware, encoder com.apple.videotoolbox.videoencoder.ave.avc, Constrained High, low-latency rate control)",
+                true,
+            ),
+            (
+                "VideoToolbox H.264 (software, encoder com.apple.videotoolbox.videoencoder.h264.rtvc, Constrained High, low-latency rate control)",
+                false,
+            ),
+            (
+                "VideoToolbox H.264 (hardware, encoder com.apple.videotoolbox.videoencoder.h264.rtvc, High)",
+                false,
+            ),
+            (
+                "VideoToolbox H.264 (hardware, encoder not named, High)",
+                true,
+            ),
+            (
+                "VideoToolbox H.264 (hardware, encoder not named, High, low-latency rate control)",
                 false,
             ),
             ("", false),

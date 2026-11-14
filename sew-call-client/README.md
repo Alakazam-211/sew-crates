@@ -89,13 +89,12 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.6.1"
+sew-call-client = "0.6.2"
 ```
 
-**Known issue without the `str0m` fork.** The fork's `[patch.crates-io]` rows carry a fix to
-str0m's bandwidth estimate at the start of a call. A build that takes `str0m` from crates.io
-instead works, but video layers can start low for a few seconds after joining until str0m
-releases the fix.
+The engine's WebRTC stack is `sew-str0m`, Alakazam Labs' fork of `str0m` 0.25 (library name
+`str0m`), which carries Sew's fixes (among them one to the bandwidth estimate at the start of a
+call).
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
 session and returns it. A minimal one, and a call through it (the same code is compiled as the

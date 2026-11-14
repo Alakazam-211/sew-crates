@@ -57,11 +57,13 @@ use crate::engine::{
     JoinRequest, VideoSnapshot, VoiceEngine,
 };
 use crate::listener::VoiceListener;
-use crate::sink::{Decoded, DecoderOpener, FrameChannel, OpenSink, Routed, SinkChange, Sinks};
+use crate::sink::{
+    Decoded, DecoderOpener, FrameChannel, OpenSink, Routed, SinkChange, Sinks, decoded_sink_fit,
+};
 use crate::video::{
     CameraRequest, DecodedFormat, DecoderSpec, DecoderWake, FrameDecoder, LOCAL_CAMERA,
-    MAX_DECODED_SINKS, ParentWindow, PreviewRequest, ScreenRequest, TrackSettings, VideoCodec,
-    VideoFrames, decoded_fit, is_local_track,
+    LOCAL_SCREEN, MAX_DECODED_SINKS, ParentWindow, PreviewRequest, ScreenRequest, TrackSettings,
+    VideoCodec, VideoFrames, is_local_track,
 };
 use crate::wire::{
     CallState, CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceChoice, DeviceList, ErrorInfo,
@@ -969,10 +971,12 @@ impl VoiceService {
             .iter()
             .filter_map(|c| VideoCodec::from_wire(c))
             .collect();
-        let (call, codec) = {
+        // A screen share's decoded box follows the sink up to its top layer (`(0, 0)`: not
+        // known); a camera's stays at most 640x360.
+        let (call, codec, screen, layer) = {
             let slot = self.lock();
             if is_local_track(&args.track) {
-                (slot.call.clone(), None)
+                (slot.call.clone(), None, args.track == LOCAL_SCREEN, (0, 0))
             } else {
                 let call = slot
                     .call
@@ -988,7 +992,12 @@ impl VoiceService {
                             serde_json::json!({ "track": args.track }),
                         )
                     })?;
-                (Some(call), Some(t.codec))
+                (
+                    Some(call),
+                    Some(t.codec),
+                    t.source == crate::wire::VideoSource::Screen,
+                    (t.width, t.height),
+                )
             }
         };
         // Decoded mode: a remote track whose codec the webview can't decode, or a self-view
@@ -1003,7 +1012,12 @@ impl VoiceService {
             _ => None,
         };
         let decoded = match decoded_codec {
-            Some(c) => Some(self.open_decoded(c, &decode, args.width, args.height)?),
+            Some(c) => Some(self.open_decoded(
+                c,
+                &decode,
+                decoded_sink_fit(screen, args.width, args.height, layer),
+                (screen, layer),
+            )?),
             None => None,
         };
         let mode = if decoded.is_some() {
@@ -1054,13 +1068,14 @@ impl VoiceService {
     }
 
     /// A decoded sink's decoder state: the engine's decoder for `codec` (`None`: a self-view
-    /// sink, opened on its first keyframe), its wake and its drain task's stop.
+    /// sink, opened on its first keyframe) with the box `fit`, its wake and its drain task's
+    /// stop. `(screen, layer)`: a screen share's sink and its top layer.
     fn open_decoded(
         &self,
         codec: Option<VideoCodec>,
         decode: &[VideoCodec],
-        width: u32,
-        height: u32,
+        fit: (u32, u32),
+        (screen, layer): (bool, (u32, u32)),
     ) -> Result<(Decoded, Arc<Notify>, Arc<Notify>), ErrorInfo> {
         let unsupported = |c: Option<VideoCodec>| {
             ErrorInfo::with_detail(
@@ -1093,12 +1108,12 @@ impl VoiceService {
         });
         let dec: Option<(VideoCodec, Box<dyn FrameDecoder>)> = match codec {
             Some(c) => {
-                let d = open(DecoderSpec {
+                let spec = DecoderSpec {
                     codec: c,
                     format,
-                    fit: decoded_fit(width, height),
-                })
-                .map_err(|e| {
+                    fit,
+                };
+                let d = open(spec).map_err(|e| {
                     tracing::debug!(codec = c.as_str(), error = %e, "the engine has no decoder");
                     unsupported(Some(c))
                 })?;
@@ -1107,7 +1122,7 @@ impl VoiceService {
             None => None,
         };
         Ok((
-            Decoded::new(format, open, dec, Arc::clone(&stop)),
+            Decoded::new(format, open, dec, Arc::clone(&stop), screen, layer, fit),
             wake,
             stop,
         ))
@@ -1132,9 +1147,13 @@ impl VoiceService {
                     let settings = closed_settings(&mut v.sinks, &routed);
                     (routed, settings)
                 };
-                if routed.closed.is_empty() && routed.decoder_keyframes.is_empty() {
+                if routed.closed.is_empty()
+                    && routed.decoder_keyframes.is_empty()
+                    && routed.stepped.is_empty()
+                {
                     continue;
                 }
+                report_steps(&inner, &routed);
                 let call = lock(&inner.slot).call.clone();
                 if let Some(call) = &call {
                     for (track, s) in settings {
@@ -1907,15 +1926,45 @@ fn decoded_tiles_full() -> ErrorInfo {
     )
 }
 
-/// The settings of the tracks whose sinks a route closed (their channel was gone).
+/// The settings of the tracks whose sinks a route closed (their channel was gone) or whose
+/// decoded screen share stepped (it asks for a smaller or larger layer).
 fn closed_settings(sinks: &mut Sinks, routed: &Routed) -> Vec<(String, TrackSettings)> {
     let mut settings = Vec::new();
-    for (_, track) in &routed.closed {
+    let tracks = routed
+        .closed
+        .iter()
+        .map(|(_, t)| t)
+        .chain(routed.stepped.iter().map(|s| &s.track));
+    for track in tracks {
         if let Some(s) = sinks.changed(track) {
             settings.push((track.clone(), s));
         }
     }
     settings
+}
+
+/// Tells the app of each decoded screen share whose box a step changed: an `errors` event
+/// `decoded_stepped_down` or `decoded_stepped_up`, `detail {sink_id, track, width, height}`
+/// (the decoder's new box).
+fn report_steps(inner: &Inner, routed: &Routed) {
+    for st in routed.stepped.iter().filter(|s| s.changed) {
+        let code = if st.down {
+            video_code::DECODED_STEPPED_DOWN
+        } else {
+            video_code::DECODED_STEPPED_UP
+        };
+        let info = ErrorInfo::with_detail(
+            code,
+            serde_json::json!({
+                "sink_id": st.sink_id,
+                "track": st.track,
+                "width": st.fit.0,
+                "height": st.fit.1,
+            }),
+        );
+        let mut slot = lock(&inner.slot);
+        notify(inner, &mut slot, &PluginEvent::Errors(info));
+    }
 }
 
 fn unknown_sink(sink_id: u32) -> ErrorInfo {
@@ -2314,6 +2363,7 @@ impl FramePump {
                 }
                 (routed, settings)
             };
+            report_steps(&self.inner, &routed);
             if let Some(call) = &self.call {
                 for (track, s) in settings {
                     call.set_video_settings(&track, s);

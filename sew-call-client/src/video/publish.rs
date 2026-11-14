@@ -214,6 +214,63 @@ pub fn plan_layers(hint: &TrackHint, capture_width: u32, capture_height: u32) ->
     out
 }
 
+/// The layers of a screen share for a capture of `capture_width × capture_height`, lowest
+/// first: [`plan_layers`], and on top the capture's own size when the hint has a layer above
+/// the top one that fits (a 1366×768 or 1440×900 display under a 1080p hint), so that a viewer
+/// who zooms in gets the screen's real pixels rather than a downscaled copy. That layer takes
+/// the larger hint layer's rid and frame rate, and its cap scaled to the capture's pixels
+/// (never below the layer under it). A capture within a quarter of the top fitting layer's
+/// short side keeps [`plan_layers`]' layers (a near copy would spend the uplink for nothing);
+/// so does a capture smaller than every layer (its one layer is already the capture's size).
+/// The capture is within the hint's `max_width × max_height` already (the capture
+/// constraints).
+pub fn plan_screen_layers(
+    hint: &TrackHint,
+    capture_width: u32,
+    capture_height: u32,
+) -> Vec<LayerSpec> {
+    let mut out = plan_layers(hint, capture_width, capture_height);
+    let (cw, ch) = (
+        even(capture_width.max(2).into()),
+        even(capture_height.max(2).into()),
+    );
+    let short = cw.min(ch);
+    let Some(top) = out.last() else {
+        return out;
+    };
+    let top_short = top.width.min(top.height);
+    if u64::from(short) * 4 <= u64::from(top_short) * 5 {
+        return out;
+    }
+    // The lowest hint layer the capture is too small for.
+    let Some(next) = hint.layers.iter().find(|l| l.height > short) else {
+        return out;
+    };
+    let hint_short = u64::from(next.height);
+    let scaled =
+        u64::from(next.max_kbps) * u64::from(short) * u64::from(short) / (hint_short * hint_short);
+    let max_kbps = u32::try_from(scaled)
+        .unwrap_or(next.max_kbps)
+        .max(top.max_kbps);
+    let fps = top.fps;
+    out.push(LayerSpec::new(&next.rid, cw, ch, max_kbps, fps));
+    out
+}
+
+/// The layers of `source` for a capture of `width × height`: [`plan_screen_layers`] for a
+/// screen share, [`plan_layers`] for a camera.
+pub(crate) fn plan_source_layers(
+    source: VideoSource,
+    hint: &TrackHint,
+    width: u32,
+    height: u32,
+) -> Vec<LayerSpec> {
+    match source {
+        VideoSource::Camera => plan_layers(hint, width, height),
+        VideoSource::ScreenShare => plan_screen_layers(hint, width, height),
+    }
+}
+
 /// What to publish ([`crate::Call::publish_video`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1244,6 +1301,11 @@ pub(crate) struct Publisher {
     pubs: Vec<Publication>,
     next_id: u64,
     leases: Leases,
+    /// Sources whose publication ended with its lease released (an unpublish-and-release, the
+    /// producer's end, video turned off), until the lease is taken again: a later
+    /// unpublish-and-release of the same source (the source's own end and the app's stop can
+    /// both ask) finds the release already sent and does not send it again.
+    released_on_end: Leases,
     /// The current policy (the join answer's, then updates).
     policy: Option<MediaPolicy>,
     /// The join answer's `camera_allowed` and `screen_allowed` (kept for the whole join).
@@ -1269,6 +1331,23 @@ impl std::fmt::Debug for Publisher {
     }
 }
 
+/// `leases` with `source` set to `on`.
+fn with(leases: Leases, source: VideoSource, on: bool) -> Leases {
+    let (c, s) = (leases.camera, leases.screen);
+    match source {
+        VideoSource::Camera => Leases::new(on, s),
+        VideoSource::ScreenShare => Leases::new(c, on),
+    }
+}
+
+/// Whether `leases` has `source`.
+fn has(leases: Leases, source: VideoSource) -> bool {
+    match source {
+        VideoSource::Camera => leases.camera,
+        VideoSource::ScreenShare => leases.screen,
+    }
+}
+
 impl Publisher {
     pub(crate) fn new(stats: Arc<Mutex<VideoSendStats>>) -> Publisher {
         let (frames_tx, frames_rx) = mpsc::channel(VIDEO_QUEUE);
@@ -1287,6 +1366,7 @@ impl Publisher {
             pubs: Vec::new(),
             next_id: 1,
             leases: Leases::none(),
+            released_on_end: Leases::none(),
             policy: None,
             allowed: (false, false),
             alloc: Allocator::default(),
@@ -1328,11 +1408,7 @@ impl Publisher {
     }
 
     fn set_lease(&mut self, source: VideoSource, on: bool) {
-        let (c, s) = (self.leases.camera, self.leases.screen);
-        self.leases = match source {
-            VideoSource::Camera => Leases::new(on, s),
-            VideoSource::ScreenShare => Leases::new(c, on),
-        };
+        self.leases = with(self.leases, source, on);
     }
 
     fn effective_policy(&self) -> Option<MediaPolicy> {
@@ -1374,6 +1450,9 @@ impl Publisher {
                         }
                     }
                 }
+                if on {
+                    self.released_on_end = with(self.released_on_end, source, false);
+                }
                 self.lease(api, source, on, Some(reply), false);
             }
             VideoCmd::Publish { req, reply } => self.publish(cx, req, reply),
@@ -1396,7 +1475,11 @@ impl Publisher {
                     }
                     None => {}
                 }
-                if release {
+                if release && found.is_none() && has(self.released_on_end, source) {
+                    // The publication had already ended and its lease was released then.
+                    let _ = reply.send(Ok(()));
+                } else if release {
+                    self.released_on_end = with(self.released_on_end, source, true);
                     self.lease(api, source, false, Some(reply), false);
                 } else {
                     let _ = reply.send(Ok(()));
@@ -1475,6 +1558,7 @@ impl Publisher {
         let source = p.source;
         tracing::info!(target: "sew_call_client", source = ?source, reason = %e.reason, "the producer ended its video");
         self.end(cx, p, &e.reason);
+        self.released_on_end = with(self.released_on_end, source, true);
         self.lease(api, source, false, None, false);
     }
 
@@ -2027,6 +2111,7 @@ impl Publisher {
                 self.end(cx, p, sew_proto::voice::reasons::VIDEO_DISABLED);
             }
             for s in sources {
+                self.released_on_end = with(self.released_on_end, s, true);
                 self.lease(api.clone(), s, false, None, false);
             }
             return;
@@ -2043,7 +2128,12 @@ impl Publisher {
         };
         for i in 0..self.pubs.len() {
             let p = &self.pubs[i];
-            let mut plan = plan_layers(hint_of(p.source, &policy), p.capture.0, p.capture.1);
+            let mut plan = plan_source_layers(
+                p.source,
+                hint_of(p.source, &policy),
+                p.capture.0,
+                p.capture.1,
+            );
             for l in &mut plan {
                 if let Some(old) = p.lanes[0].layers.iter().find(|o| o.spec.rid == l.rid) {
                     l.temporal_layers = old.spec.temporal_layers;
@@ -2580,6 +2670,95 @@ mod tests {
         assert_eq!(
             got,
             vec![("q", 180, 320), ("h", 360, 640), ("f", 720, 1280)]
+        );
+    }
+
+    /// Sew's screen hint for a `normal` room: h (540p, 600 kbit/s) and f (1080p, 2500), at
+    /// most 1920×1080 at 15 fps.
+    fn screen_hint() -> TrackHint {
+        TrackHint {
+            max_width: 1920,
+            max_height: 1080,
+            max_fps: 15,
+            layers: vec![
+                LayerHint {
+                    rid: "h".into(),
+                    height: 540,
+                    max_kbps: 600,
+                },
+                LayerHint {
+                    rid: "f".into(),
+                    height: 1080,
+                    max_kbps: 2500,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_screen_shares_top_layer_is_the_captures_own_size() {
+        let plan = |w, h| -> Vec<(String, u32, u32, u32, u32)> {
+            plan_screen_layers(&screen_hint(), w, h)
+                .into_iter()
+                .map(|l| (l.rid, l.width, l.height, l.max_kbps, l.fps))
+                .collect()
+        };
+        let l = |rid: &str, w, h, kbps| (rid.to_owned(), w, h, kbps, 15);
+        // 1080p: the hint's own layers, f at the capture's size.
+        assert_eq!(
+            plan(1920, 1080),
+            vec![l("h", 960, 540, 600), l("f", 1920, 1080, 2500)]
+        );
+        // A 1920×1200 display, captured into the 1920×1080 box.
+        assert_eq!(
+            plan(1728, 1080),
+            vec![l("h", 864, 540, 600), l("f", 1728, 1080, 2500)]
+        );
+        // Laptop displays between 540p and 1080p: f at their native size, its cap scaled by
+        // pixels (plan_layers alone would stop at h, a downscaled copy).
+        assert_eq!(
+            plan(1366, 768),
+            vec![l("h", 960, 540, 600), l("f", 1366, 768, 1264)]
+        );
+        assert_eq!(
+            plan(1440, 900),
+            vec![l("h", 864, 540, 600), l("f", 1440, 900, 1736)]
+        );
+        assert_eq!(
+            plan(1280, 800),
+            vec![l("h", 864, 540, 600), l("f", 1280, 800, 1371)]
+        );
+        assert_eq!(
+            plan(1680, 1050),
+            vec![l("h", 864, 540, 600), l("f", 1680, 1050, 2363)]
+        );
+        // An odd-sized window: even sizes.
+        assert_eq!(
+            plan(1201, 801),
+            vec![l("h", 808, 540, 600), l("f", 1200, 800, 1371)]
+        );
+        // Within a quarter of h: h only (576 * 4 <= 540 * 5).
+        assert_eq!(plan(1024, 576), vec![l("h", 960, 540, 600)]);
+        // Smaller than every layer: the capture's size, once.
+        assert_eq!(plan(640, 360), vec![l("h", 640, 360, 600)]);
+        // A camera keeps plan_layers' rule.
+        assert_eq!(
+            plan_source_layers(VideoSource::Camera, &screen_hint(), 1366, 768),
+            plan_layers(&screen_hint(), 1366, 768)
+        );
+        // A tier whose hint has no larger layer (constrained: h only) is never raised.
+        let constrained = TrackHint {
+            max_width: 1280,
+            max_height: 720,
+            max_fps: 15,
+            layers: vec![screen_hint().layers[0].clone()],
+        };
+        let got = plan_screen_layers(&constrained, 1280, 720);
+        assert_eq!(
+            got.iter()
+                .map(|l| (l.rid.as_str(), l.width, l.height))
+                .collect::<Vec<_>>(),
+            vec![("h", 960, 540)]
         );
     }
 

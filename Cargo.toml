@@ -1,10 +1,11 @@
 # The Sew crates (packaged by Sew's scripts/package-public-crates.sh).
 [workspace]
 resolver = "3"
-members = ["sew-proto", "sew-lkproto", "sew-mls-crypto", "sew-e2ee", "sew-lk-compat", "sew-call-client", "tauri-plugin-sew-voice"]
+members = ["sew-proto", "sew-lkproto", "sew-mls-crypto", "sew-e2ee", "sew-lk-compat", "sew-noise", "sew-call-client", "tauri-plugin-sew-voice"]
 
-# The seven crates depend on each other by version; inside this workspace each one is the
-# member of that name. The str0m fork is public (MIT / Apache-2.0).
+# The eight crates depend on each other by version; inside this workspace each one is the
+# member of that name. sew-str0m, the str0m fork, is public (MIT / Apache-2.0) and comes
+# from its git repository until it is published on crates.io.
 # A [patch] applies only from the workspace root: a consumer repeats these rows in its own
 # root Cargo.toml (see README.md).
 [patch.crates-io]
@@ -14,7 +15,17 @@ sew-mls-crypto = { path = "sew-mls-crypto" }
 sew-e2ee = { path = "sew-e2ee" }
 sew-lk-compat = { path = "sew-lk-compat" }
 sew-call-client = { path = "sew-call-client" }
-str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
-str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
-is              = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
-str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+sew-str0m = { git = "https://github.com/Alakazam-211/str0m", rev = "268150e15444b0d08a1167c2a5e4306c4376e953" }
+
+# sew-noise's model runs about 30 times slower unoptimized, and its tests run seconds of
+# audio through it.
+[profile.dev.package.nnnoiseless]
+opt-level = 3
+[profile.dev.package.easyfft]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3
+[profile.dev.package.sew-noise]
+opt-level = 3

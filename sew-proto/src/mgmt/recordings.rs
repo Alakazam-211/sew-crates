@@ -646,6 +646,8 @@ impl MgmtAppRecording {
 }
 
 #[cfg(test)]
+// The package has no clippy.toml (Sew's allows unwrap in tests); the module says it itself.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

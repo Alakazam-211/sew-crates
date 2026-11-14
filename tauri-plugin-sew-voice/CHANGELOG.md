@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.2 (2026-11-12, Sew 0.9.3)
+
+### Added
+
+- A decoded screen share's CPU guard reports its steps on the `errors` event as notices:
+  `decoded_stepped_down` and `decoded_stepped_up` (`video_code::DECODED_STEPPED_DOWN`,
+  `DECODED_STEPPED_UP`), `detail {sink_id, track, width, height}` (the new box). Also
+  `video::DECODED_SCREEN_MAX_SIZE`, `video::DECODED_SCREEN_STEPS` and
+  `video::decoded_screen_fit`.
+
+### Changed
+
+- The decoded fallback (a webview that can't decode the track's codec, such as WebKitGTK) no
+  longer caps a screen share at 640x360: its box follows the sink's size from `video_sink` and
+  `video_sink_update` (a viewer zoomed in asks for its box times the zoom) up to the received
+  layer's size and at most 1920x1080, so a zoomed viewer gets the screen's real pixels. When
+  its decoder falls behind real time (frames lost to a full queue, outputs over 300 ms late, or
+  none at all, over a second), the box steps down through 1280x720 and 960x540 to 640x360 and
+  the sink asks the media server for no larger a layer; it steps back up after five clean
+  seconds (doubling after a failed step up, up to 40 seconds). A camera stays at 640x360.
+- Through sew-call-client, a screen share's top layer is the screen at its own resolution
+  (within the room's 1080p15 box) rather than a downscaled copy: a 1366x768 display publishes
+  1366x768 beside its 540p layer.
+- Through sew-call-client, the WebRTC stack moves to str0m 0.25 (`sew-str0m` 0.25.1, Alakazam
+  Labs' fork, from its git repository until it is on crates.io). A host drops the four str0m
+  rows from its `[patch.crates-io]`; this crate's Cargo.toml has none.
+
+### Dependencies
+
+- Through sew-call-client, updates the WebRTC dependencies (str0m fork updates); recommended
+  for everyone.
+- kessel-video 0.1.6 (from 0.1.5), here and through sew-call-client: on macOS and iOS an H.264
+  session counts as hardware only when VideoToolbox confirms it (the software low-latency
+  encoder no longer reports hardware); sew-call-client's hardware-name guard stays.
+
 ## 0.6.1 (2026-11-11, Sew 0.9.2)
 
 Additions only. On sew-call-client 0.6.1 and sew-proto 0.9.2 (additive: group DM names,

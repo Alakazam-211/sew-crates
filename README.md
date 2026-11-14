@@ -2,7 +2,7 @@
 
 The open Rust crates of Sew, Alakazam Labs' team chat server: its wire contracts, the end-to-end
 encrypted call keys, the LiveKit-protocol pieces, the native voice engine and its Tauri 2
-plugin. Each directory is one crate as `cargo package` ships it, with its own licence files.
+plugin, and the microphone noise removal. Each directory is one crate as `cargo package` ships it, with its own licence files.
 
 ## Getting the code
 
@@ -35,6 +35,7 @@ in this repository or anywhere else public.
 | An OpenMLS crypto provider on permissive crates | `sew-mls-crypto` | nothing of Sew's |
 | Typed Sew API and gateway messages (HTTP bodies, ids, errors) | `sew-proto` | nothing of Sew's |
 | LiveKit client-protocol types or signalling for Sew's media server | `sew-lkproto`, `sew-lk-compat` | `sew-lkproto` (for `sew-lk-compat`) |
+| Microphone noise removal for a real-time audio path | `sew-noise` | nothing of Sew's (`nnnoiseless`, from crates.io) |
 
 How they depend on each other:
 
@@ -45,6 +46,7 @@ tauri-plugin-sew-voice
     │   └── sew-proto
     ├── sew-lk-compat ── sew-lkproto
     └── sew-proto
+sew-noise ── nnnoiseless (from crates.io)
 ```
 
 `sew-call-client`'s `JoinProvider` documentation has a complete, compiled example: a provider
@@ -54,18 +56,23 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.9.2 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.9.2 | Apache-2.0 |
-| `sew-mls-crypto` | 0.9.2 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.9.2 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.9.2 | Apache-2.0 |
-| `sew-call-client` | 0.6.1 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.6.1 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.9.3 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.9.3 | Apache-2.0 |
+| `sew-mls-crypto` | 0.9.3 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.9.3 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.9.3 | Apache-2.0 |
+| `sew-noise` | 0.9.3 | MIT OR Apache-2.0 |
+| `sew-call-client` | 0.6.2 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.6.2 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
 Apache-2.0; their NOTICE files must travel with any binary that includes them. Not affiliated
 with or endorsed by LiveKit, Inc.
+
+`sew-noise` runs the RNNoise model through `nnnoiseless` (BSD-3-Clause), whose notice is in
+`sew-noise/NOTICE` and must travel with any binary that includes it;
+`sew-noise/PROVENANCE.md` records where the model comes from.
 
 `LICENSE-APACHE` and `LICENSE-MIT` at the root are the texts of those licences. Each crate's
 own licence (its `Cargo.toml` `license` field and the licence files in its directory) governs
@@ -76,7 +83,7 @@ that crate.
 They depend on each other by version. `sew-proto`, `sew-lkproto`, `sew-mls-crypto`,
 `sew-e2ee` and `sew-lk-compat` are published on crates.io as well, so on their own they need
 only a dependency line. `sew-call-client` and `tauri-plugin-sew-voice` are not on crates.io
-yet (they also need the forks below). To use
+yet (they also need the forks below), and neither is `sew-noise`. To use
 them from this directory, in your workspace's root
 `Cargo.toml`, add this one `[patch.crates-io]` block (a `[patch]` applies only from the
 workspace root; if you already have one, add these rows to it, since a second block is a TOML
@@ -91,22 +98,21 @@ sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }
 sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }
 sew-call-client = { path = "third_party/sew-crates/sew-call-client" }
 tauri-plugin-sew-voice = { path = "third_party/sew-crates/tauri-plugin-sew-voice" }
-str0m           = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
-str0m-proto     = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
-is              = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
-str0m-aws-lc-rs = { git = "https://github.com/Alakazam-211/str0m", rev = "907e050bfa212a23394f4482110acef04cba8fc6" }
+sew-noise = { path = "third_party/sew-crates/sew-noise" }
+sew-str0m = { git = "https://github.com/Alakazam-211/str0m", rev = "268150e15444b0d08a1167c2a5e4306c4376e953" }
 ```
 
-The `str0m`, `str0m-proto`, `is` and `str0m-aws-lc-rs` rows are Alakazam Labs' public
-fork of `str0m` (the WebRTC stack; `is` is one of its crates), which the voice engine needs.
-Its DTLS, `dimpl`, comes from crates.io.
+The `sew-str0m` row is Alakazam Labs' public fork of `str0m` 0.25 (the WebRTC stack; library
+name `str0m`), which the voice engine needs, at the commit it is published from, until it is on
+crates.io. Its own fork of `is` comes with it; the other str0m crates and its DTLS, `dimpl`,
+come from crates.io.
 
 **kessel-audio** and **kessel-video** (K2's audio and video pipelines, MIT OR Apache-2.0) come
 from crates.io and need no row.
 
 ## Building and testing this directory
 
-`Cargo.toml` here is a workspace of the seven crates with those rows filled in, and
+`Cargo.toml` here is a workspace of the eight crates with those rows filled in, and
 `Cargo.lock` is the lock this release was resolved and tested with (`cargo test --workspace`
 and `cargo doc`, on Linux). So, for example,
 `cargo build --locked -p sew-call-client --no-default-features --features audio-core` builds from

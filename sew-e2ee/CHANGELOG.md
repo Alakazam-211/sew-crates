@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.3 (2026-11-12)
+
+- The version follows Sew 0.9.3. No API or behaviour change.
+
 ## 0.9.2 (2026-11-11)
 
 - The version follows Sew 0.9.2. No API or behaviour change.

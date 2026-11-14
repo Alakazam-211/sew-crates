@@ -305,8 +305,8 @@ async fn supervise(mut parts: Parts, mut next: First) {
 async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
     let mut c = first;
     let mut frames_open = true;
+    held_publish(p, &c);
     loop {
-        held_publish(p, &c);
         loop {
             let cmd = tokio::select! {
                 biased;
@@ -384,8 +384,11 @@ async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
                             return Some(a);
                         }
                         Err(ProviderError::ConsentRequired(next)) => {
-                            // The notice changed meanwhile: hold with the current one.
+                            // The notice changed meanwhile: hold with the current one, in the
+                            // snapshot before the answer, so a host that reads the state after
+                            // `consent` returns sees the new notice.
                             c = (*next).clone();
+                            held_publish(p, &c);
                             let _ = reply.send(Err(CallError::Provider(
                                 ProviderError::ConsentRequired(next),
                             )));

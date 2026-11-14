@@ -23,10 +23,13 @@ tauri-plugin-sew-voice = { git = "…", tag = "…" }   # vendored or mirrored; 
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
 `sew-proto`, `sew-e2ee`, `sew-mls-crypto`), and through it on K2's `kessel-audio` and
-`kessel-video` (both from crates.io) and Sew's str0m fork (dimpl comes from crates.io). Cargo applies `[patch]` only from the workspace you build, so copy the plugin's
-`[patch.crates-io]` block (the end of its `Cargo.toml`) into your app's workspace root. The
-packaged crates (`scripts/package-public-crates.sh`, published read-only as `sew-crates`) carry a
-README with the same rows. Linux builds need ALSA's development files (`libasound2-dev`; Arch:
+`kessel-video` (both from crates.io) and Alakazam Labs' fork of str0m, `sew-str0m` (the other
+str0m crates and dimpl come from crates.io). In Sew's tree the engine takes `sew-str0m` straight
+from the fork's git repository at an exact commit, so the plugin needs no `[patch]` row for it.
+The packaged crates (`scripts/package-public-crates.sh`, published read-only as `sew-crates`)
+name it by version, so until `sew-str0m` is on crates.io their README lists one
+`[patch.crates-io]` row for it, beside the rows for the Sew crates; Cargo applies `[patch]` only
+from the workspace you build, so copy those rows into your app's workspace root. Linux builds need ALSA's development files (`libasound2-dev`; Arch:
 `alsa-lib`).
 
 `src-tauri/src/main.rs`:
@@ -363,7 +366,7 @@ none).
 | `set_video_device` | `{camera}`: an id or `"default"` | `null`. Switches a live camera without a republish (when `video_caps.live_switch`); kept for the next call or preview (a running preview keeps its camera until `preview` is called again). Rejects `camera_not_found` (`detail.camera`) |
 | `camera` | `{on, device?}` | `null` once publishing (or off). Rejects `video_unsupported` (no camera here: checked first, before the permission), `not_in_call`, `video_not_allowed`, `video_disabled`, `camera_permission_denied` and `camera_permission_not_determined` (the plugin never prompts: below), `camera_denied` (the OS refused the device itself), `camera_busy`, `camera_not_found`, `no_frames` (the camera opened but gave no frame within 2.5 s: closed, nothing published), `video_slots_full`, `media_busy` (`detail.retry_after`), `media_capacity`, `codec_unavailable`. Without `device` and with none chosen, it prefers the camera that last gave frames while it is listed and not suspended, else the OS default (a suspended default is passed over). The track is published from the camera's first frame |
 | `screen_sources` | — | `[{id, kind: "display" \| "window", title, app?, width, height, thumbnail_png?}]` (`thumbnail_png`: an 8-bit RGBA PNG at most 320 px wide, aspect kept, base64 with the standard alphabet and no `data:` prefix; absent when the OS gives no preview). `[]` where only the OS picker exists. Rejects `screen_unsupported`, `screen_denied` |
-| `screen` | `{on, source?}` | `null` once publishing (or off). Without `source`, the OS picker (on Windows its parent is the calling window). The share runs at most 1080p15 (lower when `policy.screen` says so) with the screen content hint, under the `self_stream` lease. Rejects as `camera`, plus `screen_denied`, `screen_slots_full`, `picker_cancelled`, `screen_unsupported` (no screen capture here: Linux without the xdg portal or libpipewire, phones; or no OS picker and no `source`), `screen_not_found` (the listed `source` is gone) |
+| `screen` | `{on, source?}` | `null` once publishing (or off). Without `source`, the OS picker (on Windows its parent is the calling window). The share runs at most 1080p15 (lower when `policy.screen` says so) with the screen content hint, under the `self_stream` lease. Its top layer is the shared screen at its own resolution within that box (a 1366x768 display publishes 1366x768 beside its 540p layer, not only the 540p copy), so a viewer zoomed in gets its real pixels. Rejects as `camera`, plus `screen_denied`, `screen_slots_full`, `picker_cancelled`, `screen_unsupported` (no screen capture here: Linux without the xdg portal or libpipewire, phones; or no OS picker and no `source`), `screen_not_found` (the listed `source` is gone) |
 | `preview` | `{on, device?}` | `{sink_track: "local:camera"}`. The camera before or outside a call (a pre-join check): one encoder at up to 640x360 (the camera's aspect kept; VP8, kessel-video's pure-Rust encoder), nothing sent, no lease. The camera opens only on this command, never on its own between calls, and only with the OS permission granted (the plugin never prompts); `{on: false}` (or a new `preview`) closes it at once (the light goes off). One opener holds the camera: `camera {on}` takes it over from the preview (the `local:camera` sinks go on from the call's own keyframe), and `preview {on}` while the camera is published opens nothing (the call's self-view already feeds `local:camera`). Rejects `camera_permission_denied` and `camera_permission_not_determined` as `camera`, `camera_denied`, `camera_busy`, `camera_not_found`, `codec_unavailable`, `video_unsupported` (no camera here) |
 | `video_sink` | `{track, channel, width, height, visible, tile: "large" \| "grid", decode: ["vp8", "h264"]}` | `{sink_id, codec, mode: "encoded" \| "decoded"}`. `track`: a `video` entry's `track`, `"local:camera"` or `"local:screen"` (this device's own camera or screen: the preview's frames outside a call; in a call the published camera's `h` layer and the screen's `q` layer, the same encoder's plaintext, nothing sent twice). `channel`: a Tauri `Channel` (below). `width`/`height`: the element in device pixels. `decode`: the webview's WebCodecs probe (`[]` without WebCodecs). When the webview can't decode the track's codec, the sink is `decoded` (the engine decodes it; below). Rejects `not_in_call` and `unknown_track` (a remote track), `decoded_unsupported` (`detail.codec`) when the engine can't decode the codec either, and `decoded_tiles_full` (`detail.max`, 4) when this device already decodes its most tiles |
 | `video_sink_update` | `{sink_id, width?, height?, visible?, tile?, stats?: {decoded, dropped, freezes, freeze_ms}}` | `null`. `stats` are cumulative since the sink opened (every 1–10 s is fine). Rejects `unknown_sink` |
@@ -441,6 +444,7 @@ code, such as `os` or `invalid`) for a camera or screen failure none of the code
 | `encoder_lost` | `preview` (its channel), `errors` | an encoder failed and could not be reopened |
 | `capture_failed` | any capture | a camera or screen failure none of the codes says; `detail.error` is the video backend's own code (`os`, `invalid`, …) |
 | `decoded_unsupported`, `decoded_tiles_full`, `unknown_track`, `unknown_sink` | `video_sink`, `video_sink_update`, `request_keyframe` | the sinks' refusals (above) |
+| `decoded_stepped_down`, `decoded_stepped_up` | `errors` (a notice, not a failure) | a decoded screen share's decoder fell behind real time and its box stepped down, or keeps up again and stepped one box back up; `detail {sink_id, track, width, height}` is the new box (below) |
 | `hidden`, `background`, `thermal`, `suspended`, `paused` | `local_video.reason` (`paused`) | a shared window is minimised or hidden; the app went to the background; thermal pressure; the camera is suspended (a laptop lid closed); another pause. The track stays; back, every layer restarts on a keyframe |
 | `user_stopped`, `source_closed`, `unpublished` | `local_video.reason` (`off`) | stopped from the OS's own UI; the shared window or display went away; turned off by `camera` / `screen` |
 
@@ -552,8 +556,18 @@ with one of its own decoders (`video_caps.decode_codecs`: the decoders of the en
 backend, the same one that publishes the camera; with the plugin's `video`, VP8 in pure Rust
 everywhere and H.264 through VideoToolbox on macOS; a host's own backend through
 `CallClientEngine::with_video_backend`). The same gating decides which frames
-reach that decoder. Its outputs are scaled to fit the sink (never up), at most 640x360 and
-15 frames a second, and come as kind `2`, I420 (the Y plane, then U, then V, tightly packed,
+reach that decoder. Its outputs are scaled to fit the sink (never up), at most 15 frames a
+second and, for a camera, at most 640x360. A screen share's box follows the sink's own size (the
+`width`/`height` of `video_sink` and every `video_sink_update`: a viewer zoomed in on a screen
+share asks for its box times the zoom, say 6x) up to the received layer's size and never above
+1920x1080, so a zoomed viewer gets the shared screen's real pixels. When a screen share's decoder
+falls behind real time (over a second of frames with any lost to a full queue, more than a
+quarter of its outputs over 300 ms behind the newest input, or no output at all), its box steps
+down one of 1920x1080, 1280x720, 960x540 and 640x360, and its sink asks the media server for no
+larger a layer; after five clean seconds in a row it steps back up one (a step up that falls
+behind again doubles that wait, up to 40 s). Each step that changes the box is an `errors` event,
+`decoded_stepped_down` or `decoded_stepped_up`, `detail {sink_id, track, width, height}`. The
+outputs come as kind `2`, I420 (the Y plane, then U, then V, tightly packed,
 chroma rounded up; draw it as a WebCodecs `VideoFrame` with `format: "I420"`), or, when `decode`
 is empty (no WebCodecs at all), kind `3`, RGBA (tightly packed; `putImageData` on a canvas). Each
 decoded message carries its size in the header, codec `0`, the discontinuity flag on the first
@@ -782,7 +796,7 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.sew-call-client]
 opt-level = 3
-[profile.dev.package.str0m]
+[profile.dev.package.sew-str0m]
 opt-level = 3
 ```
 

@@ -12,8 +12,15 @@ such shell needs; `tauri-plugin-sew-voice` is the call engine beside it. The cra
   accounts per server, everything keyed `{server, account}`; `servers.json` holds no secret.
 - **Secrets**: the device bearer (`sewdv_…`) in the OS keychain (macOS Keychain, Windows
   Credential Manager, the Secret Service), a 0600 file only when the app opts in.
-- **Sign-in**: the password form, pairing with a code from a signed-in page, and the host's
-  sign-in door when the server offers it (`info.signin.door`). **Sign-out** ends the device
+- **Sign-in**: the host's sign-in door when the server offers it (`info.signin.door`; done in
+  Rust: the host's `/.k2/auth/ping`, the lane's `signin/door/begin`, the password to the
+  confirmed server's own `/.k2/auth/sign-in`, the lane's `signin/door/finish`; K2's
+  `password_change_required` through `sign_in_door_set_password`), the password form, and
+  pairing with a code from a signed-in page, typed in or from a pairing link
+  (`<scheme>://<host>/native/pair#code=…`, confirmed by the person; `sew-app://pair_request`).
+  A server whose `info.shell.min` is above the shell's version refuses sign-in with
+  `shell_too_old`. No password, door code, challenge or pairing code reaches the webview.
+  **Sign-out** ends the device
   session, deletes the bearer and calls the voice plugin's `forget_server` when no signed-in
   account is left on that Sew install. A server-side end (revoke, idle, replaced) turns the
   account `signed_out` with its reason on the next call and sends `sew-app://signed_out`.
@@ -48,8 +55,9 @@ app.install(tauri::Builder::default())   // single instance, deep links, notific
 | A window that signs out and wipes call keys by hand | `sew-voice:device-keys` (the plugin's `sign_out` does it from Rust without it) |
 
 `sew-app:default` is `servers`, `add_server`, `confirm_server`, `remove_server`, `server_info`,
-`set_active`, `sign_in`, `pair`, `signin_door_begin`, `signin_door_finish`, `sign_out`,
-`devices`, `revoke_device`, `open` and `notify`; `sew-app:handoff` is `handoff`.
+`set_active`, `sign_in`, `pair`, `sign_in_door`, `sign_in_door_set_password`, `pair_confirm`,
+`pair_decline`, `sign_out`, `devices`, `revoke_device`, `open` and `notify`; `sew-app:handoff`
+is `handoff`.
 
 The remote capability needs Tauri's `dynamic-acl` (in Tauri's defaults). A shell that loads the
 live site never lists `tauri://localhost` in it: the bundled UI's own capability covers that

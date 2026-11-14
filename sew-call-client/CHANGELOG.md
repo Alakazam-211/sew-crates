@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.6.2 (2026-11-12, Sew 0.9.3)
+
+### Added
+
+- `plan_screen_layers`: a screen share's layers. Over `plan_layers` it adds, when the hint has
+  a layer above the top one that fits the capture, a top layer at the capture's own size (that
+  layer's rid and frame rate, its cap scaled to the capture's pixels).
+
+### Changed
+
+- A screen share's top layer is the shared screen at its own resolution (within the policy's
+  `screen` box, at most 1920x1080 at 15 fps in a normal room) instead of a downscaled copy:
+  a display between 540p and 1080p (1366x768, 1440x900, 1280x800, 1680x1050) used to publish
+  only its 540p layer and now publishes its native size as `f` beside it, so a viewer who
+  zooms in gets the screen's real pixels. A capture within a quarter of 540p keeps the one
+  layer; a camera's layers are unchanged.
+- The WebRTC stack moves to str0m 0.25: Alakazam Labs' fork as it will be published, the package
+  `sew-str0m` 0.25.1 (library name `str0m`), taken from the fork's git repository at commit
+  `268150e15444b0d08a1167c2a5e4306c4376e953` until it is on crates.io; the other str0m crates
+  come from crates.io. A host drops the four str0m rows from its `[patch.crates-io]`: the
+  dependency names its source itself (the packaged crates in sew-crates name it by version, so
+  their README lists one `sew-str0m` row until it is published). The `rust-crypto` provider also
+  hashes with SHA-1, which str0m 0.25 asks a provider for when a remote DTLS fingerprint names
+  SHA-1. Sew's media server is unchanged (str0m 0.24); the two interoperate.
+
+### Fixed
+
+- A held join whose recording notice changed before the person's answer: `Call::consent` now
+  returns `ConsentRequired` only after the call's state shows the new notice (the state could
+  still show the old notice for a moment after `consent` returned).
+- A screen share whose source ended while the app also stopped it (the share's own end and
+  `VideoBridge::stop_source` both unpublishing) released the `self_stream` lease twice; the
+  second release is no longer sent.
+
+### Dependencies
+
+- Updates the WebRTC dependencies (str0m fork updates); recommended for everyone.
+- kessel-video 0.1.6 (from 0.1.5; no API change): a VideoToolbox H.264 session counts as
+  hardware only when the session or VideoToolbox's encoder list says so, never because the
+  session was asked for hardware (an ask with low-latency rate control could be handed the
+  software low-latency encoder while reporting hardware); its encoder name now carries the
+  session's encoder id and profile; each H.264 session open logs one `info` line through the
+  `log` crate (a new dependency on Apple targets, MIT OR Apache-2.0). This crate's own guard
+  stays: an Apple H.264 session is used only when kessel-video says hardware and its name
+  names the hardware encoder (`…ave.avc…`), or says hardware without low-latency rate control.
+
 ## 0.6.1 (2026-11-11, Sew 0.9.2)
 
 - On sew-proto 0.9.2, whose changes are additive (group DM names, system messages, DMs by

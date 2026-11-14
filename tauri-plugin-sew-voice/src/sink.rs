@@ -17,8 +17,11 @@
 //! **Decoded mode** (the fallback for a webview that can't decode the track's codec): the sink
 //! owns one of the engine's decoders ([`crate::VoiceEngine::video_decoder`]). The same gating
 //! decides which frames reach the decoder (a keyframe after any break, with the decoder reset
-//! first; nothing while hidden); its outputs, scaled to fit the sink and capped at 640x360 and
-//! 15 fps, go out as I420 (kind 2) or RGBA (kind 3) messages. A decoder error resets it, sends
+//! first; nothing while hidden); its outputs, scaled to fit the sink and capped at 15 fps and at
+//! 640x360 (a camera) or at 1920x1080 and the received layer (a screen share, whose zoomed
+//! viewer asks for more pixels), go out as I420 (kind 2) or RGBA (kind 3) messages. A screen
+//! share whose decoder falls behind real time steps its box down toward 640x360 (and asks the
+//! media server for a smaller layer), and back up once it keeps up ([`ScreenGuard`]). A decoder error resets it, sends
 //! the sink a `reset` message and asks the sender for a keyframe. Frames the decoder has no room
 //! for (`Busy`) wait in order in a backlog of [`DECODED_BACKLOG`] and go in as its outputs make
 //! room; a keyframe supersedes the deltas waiting before it; an overflow drops them, and the
@@ -31,9 +34,9 @@ use tokio::sync::Notify;
 
 use crate::engine::EngineError;
 use crate::video::{
-    DECODED_MIN_INTERVAL_US, DecodeFailure, DecodedFormat, DecoderSpec, EncodedVideoFrame,
-    FrameDecoder, FrameHeader, Tile, TrackSettings, VideoCodec, VideoRecvItem, decoded_fit, flag,
-    header_dim, is_local_track, kind,
+    DECODED_MIN_INTERVAL_US, DECODED_SCREEN_STEPS, DecodeFailure, DecodedFormat, DecoderSpec,
+    EncodedVideoFrame, FrameDecoder, FrameHeader, Tile, TrackSettings, VideoCodec, VideoRecvItem,
+    decoded_fit, decoded_screen_fit, flag, header_dim, is_local_track, kind,
 };
 use crate::wire::SinkStats;
 
@@ -58,6 +61,155 @@ pub(crate) struct Decoded {
     /// Frames the decoder had no room for (`Busy`), in order: they go in as its outputs make
     /// room (at most [`DECODED_BACKLOG`]).
     backlog: VecDeque<EncodedVideoFrame>,
+    /// A screen share's sink (its box follows the sink, [`decoded_screen_fit`]); else a
+    /// camera's (at most 640x360).
+    screen: bool,
+    /// The received layer's size, from its last keyframe (`(0, 0)`: not known yet).
+    layer: (u32, u32),
+    /// The box the decoder was last given.
+    fit: (u32, u32),
+    /// A screen share's CPU guard.
+    guard: ScreenGuard,
+}
+
+/// How long one guard window is, in the frames' arrival time (µs).
+pub(crate) const GUARD_WINDOW_US: u64 = 1_000_000;
+/// An output this far behind the newest input (µs) came late: the decoder is behind real time.
+pub(crate) const GUARD_LATE_US: u64 = 300_000;
+/// Clean windows in a row before a stepped-down screen share steps back up one box (at first;
+/// each step down right after a step up doubles it, up to [`GUARD_RECOVER_MAX`]).
+pub(crate) const GUARD_RECOVER_WINDOWS: u32 = 5;
+/// The most clean windows a step up waits for.
+pub(crate) const GUARD_RECOVER_MAX: u32 = 40;
+
+/// A decoded screen share's CPU guard. Over each window of [`GUARD_WINDOW_US`] of arrival time
+/// it counts the inputs, the decoder's outputs, the outputs that came more than
+/// [`GUARD_LATE_US`] behind the newest input, and the inputs lost to a full backlog. A window
+/// with any lost, more than a quarter of its outputs late, or inputs and no output at all is
+/// behind: the box steps down one of [`DECODED_SCREEN_STEPS`] (toward 640x360). After enough
+/// clean windows in a row it steps back up one; a step up that falls behind again doubles the
+/// wait for the next.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScreenGuard {
+    /// The index into [`DECODED_SCREEN_STEPS`] of the box the decoder may use now.
+    level: usize,
+    /// This window's start (arrival µs); `None` until the next input.
+    window_start: Option<u64>,
+    inputs: u32,
+    outputs: u32,
+    late: u32,
+    lost: u64,
+    /// The newest input's arrival (µs).
+    newest_in: u64,
+    /// Clean windows in a row.
+    clean: u32,
+    /// Clean windows a step up waits for.
+    recover_after: u32,
+    /// The last step was up: a step down now is a failed recovery (the next waits longer).
+    last_up: bool,
+}
+
+impl Default for ScreenGuard {
+    fn default() -> ScreenGuard {
+        ScreenGuard {
+            level: 0,
+            window_start: None,
+            inputs: 0,
+            outputs: 0,
+            late: 0,
+            lost: 0,
+            newest_in: 0,
+            clean: 0,
+            recover_after: GUARD_RECOVER_WINDOWS,
+            last_up: false,
+        }
+    }
+}
+
+/// What a guard window decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardStep {
+    Down,
+    Up,
+}
+
+impl ScreenGuard {
+    /// The box the decoder may use now.
+    fn ceiling(&self) -> (u32, u32) {
+        DECODED_SCREEN_STEPS[self.level]
+    }
+
+    /// Starts the window over (a break: what came before says nothing of the decoder now).
+    fn restart(&mut self) {
+        self.window_start = None;
+        self.inputs = 0;
+        self.outputs = 0;
+        self.late = 0;
+        self.lost = 0;
+    }
+
+    /// An input arriving at `at_us`: closes the window when it is over, and answers what the
+    /// closed window decided. `fit` is the box the decoder has now.
+    fn input(&mut self, at_us: u64, fit: (u32, u32)) -> Option<GuardStep> {
+        self.newest_in = self.newest_in.max(at_us);
+        let start = *self.window_start.get_or_insert(at_us);
+        let mut step = None;
+        if at_us.saturating_sub(start) >= GUARD_WINDOW_US {
+            step = self.close_window(fit);
+            self.restart();
+            self.window_start = Some(at_us);
+        }
+        self.inputs += 1;
+        step
+    }
+
+    fn close_window(&mut self, fit: (u32, u32)) -> Option<GuardStep> {
+        let behind = self.lost > 0 || self.late * 4 > self.outputs || self.outputs == 0;
+        if behind {
+            self.clean = 0;
+            // The next box smaller than the decoder's box now (none: already at the floor).
+            let next = (self.level + 1..DECODED_SCREEN_STEPS.len()).find(|&l| {
+                DECODED_SCREEN_STEPS[l].0 < fit.0 || DECODED_SCREEN_STEPS[l].1 < fit.1
+            })?;
+            self.level = next;
+            if self.last_up {
+                // It stepped up and fell behind again: wait longer before the next try.
+                self.recover_after = (self.recover_after * 2).min(GUARD_RECOVER_MAX);
+            }
+            self.last_up = false;
+            return Some(GuardStep::Down);
+        }
+        self.clean += 1;
+        if self.level > 0 && self.clean >= self.recover_after {
+            self.clean = 0;
+            self.level -= 1;
+            self.last_up = true;
+            return Some(GuardStep::Up);
+        }
+        None
+    }
+
+    /// One decoder output stamped `ts_us`.
+    fn output(&mut self, ts_us: u64) {
+        self.outputs += 1;
+        if self.newest_in.saturating_sub(ts_us) > GUARD_LATE_US {
+            self.late += 1;
+        }
+    }
+}
+
+/// A decoded screen share's guard stepped because its decoder fell behind (`down`) or keeps up
+/// again: the plugin tells the media server (the sink's settings) and, when the decoder's box
+/// changed, the app (an `errors` event).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Stepped {
+    pub(crate) sink_id: u32,
+    pub(crate) track: String,
+    pub(crate) down: bool,
+    /// The decoder's new box.
+    pub(crate) fit: (u32, u32),
+    /// The box changed (a step up for a sink that asks for less than the step's box doesn't).
+    pub(crate) changed: bool,
 }
 
 /// The most frames a decoded sink keeps waiting for room in its decoder; one more drops them
@@ -66,12 +218,17 @@ pub(crate) const DECODED_BACKLOG: usize = 8;
 
 impl Decoded {
     /// A decoded sink's state: `format` out, `dec` already open (a remote track's) or opened by
-    /// `open` on the first keyframe (a self-view sink's).
+    /// `open` on the first keyframe (a self-view sink's), with the box `fit` (from
+    /// [`decoded_sink_fit`]). `screen`: a screen share's sink, whose top layer is `layer`
+    /// (`(0, 0)`: not known).
     pub(crate) fn new(
         format: DecodedFormat,
         open: DecoderOpener,
         dec: Option<(VideoCodec, Box<dyn FrameDecoder>)>,
         stop: Arc<Notify>,
+        screen: bool,
+        layer: (u32, u32),
+        fit: (u32, u32),
     ) -> Decoded {
         Decoded {
             format,
@@ -82,7 +239,49 @@ impl Decoded {
             stats: SinkStats::default(),
             stop,
             backlog: VecDeque::new(),
+            screen,
+            layer,
+            fit,
+            guard: ScreenGuard::default(),
         }
+    }
+
+    /// The box for a sink of `width` x `height` now.
+    fn fit_for(&self, width: u32, height: u32) -> (u32, u32) {
+        if self.screen {
+            decoded_screen_fit(width, height, self.layer, self.guard.ceiling())
+        } else {
+            decoded_fit(width, height)
+        }
+    }
+
+    /// Gives the decoder the box for `width` x `height` when it changed (`always`: even when
+    /// not); answers whether it changed.
+    fn refit(&mut self, width: u32, height: u32, always: bool) -> bool {
+        let fit = self.fit_for(width, height);
+        let changed = fit != self.fit;
+        self.fit = fit;
+        if (changed || always)
+            && let Some((_, dec)) = self.dec.as_mut()
+        {
+            dec.set_fit(fit);
+        }
+        changed
+    }
+}
+
+/// The box a new decoded sink of `width` x `height` starts with: a camera's capped at 640x360,
+/// a screen share's as [`decoded_screen_fit`] says with no step down yet.
+pub(crate) fn decoded_sink_fit(
+    screen: bool,
+    width: u32,
+    height: u32,
+    layer: (u32, u32),
+) -> (u32, u32) {
+    if screen {
+        decoded_screen_fit(width, height, layer, DECODED_SCREEN_STEPS[0])
+    } else {
+        decoded_fit(width, height)
     }
 }
 
@@ -192,6 +391,8 @@ pub(crate) struct Routed {
     /// Tracks whose decoded sink lost its decoder's references (an error, a dropped input):
     /// ask a keyframe (nothing else changed).
     pub(crate) decoder_keyframes: Vec<String>,
+    /// Decoded screen shares whose box stepped down or up (their track's settings changed).
+    pub(crate) stepped: Vec<Stepped>,
 }
 
 /// Every open sink, and the settings last handed to the engine per remote track.
@@ -459,9 +660,9 @@ impl Sinks {
             s.stats = stats;
         }
         if (change.width.is_some() || change.height.is_some())
-            && let Some((_, dec)) = s.decoded.as_mut().and_then(|d| d.dec.as_mut())
+            && let Some(d) = s.decoded.as_mut()
         {
-            dec.set_fit(decoded_fit(s.width, s.height));
+            d.refit(s.width, s.height, true);
         }
         // In the background a revealed sink waits for the return (which asks the keyframe).
         Some((s.track.clone(), shown && !background))
@@ -501,7 +702,14 @@ impl Sinks {
             let (w, h) = if s.low {
                 low_size(s.width, s.height)
             } else {
-                (s.width, s.height)
+                match &s.decoded {
+                    // A stepped-down screen share asks for no more than its decoder's box.
+                    Some(d) if d.screen && d.guard.level > 0 => {
+                        let (cw, ch) = d.guard.ceiling();
+                        (s.width.min(cw), s.height.min(ch))
+                    }
+                    _ => (s.width, s.height),
+                }
             };
             out.width = out.width.max(w);
             out.height = out.height.max(h);
@@ -728,10 +936,14 @@ fn decode(id: u32, s: &mut Sink, d: &mut Decoded, f: &EncodedVideoFrame, r: &mut
             d.stats.dropped += 1;
             return;
         }
+        if f.width > 0 && f.height > 0 {
+            d.layer = (f.width, f.height);
+        }
+        d.fit = d.fit_for(s.width, s.height);
         match (d.open)(DecoderSpec {
             codec: f.codec,
             format: d.format,
-            fit: decoded_fit(s.width, s.height),
+            fit: d.fit,
         }) {
             Ok(dec) => d.dec = Some((f.codec, dec)),
             Err(e) => {
@@ -752,7 +964,11 @@ fn decode(id: u32, s: &mut Sink, d: &mut Decoded, f: &EncodedVideoFrame, r: &mut
         d.backlog.clear();
         d.fresh = true;
         d.last_out = None;
+        d.guard.restart();
         s.waiting = false;
+    }
+    if d.screen {
+        guard_input(id, s, d, f, r);
     }
     if !d.backlog.is_empty() {
         if f.keyframe {
@@ -774,6 +990,35 @@ fn decode(id: u32, s: &mut Sink, d: &mut Decoded, f: &EncodedVideoFrame, r: &mut
     }
     // The gating passed the frame: the sink is shown.
     drain(id, s, d, r, true);
+}
+
+/// A screen share's input, before the decoder: a keyframe's size is the received layer's (the
+/// media server may have switched layers), and the guard's window may close with a step.
+fn guard_input(id: u32, s: &Sink, d: &mut Decoded, f: &EncodedVideoFrame, r: &mut Routed) {
+    if f.keyframe && f.width > 0 && f.height > 0 && (f.width, f.height) != d.layer {
+        d.layer = (f.width, f.height);
+        d.refit(s.width, s.height, false);
+    }
+    let Some(step) = d.guard.input(f.arrival_us, d.fit) else {
+        return;
+    };
+    let down = step == GuardStep::Down;
+    let changed = d.refit(s.width, s.height, false);
+    tracing::debug!(
+        sink = id,
+        track = %s.track,
+        down,
+        changed,
+        fit = ?d.fit,
+        "a decoded screen share stepped"
+    );
+    r.stepped.push(Stepped {
+        sink_id: id,
+        track: s.track.clone(),
+        down,
+        fit: d.fit,
+        changed,
+    });
 }
 
 /// One frame into the decoder: `Busy` puts it at the back of the backlog. `false` when it
@@ -833,6 +1078,7 @@ fn backlog_lost(s: &mut Sink, d: &mut Decoded, r: &mut Routed, n: u64) {
     tracing::debug!(track = %s.track, n, "a decoded sink's backlog overflowed");
     d.backlog.clear();
     d.stats.dropped += n;
+    d.guard.lost += n;
     s.waiting = true;
     if !r.decoder_keyframes.contains(&s.track) {
         r.decoder_keyframes.push(s.track.clone());
@@ -866,6 +1112,7 @@ fn drain(id: u32, s: &mut Sink, d: &mut Decoded, r: &mut Routed, shown: bool) {
         };
         match out {
             Ok(frame) => {
+                d.guard.output(frame.timestamp_us);
                 if !shown || s.waiting {
                     // Hidden, or from before a break: nobody wants it.
                     continue;
@@ -980,6 +1227,8 @@ mod tests {
     struct Scripted {
         room: usize,
         queue: Script,
+        /// Every `set_fit`, in order.
+        fits: Arc<std::sync::Mutex<Vec<(u32, u32)>>>,
     }
 
     impl FrameDecoder for Scripted {
@@ -1009,7 +1258,9 @@ mod tests {
         fn reset(&mut self) {
             self.queue.lock().unwrap().0.clear();
         }
-        fn set_fit(&mut self, _fit: (u32, u32)) {}
+        fn set_fit(&mut self, fit: (u32, u32)) {
+            self.fits.lock().unwrap().push(fit);
+        }
     }
 
     struct Messages(std::sync::Mutex<Vec<Vec<u8>>>);
@@ -1121,6 +1372,7 @@ mod tests {
             Ok(Box::new(Scripted {
                 room: 2,
                 queue: Arc::clone(&q2),
+                fits: Arc::default(),
             }) as Box<dyn FrameDecoder>)
         });
         let msgs = Arc::new(Messages(std::sync::Mutex::new(Vec::new())));
@@ -1138,6 +1390,9 @@ mod tests {
                 open,
                 None,
                 Arc::new(Notify::new()),
+                false,
+                (0, 0),
+                decoded_sink_fit(false, 640, 360, (0, 0)),
             )),
         });
         let route =
@@ -1229,5 +1484,234 @@ mod tests {
         );
         assert!(sinks.set_native_low(id, false).is_some());
         assert_eq!(sinks.changed("TR_VCann"), Some(full));
+    }
+    const SCREEN: &str = "TR_VSzoom";
+    /// 30 fps in arrival time.
+    const FRAME_US: u64 = 33_333;
+    /// One window of frames at 30 fps (a window closes on its 31st frame).
+    const WINDOW: u64 = 30;
+
+    type Shared<T> = Arc<std::sync::Mutex<T>>;
+
+    /// A decoded screen share on a scripted decoder with room for 10_000 inputs.
+    struct ScreenRun {
+        sinks: Sinks,
+        id: u32,
+        queue: Script,
+        fits: Shared<Vec<(u32, u32)>>,
+        opened: Shared<Vec<DecoderSpec>>,
+    }
+
+    impl ScreenRun {
+        /// A screen sink of `width` x `height` (a zoomed viewer's box times its zoom).
+        fn new(width: u32, height: u32) -> ScreenRun {
+            let queue: Script = Arc::new(std::sync::Mutex::new((VecDeque::new(), 0usize)));
+            let fits: Shared<Vec<(u32, u32)>> = Arc::default();
+            let opened: Shared<Vec<DecoderSpec>> = Arc::default();
+            let (q2, f2, o2) = (Arc::clone(&queue), Arc::clone(&fits), Arc::clone(&opened));
+            let open: DecoderOpener = Arc::new(move |spec| {
+                o2.lock().unwrap().push(spec);
+                Ok(Box::new(Scripted {
+                    room: 10_000,
+                    queue: Arc::clone(&q2),
+                    fits: Arc::clone(&f2),
+                }) as Box<dyn FrameDecoder>)
+            });
+            let msgs = Arc::new(Messages(std::sync::Mutex::new(Vec::new())));
+            let mut sinks = Sinks::default();
+            let id = sinks.open(OpenSink {
+                track: SCREEN.into(),
+                channel: msgs,
+                width,
+                height,
+                visible: true,
+                tile: Tile::Large,
+                decode: Vec::new(),
+                decoded: Some(Decoded::new(
+                    DecodedFormat::I420,
+                    open,
+                    None,
+                    Arc::new(Notify::new()),
+                    true,
+                    (0, 0),
+                    decoded_sink_fit(true, width, height, (0, 0)),
+                )),
+            });
+            ScreenRun {
+                sinks,
+                id,
+                queue,
+                fits,
+                opened,
+            }
+        }
+
+        /// Frames `from..from + count` at 30 fps, the first a 2560x1440 keyframe when `key`, on
+        /// a decoder that keeps up (`keep_up`: each input's output is ready at once) or gives
+        /// nothing; answers the guard's steps.
+        fn run(&mut self, from: u64, count: u64, keep_up: bool, key: bool) -> Vec<Stepped> {
+            let mut steps = Vec::new();
+            for n in from..from + count {
+                if keep_up {
+                    self.queue.lock().unwrap().1 += 1;
+                }
+                let key = key && n == from;
+                let r = self.sinks.route(VideoRecvItem::Frame(EncodedVideoFrame {
+                    track: SCREEN.into(),
+                    codec: VideoCodec::H264,
+                    data: vec![1],
+                    keyframe: key,
+                    rtp_ts: (n * 3000) as u32,
+                    arrival_us: n * FRAME_US,
+                    width: if key { 2560 } else { 0 },
+                    height: if key { 1440 } else { 0 },
+                }));
+                steps.extend(r.stepped);
+            }
+            steps
+        }
+
+        /// `windows` windows from frame `*n` on (`*n` moves past them).
+        fn windows(&mut self, n: &mut u64, windows: u64, keep_up: bool) -> Vec<Stepped> {
+            let steps = self.run(*n, windows * WINDOW, keep_up, false);
+            *n += windows * WINDOW;
+            steps
+        }
+
+        /// A break: the decoder starts over from a keyframe at frame `*n`.
+        fn restart(&mut self, n: &mut u64) -> Vec<Stepped> {
+            self.sinks.route(VideoRecvItem::KeyframeNeeded {
+                track: SCREEN.into(),
+            });
+            let steps = self.run(*n, 1, true, true);
+            *n += 1;
+            steps
+        }
+
+        fn fit(&self) -> (u32, u32) {
+            self.sinks.sinks[&self.id].decoded.as_ref().unwrap().fit
+        }
+    }
+
+    fn step(down: bool, fit: (u32, u32)) -> Stepped {
+        Stepped {
+            sink_id: 1,
+            track: SCREEN.into(),
+            down,
+            fit,
+            changed: true,
+        }
+    }
+
+    #[test]
+    fn a_behind_screen_decoder_steps_down_to_640x360_and_back_up_once_it_keeps_up() {
+        // A 6x zoom of a 640x360 box on a 2560x1440 layer: capped at 1920x1080.
+        let mut run = ScreenRun::new(3840, 2160);
+        let mut n = 0;
+        let mut steps = run.restart(&mut n);
+        steps.extend(run.windows(&mut n, 3, true));
+        assert!(steps.is_empty(), "keeping up: no step: {steps:?}");
+        assert_eq!(run.opened.lock().unwrap()[0].fit, (1920, 1080));
+        assert_eq!(run.fit(), (1920, 1080));
+        assert_eq!(
+            run.sinks.settings(SCREEN).width,
+            3840,
+            "not stepped: the sink's own size goes to the media server"
+        );
+
+        // The decoder gives nothing: one box down per window, to 640x360 and no further.
+        let steps = run.windows(&mut n, 5, false);
+        assert_eq!(
+            steps,
+            vec![
+                step(true, (1280, 720)),
+                step(true, (960, 540)),
+                step(true, (640, 360)),
+            ],
+        );
+        assert_eq!(
+            run.fits.lock().unwrap().clone(),
+            vec![(1280, 720), (960, 540), (640, 360)]
+        );
+        let s = run.sinks.settings(SCREEN);
+        assert_eq!(
+            (s.width, s.height),
+            (640, 360),
+            "a stepped-down sink asks the media server for no larger a layer"
+        );
+
+        // It keeps up again: one box back up per five clean windows.
+        let mut ups = run.restart(&mut n);
+        ups.extend(run.windows(&mut n, 16, true));
+        assert_eq!(
+            ups,
+            vec![
+                step(false, (960, 540)),
+                step(false, (1280, 720)),
+                step(false, (1920, 1080)),
+            ]
+        );
+        assert_eq!(run.fit(), (1920, 1080));
+        assert_eq!(run.sinks.settings(SCREEN).width, 3840);
+
+        // Behind again right after stepping up: down, and the next try waits twice as long.
+        assert_eq!(run.windows(&mut n, 2, false), vec![step(true, (1280, 720))]);
+        let mut ups = run.restart(&mut n);
+        ups.extend(run.windows(&mut n, 6, true));
+        assert!(
+            ups.is_empty(),
+            "five clean windows are not enough now: {ups:?}"
+        );
+        ups.extend(run.windows(&mut n, 5, true));
+        assert_eq!(ups, vec![step(false, (1920, 1080))]);
+    }
+
+    #[test]
+    fn late_outputs_a_lost_input_or_no_output_are_behind_and_a_few_late_ones_are_not() {
+        let full = (1920, 1080);
+        // One window with `on_time` outputs on time, `late` ones 400 ms behind the newest
+        // input and `lost` inputs lost to a full backlog, on a decoder whose box is `fit`:
+        // the step it closes with and the box allowed after.
+        let window = |on_time: u32, late: u32, lost: u64, fit: (u32, u32)| {
+            let mut g = ScreenGuard::default();
+            assert_eq!(g.input(0, fit), None);
+            g.newest_in = 900_000;
+            for _ in 0..on_time {
+                g.output(880_000);
+            }
+            for _ in 0..late {
+                g.output(900_000 - GUARD_LATE_US - 100_000);
+            }
+            g.lost = lost;
+            let step = g.input(GUARD_WINDOW_US, fit);
+            (step, g.ceiling())
+        };
+        assert_eq!(window(30, 0, 0, full), (None, full));
+        assert_eq!(window(23, 7, 0, full), (None, full), "7 of 30 late: clean");
+        assert_eq!(
+            window(22, 8, 0, full),
+            (Some(GuardStep::Down), (1280, 720)),
+            "8 of 30 late: over a quarter"
+        );
+        assert_eq!(
+            window(30, 0, 1, full),
+            (Some(GuardStep::Down), (1280, 720)),
+            "an input lost"
+        );
+        assert_eq!(
+            window(0, 0, 0, full),
+            (Some(GuardStep::Down), (1280, 720)),
+            "inputs and no output"
+        );
+        assert_eq!(
+            window(0, 0, 0, (1280, 720)),
+            (Some(GuardStep::Down), (960, 540)),
+            "a box at 1280x720 already steps to 960x540"
+        );
+        assert_eq!(
+            window(0, 0, 0, (640, 360)),
+            (None, full),
+            "at 640x360 there is nothing to step"
+        );
     }
 }

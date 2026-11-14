@@ -1,7 +1,8 @@
 //! The decoded-frame fallback: a sink whose webview can't decode the track's codec gets the
 //! engine's decoder (here the fake engine's), with the same gating as an encoded sink, its
-//! outputs fitted to the sink and capped at 640x360 and 15 fps, at most four decoded sinks,
-//! and a reset plus a keyframe request on a decoder error.
+//! outputs fitted to the sink and capped at 15 fps and at 640x360 (a camera) or 1920x1080 and
+//! the received layer (a screen share, stepping down when its decoder falls behind), at most
+//! four decoded sinks, and a reset plus a keyframe request on a decoder error.
 
 // The helpers (not only #[test] fns) unwrap: a test that cannot set up must fail loudly.
 #![allow(clippy::expect_used)]
@@ -28,6 +29,7 @@ struct World {
     svc: VoiceService,
     engine: Arc<FakeEngine>,
     decoders: Arc<FakeDecoders>,
+    events: Arc<RecordingSink>,
 }
 
 fn world() -> World {
@@ -37,10 +39,11 @@ fn world() -> World {
     let spawn: Spawn = Arc::new(|f| {
         tokio::spawn(f);
     });
+    let events = Arc::new(RecordingSink::new());
     let svc = VoiceService::new(
         engine.clone(),
         Arc::new(FakeProvider::answering(ME)),
-        Arc::new(RecordingSink::new()),
+        events.clone(),
         spawn,
     );
     svc.start();
@@ -48,6 +51,7 @@ fn world() -> World {
         svc,
         engine,
         decoders,
+        events,
     }
 }
 
@@ -244,24 +248,197 @@ async fn without_webcodecs_the_frames_are_rgba_and_resizes_refit() {
     );
     assert_eq!(payload.len(), 320 * 180 * 4);
 
-    // A larger tile: the decoder's box follows, still capped.
+    // A larger tile: the decoder's box follows, up to the screen's 1280x720 layer.
     w.svc
-        .video_sink_update(VideoSinkUpdateArgs {
-            sink_id: ans.sink_id,
-            width: Some(1920),
-            height: Some(1080),
-            visible: None,
-            tile: None,
-            stats: None,
-        })
+        .video_sink_update(update(ans.sink_id, 1920, 1080))
         .await
         .expect("update");
-    assert_eq!(w.decoders.fits(), vec![(640, 360)]);
+    assert_eq!(w.decoders.fits(), vec![(1280, 720)]);
     push(&call, frame(SCREEN, VideoCodec::H264, false, 2, 1100)).await;
     until("a refitted frame", || ch.messages().len() == 2).await;
     let (h, payload) = &ch.frames()[1];
-    assert_eq!((h.width, h.height), (640, 360));
-    assert_eq!(payload.len(), 640 * 360 * 4);
+    assert_eq!((h.width, h.height), (1280, 720));
+    assert_eq!(payload.len(), 1280 * 720 * 4);
+}
+
+/// `video_sink_update {sink_id, width, height}`.
+fn update(sink_id: u32, width: u32, height: u32) -> VideoSinkUpdateArgs {
+    VideoSinkUpdateArgs {
+        sink_id,
+        width: Some(width),
+        height: Some(height),
+        visible: None,
+        tile: None,
+        stats: None,
+    }
+}
+
+/// A keyframe of `track` that says `w` x `h`.
+fn sized_keyframe(track: &str, n: u8, at_ms: u64, w: u32, h: u32) -> VideoRecvItem {
+    let VideoRecvItem::Frame(mut f) = frame(track, VideoCodec::H264, true, n, at_ms) else {
+        unreachable!("frame() makes frames");
+    };
+    f.width = w;
+    f.height = h;
+    VideoRecvItem::Frame(f)
+}
+
+#[tokio::test]
+async fn a_zoomed_screen_share_decodes_up_to_its_layer_and_a_camera_stays_at_640x360() {
+    let (w, call) = in_call().await;
+    // A 640x360 box at 1x: both start at 640x360.
+    let screen = Arc::new(RecordingFrameChannel::new());
+    let s = w
+        .svc
+        .video_sink(sink_args(SCREEN, 640, 360, &[]), screen.clone())
+        .await
+        .expect("screen sink")
+        .sink_id;
+    let cam = Arc::new(RecordingFrameChannel::new());
+    let c = w
+        .svc
+        .video_sink(sink_args(CAM, 640, 360, &["h264"]), cam.clone())
+        .await
+        .expect("camera sink")
+        .sink_id;
+    assert_eq!(
+        w.decoders
+            .opened()
+            .iter()
+            .map(|d| d.fit)
+            .collect::<Vec<_>>(),
+        vec![(640, 360), (640, 360)]
+    );
+    push(&call, frame(SCREEN, VideoCodec::H264, true, 1, 1000)).await;
+    until("a 1x screen frame", || screen.messages().len() == 1).await;
+    assert_eq!(
+        (screen.frames()[0].0.width, screen.frames()[0].0.height),
+        (640, 360)
+    );
+
+    // The viewer zooms 6x: its sink asks for 3840x2160. The screen's box goes up to its
+    // 1280x720 layer; the camera's stays at 640x360.
+    w.svc
+        .video_sink_update(update(s, 3840, 2160))
+        .await
+        .expect("zoom the screen");
+    w.svc
+        .video_sink_update(update(c, 3840, 2160))
+        .await
+        .expect("enlarge the camera");
+    assert_eq!(w.decoders.fits(), vec![(1280, 720), (640, 360)]);
+    push(&call, frame(SCREEN, VideoCodec::H264, false, 2, 1100)).await;
+    until("a 6x screen frame", || screen.messages().len() == 2).await;
+    let (h, payload) = &screen.frames()[1];
+    assert_eq!((h.width, h.height), (1280, 720), "the layer's own pixels");
+    assert_eq!(payload.len(), 1280 * 720 * 4);
+    push(&call, frame(CAM, VideoCodec::Vp8, true, 3, 1200)).await;
+    until("a camera frame", || cam.messages().len() == 1).await;
+    assert_eq!(
+        (cam.frames()[0].0.width, cam.frames()[0].0.height),
+        (640, 360)
+    );
+    // The media server is asked for the zoomed size (it picks the layer).
+    let last = call
+        .video_settings()
+        .into_iter()
+        .rev()
+        .find(|(t, _)| t == SCREEN)
+        .expect("the screen's settings");
+    assert_eq!((last.1.width, last.1.height), (3840, 2160));
+
+    // Back to 2x (1280x720): the box follows down.
+    w.svc
+        .video_sink_update(update(s, 1280, 720))
+        .await
+        .expect("2x");
+    w.svc
+        .video_sink_update(update(s, 1000, 500))
+        .await
+        .expect("a smaller box");
+    assert_eq!(
+        w.decoders.fits()[2..],
+        [(1280, 720), (1000, 500)],
+        "the sink's own size under the layer"
+    );
+}
+
+#[tokio::test]
+async fn a_screen_shares_decoded_box_is_never_above_1920x1080() {
+    let (w, call) = in_call().await;
+    call.set_video_tracks(vec![VideoTrack {
+        width: 2560,
+        height: 1440,
+        ..track(SCREEN, VideoSource::Screen, VideoCodec::H264)
+    }]);
+    until("the 1440p track", || {
+        w.svc.snapshot().video.first().map(|t| t.width) == Some(2560)
+    })
+    .await;
+    let ch = Arc::new(RecordingFrameChannel::new());
+    w.svc
+        .video_sink(sink_args(SCREEN, 3840, 2160, &[]), ch.clone())
+        .await
+        .expect("sink");
+    assert_eq!(w.decoders.opened()[0].fit, (1920, 1080));
+    push(&call, sized_keyframe(SCREEN, 1, 1000, 2560, 1440)).await;
+    until("a frame", || ch.messages().len() == 1).await;
+    let (h, payload) = &ch.frames()[0];
+    assert_eq!((h.width, h.height), (1920, 1080));
+    assert_eq!(payload.len(), 1920 * 1080 * 4);
+
+    // The media server switches to a 960x540 layer: the box follows it down, then back up.
+    push(&call, sized_keyframe(SCREEN, 2, 1100, 960, 540)).await;
+    push(&call, sized_keyframe(SCREEN, 3, 1200, 2560, 1440)).await;
+    assert_eq!(w.decoders.fits(), vec![(960, 540), (1920, 1080)]);
+}
+
+#[tokio::test]
+async fn a_screen_decoder_that_falls_behind_steps_down_and_says_so() {
+    let (w, call) = in_call().await;
+    let ch = Arc::new(RecordingFrameChannel::new());
+    let id = w
+        .svc
+        .video_sink(sink_args(SCREEN, 3840, 2160, &[]), ch.clone())
+        .await
+        .expect("sink")
+        .sink_id;
+    assert_eq!(w.decoders.opened()[0].fit, (1280, 720), "the layer's size");
+    // The decoder takes every input and gives nothing for over a second (30 fps).
+    w.decoders.hold();
+    for n in 0..32u8 {
+        push(
+            &call,
+            frame(
+                SCREEN,
+                VideoCodec::H264,
+                n == 0,
+                n,
+                1000 + u64::from(n) * 34,
+            ),
+        )
+        .await;
+    }
+    until("the step down", || !w.events.of("errors").is_empty()).await;
+    assert_eq!(
+        w.events.of("errors"),
+        vec![json!({
+            "code": "decoded_stepped_down",
+            "detail": {"sink_id": id, "track": SCREEN, "width": 960, "height": 540},
+        })]
+    );
+    assert_eq!(w.decoders.fits(), vec![(960, 540)]);
+    let last = call
+        .video_settings()
+        .into_iter()
+        .rev()
+        .find(|(t, _)| t == SCREEN)
+        .expect("the screen's settings");
+    assert_eq!(
+        (last.1.width, last.1.height),
+        (960, 540),
+        "it asks the media server for no larger a layer"
+    );
 }
 
 #[tokio::test]

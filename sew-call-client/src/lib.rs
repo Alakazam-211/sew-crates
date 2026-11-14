@@ -92,6 +92,7 @@ pub use video::h264_encode_detection;
 pub use video::{
     BackupSpec, EncodedVideo, LayerRate, LayerSpec, LocalVideo, VideoCaps, VideoControl,
     VideoError, VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
+    plan_screen_layers,
 };
 /// The video bridge: a kessel-video backend's cameras, screens and encoders into a call, with
 /// the in-call self-view.

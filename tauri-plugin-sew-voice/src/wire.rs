@@ -1434,8 +1434,8 @@ pub enum SinkMode {
     Encoded,
     /// Decoded frames (kinds 2 and 3): the fallback for a webview that can't decode the
     /// track's codec. The engine decodes; frames are I420 (kind 2), or RGBA (kind 3) for a
-    /// webview without WebCodecs (an empty `decode`), scaled to fit the sink, at most 640x360
-    /// and 15 fps.
+    /// webview without WebCodecs (an empty `decode`), scaled to fit the sink, at most 15 fps
+    /// and 640x360 (a camera) or 1920x1080 and the received layer (a screen share).
     Decoded,
 }
 
@@ -1499,6 +1499,13 @@ pub mod video_code {
     /// its most tiles (`detail.max`, 4). The tile shows its participant's avatar and "video
     /// paused (this device)"; opening it again once another decoded sink closes may succeed.
     pub const DECODED_TILES_FULL: &str = "decoded_tiles_full";
+    /// The `errors` event (a notice, not a failure): a decoded screen share's decoder fell
+    /// behind real time, so its frames now fit a smaller box and its sink asks the media server
+    /// for no larger a layer. `detail {sink_id, track, width, height}`: the new box.
+    pub const DECODED_STEPPED_DOWN: &str = "decoded_stepped_down";
+    /// The `errors` event (a notice): a stepped-down decoded screen share keeps up again and
+    /// steps one box back up. `detail` as [`DECODED_STEPPED_DOWN`].
+    pub const DECODED_STEPPED_UP: &str = "decoded_stepped_up";
     /// The room's policy allows no video, or no camera for this member.
     pub const VIDEO_NOT_ALLOWED: &str = "video_not_allowed";
     /// Sew turned video off for the room (`policy_denied video_disabled`).
