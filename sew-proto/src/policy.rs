@@ -113,8 +113,14 @@ unit_enum! {
         /// Unset: the default (`display_name`, `title`, `pronouns`; members upload their own
         /// avatar). Set over mgmt only; a standalone install ignores it.
         IdentityManagedFields = "identity.managed_fields",
+        /// Whether a DM or group DM may put an agent with a box person (`k2:owner`,
+        /// `k2:connect:`); off refuses opening one (since 0.10.0).
+        AgentsDmWithBoxPeople = "agents.dm_with_box_people",
     }
 }
+
+/// Feature flag (since 0.10.0): the policy `agents.dm_with_box_people`.
+pub const FEATURE_AGENTS_DM_WITH_BOX_PEOPLE: &str = "agents_dm_with_box_people";
 
 unit_enum! {
     /// A profile field `identity.managed_fields` may give to K2. A listed field changes only
@@ -318,6 +324,12 @@ pub struct Policies {
     /// Whether members may DM agent members.
     #[serde(rename = "agents.allowed_in_dms")]
     pub agents_allowed_in_dms: bool,
+    /// Since 0.10.0: whether a DM or group DM may put an agent with a box person (external id
+    /// `k2:owner` or `k2:connect:…`); off answers opening one with `403 policy_denied`
+    /// (`agents.dm_with_box_people`). DMs between agents and other people follow
+    /// `agents.allowed_in_dms` only. Old payloads read `true`.
+    #[serde(rename = "agents.dm_with_box_people", default = "default_true")]
+    pub agents_dm_with_box_people: bool,
     /// Strip GPS and other location EXIF/XMP from JPEG, PNG, WebP and HEIC originals when an
     /// upload finishes; orientation and colour profile stay.
     #[serde(rename = "files.strip_image_location", default = "default_true")]
@@ -515,6 +527,7 @@ impl Default for Policies {
             presence_show_to_guests: false,
             digest_enabled: false,
             agents_allowed_in_dms: true,
+            agents_dm_with_box_people: true,
             files_strip_image_location: true,
             messages_deleted_purge_days: DEFAULT_DELETED_PURGE_DAYS,
             guests_enabled: true,
@@ -591,6 +604,7 @@ impl Policies {
             presence_show_to_guests,
             digest_enabled,
             agents_allowed_in_dms,
+            agents_dm_with_box_people,
             files_strip_image_location,
             messages_deleted_purge_days,
             guests_enabled,
@@ -776,6 +790,13 @@ pub struct PolicyPatch {
         skip_serializing_if = "Option::is_none"
     )]
     pub agents_allowed_in_dms: Option<bool>,
+    /// `agents.dm_with_box_people` (since 0.10.0).
+    #[serde(
+        rename = "agents.dm_with_box_people",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agents_dm_with_box_people: Option<bool>,
     /// `files.strip_image_location`.
     #[serde(
         rename = "files.strip_image_location",

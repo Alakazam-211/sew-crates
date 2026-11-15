@@ -25,7 +25,9 @@
 //!   `consent`). The `recording` event is the engine's recording with `recorder_present` from
 //!   its roster (the recorder is never a `participants` entry: it is no member). `consent` and
 //!   `withdraw_consent` are the engine's, through the host's provider, and so (Sew 0.9.0) are
-//!   `start_recording` and `stop_recording`.
+//!   `start_recording` and `stop_recording`. A Sew server that computes the person's Record
+//!   and Stop sends them through the engine (`RecordingControls` events,
+//!   `server_controls`, `recording_controls`), passed on as they come.
 //! - **The phone's audio session.** The engine keeps one `AudioSession` for the app: every
 //!   [`AudioSessionEvent`] goes to it, with or without a call, and each call's kessel-audio
 //!   starts from what it says (on iOS, deferred until the session is active). On phones the
@@ -68,7 +70,7 @@ mod video;
 use crate::details::{QualityInfo, RosterEntry, SecurityInfo, roster_of};
 use crate::engine::{
     AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, EngineError, JoinAnswer,
-    JoinProvider, JoinRequest, ProviderError, VoiceEngine,
+    JoinProvider, JoinRequest, ProviderError, ServerControls, VoiceEngine,
 };
 use crate::video::VideoCodec;
 use crate::wire::{
@@ -1261,6 +1263,16 @@ impl CallHandle for RealCall {
         Some(moved.room().to_owned())
     }
 
+    fn server_controls(&self) -> bool {
+        self.shared
+            .engine_snapshot()
+            .is_some_and(|s| s.server_controls)
+    }
+
+    fn recording_controls(&self) -> Option<ServerControls> {
+        self.shared.engine_snapshot()?.recording_controls
+    }
+
     fn consent(
         &self,
         granted: bool,
@@ -1598,6 +1610,8 @@ async fn forward(
                     sh.send(CallEvent::Policy(v));
                 }
             }
+            // Sew's own Record and Stop (a server that computes them).
+            Ok(E::RecordingControls(c)) => sh.send(CallEvent::RecordingControls(c)),
             // An event sew-call-client adds later.
             Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -1605,6 +1619,9 @@ async fn forward(
                 let ended = matches!(snap.state, CallState::Ended { .. });
                 if let Some(engine) = sh.engine_snapshot() {
                     sh.update_recording(Some(engine.recording.clone()), &engine.participants);
+                    if engine.server_controls {
+                        sh.send(CallEvent::RecordingControls(engine.recording_controls));
+                    }
                     sh.send(CallEvent::Roster(roster_of(&engine.participants)));
                     if let Some(sec) = &engine.security {
                         sh.send(CallEvent::Security(Some(SecurityInfo::from(sec))));

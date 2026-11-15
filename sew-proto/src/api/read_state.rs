@@ -15,6 +15,12 @@ use crate::limits::{
     BULK_ACK_CHANNELS_MAX, BULK_ACK_THREADS_MAX, PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX,
 };
 
+/// The cap of [`ReadState::unread_count`]: the value `99` means 99 or more.
+pub const UNREAD_COUNT_CAP: u32 = 99;
+
+/// Feature flag: `ReadState.unread_count`.
+pub const FEATURE_READ_STATE_UNREAD_COUNT: &str = "read_state_unread_count";
+
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -36,6 +42,12 @@ pub struct ReadState {
     pub mention_count: u32,
     /// Whether a message by someone else is past the cursor.
     pub unread: bool,
+    /// Since 0.10.0: how many timeline messages are past the cursor (the messages behind
+    /// `unread`: top-level ones and replies also sent to the channel, live, that the member can
+    /// read), capped at [`UNREAD_COUNT_CAP`]: `99` means 99 or more. `0` when `unread` is false.
+    /// Older servers leave it out (read as `0`; use `unread`).
+    #[serde(default)]
+    pub unread_count: u32,
     /// The member muted the channel; present only when true.
     #[serde(default, skip_serializing_if = "is_false")]
     pub muted: bool,

@@ -163,6 +163,10 @@
       "pattern": "^[1-9][0-9]{0,18}$",
       "type": "string"
     },
+    "members_can_leave": {
+      "description": "Minor 13: the members of this channel in a governed Space may leave it. Absent when\n`false` (and in older archives).",
+      "type": "boolean"
+    },
     "name": {
       "description": "Name.",
       "type": [

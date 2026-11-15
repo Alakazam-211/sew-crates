@@ -183,6 +183,11 @@
       "description": "Whether members may DM agent members.",
       "type": "boolean"
     },
+    "agents.dm_with_box_people": {
+      "default": true,
+      "description": "Since 0.10.0: whether a DM or group DM may put an agent with a box person (external id\n`k2:owner` or `k2:connect:…`); off answers opening one with `403 policy_denied`\n(`agents.dm_with_box_people`). DMs between agents and other people follow\n`agents.allowed_in_dms` only. Old payloads read `true`.",
+      "type": "boolean"
+    },
     "calls.dm_enabled": {
       "default": true,
       "description": "Whether members may start and join calls in DMs and group DMs; off\nanswers `403 policy_denied` with reason `dm_calls_disabled`.",

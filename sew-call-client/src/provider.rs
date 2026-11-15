@@ -283,14 +283,35 @@ impl fmt::Debug for CallCredential {
 }
 
 /// Sew's join answer as the host got it, and the door to Sew's client API.
+///
+/// A voice join answers a `VoiceJoinResponse`; a DM call join (`call/join`) answers a
+/// `CallJoinResponse` (`{call, created, voice, recording}`), whose `voice` is the same voice
+/// answer. [`JoinAnswer::from_json`] takes either body unchanged.
 #[derive(Clone)]
 pub struct JoinAnswer {
-    /// Sew's `VoiceJoinResponse` (voice or DM call join), unchanged.
+    /// Sew's `VoiceJoinResponse` (a voice join's answer, or a DM call join's `voice`),
+    /// unchanged.
     pub join: VoiceJoinResponse,
     /// The HTTPS base the engine uses for Sew's client API with the call credential (under K2: the
     /// hosting daemon's lane on the box's own host name; never `turn.` or `voice.`).
     pub api_base: url::Url,
     credential: Option<CallCredential>,
+    dm_call: Option<DmCall>,
+}
+
+/// The DM call of a DM call join's answer (`CallJoinResponse.call` and `created`), kept by
+/// [`JoinAnswer::from_json`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DmCall {
+    /// The call (`calls.id`): the id the decline, cancel and re-ring routes take.
+    pub call_id: Id,
+    /// The DM or group DM: the `room` a host joins (and re-joins) the call with.
+    pub channel_id: Id,
+    /// Who started it.
+    pub started_by: Id,
+    /// Whether this join started the call.
+    pub created: bool,
 }
 
 impl fmt::Debug for JoinAnswer {
@@ -301,6 +322,7 @@ impl fmt::Debug for JoinAnswer {
             .field("room", &self.join.room)
             .field("api_base", &self.api_base.as_str())
             .field("call_credential", &self.credential)
+            .field("dm_call", &self.dm_call)
             .finish_non_exhaustive()
     }
 }
@@ -313,9 +335,20 @@ pub struct AnswerError(String);
 impl JoinAnswer {
     /// The answer from the HTTP body Sew (or the host's BFF) returned, as is: the recommended
     /// constructor (it keeps `call_credential` whatever `sew-proto` version is pinned).
+    ///
+    /// The body is a voice join's `VoiceJoinResponse`, or a DM call join's `CallJoinResponse`
+    /// (`{call, created, voice, recording}`): then the voice answer and its `call_credential`
+    /// are read from `voice`, and the call from `call` ([`JoinAnswer::dm_call`]).
     pub fn from_json(body: &[u8], api_base: url::Url) -> Result<JoinAnswer, AnswerError> {
-        let v: serde_json::Value =
+        let mut v: serde_json::Value =
             serde_json::from_slice(body).map_err(|e| AnswerError(e.to_string()))?;
+        let mut dm_call = None;
+        if v.get("voice").is_some_and(serde_json::Value::is_object)
+            && v.get("call").is_some_and(serde_json::Value::is_object)
+        {
+            dm_call = Some(DmCall::from_answer(&v)?);
+            v = v["voice"].take();
+        }
         let credential = match v.get("call_credential") {
             None | Some(serde_json::Value::Null) => None,
             Some(c) => Some(
@@ -329,6 +362,7 @@ impl JoinAnswer {
             join,
             api_base,
             credential,
+            dm_call,
         })
     }
 
@@ -342,12 +376,37 @@ impl JoinAnswer {
             join,
             api_base,
             credential,
+            dm_call: None,
         }
     }
 
     /// The call credential, when the join asked for one.
     pub fn call_credential(&self) -> Option<&CallCredential> {
         self.credential.as_ref()
+    }
+
+    /// The DM call, when the answer was a DM call join's (`CallJoinResponse`).
+    pub fn dm_call(&self) -> Option<&DmCall> {
+        self.dm_call.as_ref()
+    }
+}
+
+impl DmCall {
+    /// From a `CallJoinResponse` body: `call.id`, `call.channel_id`, `call.started_by` and
+    /// `created`. The error never quotes the body.
+    fn from_answer(v: &serde_json::Value) -> Result<DmCall, AnswerError> {
+        let id = |field: &str| -> Result<Id, AnswerError> {
+            v["call"][field]
+                .as_str()
+                .and_then(|s| s.parse::<Id>().ok())
+                .ok_or_else(|| AnswerError(format!("call.{field}: not an id")))
+        };
+        Ok(DmCall {
+            call_id: id("id")?,
+            channel_id: id("channel_id")?,
+            started_by: id("started_by")?,
+            created: v["created"].as_bool().unwrap_or(false),
+        })
     }
 }
 
@@ -787,5 +846,69 @@ mod tests {
         );
         let a = JoinAnswer::from_json(&body(false), base).unwrap();
         assert!(a.call_credential().is_none());
+        assert!(
+            a.dm_call().is_none(),
+            "a voice join's answer has no DM call"
+        );
+    }
+
+    /// A DM call join's answer (`CallJoinResponse`), as Sew writes it.
+    fn call_join_body(cred: bool) -> Vec<u8> {
+        let voice: serde_json::Value = serde_json::from_slice(&body(cred)).unwrap();
+        let v = serde_json::json!({
+            "call": {
+                "id": "3003",
+                "channel_id": "2002",
+                "message_id": "4004",
+                "started_by": "1001",
+                "started_at": "2026-11-02T09:58:00Z",
+                "state": "active",
+                "participant_ids": ["1001"],
+                "rings": [{"member_id": "1005", "state": "ringing",
+                           "expires_at": "2026-11-02T09:58:45Z"}]
+            },
+            "created": true,
+            "voice": voice
+        });
+        serde_json::to_vec(&v).unwrap()
+    }
+
+    #[test]
+    fn a_dm_call_join_answer_is_read_unchanged() {
+        let base = url::Url::parse("https://chat.example.com/_k2/voice/sew/").unwrap();
+        for cred in [true, false] {
+            let a = match JoinAnswer::from_json(&call_join_body(cred), base.clone()) {
+                Ok(a) => a,
+                Err(e) => panic!("{e}"),
+            };
+            // The voice half is the same answer as a voice join's.
+            let plain = JoinAnswer::from_json(&body(cred), base.clone()).unwrap();
+            assert_eq!(a.join, plain.join);
+            assert_eq!(a.call_credential(), plain.call_credential());
+            assert_eq!(a.call_credential().is_some(), cred);
+            assert_eq!(a.api_base, base);
+            let call = a.dm_call().unwrap();
+            assert_eq!(call.call_id, Id::new(3003).unwrap());
+            assert_eq!(call.channel_id, Id::new(2002).unwrap());
+            assert_eq!(call.started_by, Id::new(1001).unwrap());
+            assert!(call.created);
+            // The DM is the room a host joins and re-joins with: the voice state's channel.
+            assert_eq!(a.join.state.channel_id, call.channel_id);
+            let dbg = format!("{a:?}");
+            assert!(
+                !dbg.contains("sewcc_sel.secret") && !dbg.contains("media-token"),
+                "{dbg}"
+            );
+        }
+        // A call/join answer that does not parse fails without quoting it.
+        let mut bad: serde_json::Value = serde_json::from_slice(&call_join_body(true)).unwrap();
+        bad["call"]["id"] = serde_json::json!(null);
+        let e = JoinAnswer::from_json(&serde_json::to_vec(&bad).unwrap(), base.clone())
+            .err()
+            .unwrap();
+        assert!(!e.to_string().contains("sewcc_"), "{e}");
+        let mut bad: serde_json::Value = serde_json::from_slice(&call_join_body(true)).unwrap();
+        bad["voice"]["token"] = serde_json::json!(7);
+        assert!(JoinAnswer::from_json(&serde_json::to_vec(&bad).unwrap(), base).is_err());
     }
 }

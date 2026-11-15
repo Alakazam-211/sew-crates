@@ -13,16 +13,24 @@ impl Example for MgmtMemberChannelsRequest {
                 "full",
                 MgmtMemberChannelsRequest {
                     app_id: Some("jobs".into()),
-                    channel_ids: vec![ID_CHANNEL, ID_OTHER_CHANNEL],
+                    channel_ids: Some(vec![ID_CHANNEL, ID_OTHER_CHANNEL]),
                     level: SpaceLevel::Moderator,
+                },
+            ),
+            (
+                "full_empty_list",
+                MgmtMemberChannelsRequest {
+                    app_id: Some("jobs".into()),
+                    channel_ids: Some(vec![]),
+                    level: SpaceLevel::Member,
                 },
             ),
             (
                 "min",
                 MgmtMemberChannelsRequest {
-                    app_id: Some("jobs".into()),
-                    channel_ids: vec![],
-                    level: SpaceLevel::Member,
+                    app_id: None,
+                    channel_ids: None,
+                    level: SpaceLevel::Moderator,
                 },
             ),
         ]
@@ -93,12 +101,12 @@ impl Example for MgmtMemberChannelsBulkRequest {
                 items: vec![
                     MgmtMemberChannelsItem {
                         external_id: ext(PRINCIPAL),
-                        channel_ids: vec![ID_CHANNEL, ID_OTHER_CHANNEL],
+                        channel_ids: Some(vec![ID_CHANNEL, ID_OTHER_CHANNEL]),
                         level: SpaceLevel::Moderator,
                     },
                     MgmtMemberChannelsItem {
                         external_id: ext(WORKSPACE),
-                        channel_ids: vec![],
+                        channel_ids: None,
                         level: SpaceLevel::Member,
                     },
                 ],

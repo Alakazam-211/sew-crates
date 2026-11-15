@@ -14,6 +14,12 @@
 //! of the rights, the state, the room, the participants (a required room's headcount) and the
 //! recording. The rights are forgotten when the call ends.
 //!
+//! **Record and Stop from Sew (0.7.0).** When the call's server computes them
+//! ([`CallHandle::server_controls`], or any [`CallEvent::RecordingControls`]), the controls are
+//! Sew's latest value for the call's room, gated by the call state (both `false` unless
+//! connected or reconnecting, and until the first value), with `source: "sew"`; the host's
+//! rights are kept but not used. A move clears the value until the destination's arrives.
+//!
 //! Devices are the engine's from the first use on: the first `devices`, `set_device` or
 //! `join` subscribes to the engine's device events (and so starts its device listing), not
 //! [`VoiceService::start`]. Cameras likewise: the first `video_devices`, `set_video_device`,
@@ -54,7 +60,7 @@ use serde_json::Value;
 
 use crate::engine::{
     AppScene, AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, JoinProvider,
-    JoinRequest, VideoSnapshot, VoiceEngine,
+    JoinRequest, ServerControls, VideoSnapshot, VoiceEngine,
 };
 use crate::listener::VoiceListener;
 use crate::sink::{
@@ -167,6 +173,11 @@ struct Slot {
     rights: Option<RecordingRights>,
     /// The `recording_controls` event's last value.
     controls: RecordingControls,
+    /// The call's server computes Record and Stop (0.7.0): the controls are its, not the
+    /// host's rights'.
+    sew_controls: bool,
+    /// The server's latest Record and Stop for the call's room (`None`: none yet).
+    sew_value: Option<ServerControls>,
     call: Option<Arc<dyn CallHandle>>,
     call_id: Option<String>,
     /// Bumped by every join and leave; a task or answer from an older generation is ignored.
@@ -254,6 +265,8 @@ impl VoiceService {
                     recording: None,
                     rights: None,
                     controls: RecordingControls::default(),
+                    sew_controls: false,
+                    sew_value: None,
                     call: None,
                     call_id: None,
                     generation: 0,
@@ -356,6 +369,8 @@ impl VoiceService {
             slot.target = Some(req.target.clone());
             slot.room = Some(req.room.clone());
             slot.own_muted = own_muted;
+            slot.sew_controls = false;
+            slot.sew_value = None;
             set_participants(&self.inner, &mut slot, Vec::new());
             set_recording(&self.inner, &mut slot, None);
             clear_details(&self.inner, &mut slot);
@@ -434,6 +449,7 @@ impl VoiceService {
         slot.call = Some(Arc::clone(&call));
         slot.call_id = (!call_id.is_empty()).then(|| call_id.clone());
         slot.stop = Some(Arc::clone(&stop));
+        take_server_controls(&mut slot, call.as_ref());
         let ended = self.apply_snapshot(&mut slot, call.snapshot());
         if !ended {
             apply_details(&self.inner, &mut slot, call.as_ref());
@@ -505,6 +521,8 @@ impl VoiceService {
             let call = slot.call.take();
             slot.call_id = None;
             slot.rights = None;
+            slot.sew_controls = false;
+            slot.sew_value = None;
             set_participants(&self.inner, &mut slot, Vec::new());
             set_recording(&self.inner, &mut slot, None);
             clear_details(&self.inner, &mut slot);
@@ -603,8 +621,10 @@ impl VoiceService {
     /// record_capped?, agent?}` (0.6.1): the host's word on the person's rights in `room`,
     /// which the `recording_controls` event (and the `recording` event's `can_record` and
     /// `can_stop`) follow. Any time, with or without a call: they apply while the call is in
-    /// `room`, replace the last ones, and are forgotten when the call ends. Errors:
-    /// `invalid_args` (`my_perms` is not a decimal number).
+    /// `room`, replace the last ones, and are forgotten when the call ends. For Sew servers
+    /// that don't send recording controls: while the call's server sends them (`source:
+    /// "sew"`), the rights are kept but not used. Errors: `invalid_args` (`my_perms` is not a
+    /// decimal number).
     pub async fn set_recording_rights(&self, rights: RecordingRights) -> Result<(), ErrorInfo> {
         if rights.perms().is_none() {
             return Err(ErrorInfo::with_detail(
@@ -1602,15 +1622,19 @@ fn set_room(inner: &Inner, slot: &mut Slot, room: String) {
 /// The recording now (the engine's: its `can_record` and `can_stop` are worked out here), then
 /// the controls with it.
 fn set_recording(inner: &Inner, slot: &mut Slot, mut recording: Option<RecordingInfo>) {
-    let controls = crate::rights::controls(
-        slot.rights.as_ref(),
-        &crate::rights::CallView {
-            state: &slot.state,
-            room: slot.room.as_deref(),
-            participants: &slot.participants,
-        },
-        recording.as_ref(),
-    );
+    let controls = if slot.sew_controls {
+        crate::rights::from_sew(slot.sew_value.as_ref(), &slot.state)
+    } else {
+        crate::rights::controls(
+            slot.rights.as_ref(),
+            &crate::rights::CallView {
+                state: &slot.state,
+                room: slot.room.as_deref(),
+                participants: &slot.participants,
+            },
+            recording.as_ref(),
+        )
+    };
     if let Some(r) = recording.as_mut() {
         r.can_record = controls.can_record;
         r.can_stop = controls.can_stop;
@@ -1622,6 +1646,16 @@ fn set_recording(inner: &Inner, slot: &mut Slot, mut recording: Option<Recording
     if slot.controls != controls {
         slot.controls = controls;
         notify(inner, slot, &PluginEvent::RecordingControls(controls));
+    }
+}
+
+/// What the call's engine says of the server's Record and Stop now (a new call, a missed
+/// event): server mode and its latest value. The controls follow with the next
+/// [`set_recording`].
+fn take_server_controls(slot: &mut Slot, call: &dyn CallHandle) {
+    if call.server_controls() {
+        slot.sew_controls = true;
+        slot.sew_value = call.recording_controls();
     }
 }
 
@@ -1655,6 +1689,8 @@ fn end(inner: &Inner, slot: &mut Slot, reason: String) {
     slot.call_id = None;
     slot.stop = None;
     slot.rights = None;
+    slot.sew_controls = false;
+    slot.sew_value = None;
     set_participants(inner, slot, Vec::new());
     set_recording(inner, slot, None);
     clear_video(inner, slot);
@@ -1752,6 +1788,18 @@ impl Pump {
                         return;
                     }
                     set_room(&self.inner, &mut slot, room);
+                    // The source room's Record and Stop from Sew no longer apply; the
+                    // destination's come as their own event.
+                    slot.sew_value = None;
+                    refresh_controls(&self.inner, &mut slot);
+                }
+                Ok(CallEvent::RecordingControls(value)) => {
+                    let mut slot = lock(&self.inner.slot);
+                    if slot.generation != self.generation {
+                        return;
+                    }
+                    slot.sew_controls = true;
+                    slot.sew_value = value;
                     refresh_controls(&self.inner, &mut slot);
                 }
                 Ok(CallEvent::Recording(r)) => {
@@ -1869,6 +1917,7 @@ impl Pump {
                     if let Some(room) = self.call.moved_room() {
                         set_room(&self.inner, &mut slot, room);
                     }
+                    take_server_controls(&mut slot, self.call.as_ref());
                     if apply_snapshot(&self.inner, &mut slot, self.call.snapshot()) {
                         return;
                     }

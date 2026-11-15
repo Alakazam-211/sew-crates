@@ -156,6 +156,11 @@ pub struct Channel {
     /// Absent when `false`; never set on an archived channel.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closing: bool,
+    /// Since 0.10.0: in a governed Space (App- or server-governed), the members of this
+    /// private channel may leave it (`POST /channels/{id}/leave`), which they otherwise cannot.
+    /// Set over mgmt only. Absent when `false` (and from older servers).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub members_can_leave: bool,
 }
 
 impl Channel {
@@ -195,6 +200,7 @@ impl Channel {
             recording_rule: crate::recording::RecordingRule::None,
             meeting: None,
             closing: false,
+            members_can_leave: false,
         }
     }
 }
@@ -392,6 +398,26 @@ impl Validate for RemoveChannelMemberRequest {
     }
 }
 
+/// Body of `POST /api/v1/channels/{id}/typing` (since 0.10.0): the caller is typing in the
+/// channel, or in a thread of it. The HTTP twin of the gateway's op 10 `TYPING`, for clients
+/// and agents without a socket: the same permission (SEND_MESSAGES, or SEND_IN_THREADS with
+/// `thread_id`), the same throttle (one per channel per [`crate::limits::TYPING_INTERVAL_MS`])
+/// and the same `typing_started` to the channel's typing subscribers. It answers `204` even
+/// when the send was dropped (no permission or throttled), as op 10 drops it silently.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelTypingRequest {
+    /// The thread root, when typing in a thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<Id>,
+}
+
+impl Validate for ChannelTypingRequest {
+    fn validate(&self) -> Result<(), ValidationError> {
+        Ok(())
+    }
+}
+
 /// Body of the open-DM route: 1 other member opens a `dm`, 2–8 open a `group_dm`. The others
 /// are named by id, by handle, or both: 1–8 distinct members in all. A handle
 /// names an active member; one that names nobody the caller may see is the same masked `404`
@@ -552,6 +578,12 @@ pub const FEATURE_GROUP_DM_NAMES: &str = "group_dm_names";
 /// Feature flag: `GET /api/v1/me/channels?kind=dm&order=activity` (DMs by latest activity,
 /// `before`/`next` paging).
 pub const FEATURE_DM_ORDER_ACTIVITY: &str = "dm_order_activity";
+/// Feature flag: `POST /api/v1/channels/{id}/typing` ([`ChannelTypingRequest`]), typing over
+/// HTTP for sessions and act-as.
+pub const FEATURE_HTTP_TYPING: &str = "http_typing";
+/// Feature flag: `Channel.members_can_leave` (set over mgmt): the members of such a private
+/// channel in a governed Space may leave it.
+pub const FEATURE_CHANNEL_MEMBERS_CAN_LEAVE: &str = "channel_members_can_leave";
 
 /// Largest `limit` of `GET /api/v1/me/channels?order=activity`.
 pub const MY_CHANNELS_ACTIVITY_LIMIT_MAX: u32 = 200;

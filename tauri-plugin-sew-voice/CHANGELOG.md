@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.7.0 (2026-11-15, Sew 0.10.0)
+
+### Breaking
+
+- 0.7.0 follows sew-proto 0.10 and sew-call-client 0.7, whose types it re-exports.
+- sew-call-client 0.7 and sew-proto 0.10 (the re-exported engine and recording types are
+  theirs; see their CHANGELOGs). The engine seam's `CallEvent` gains `RecordingControls`, and
+  `CallHandle` gains the provided methods `server_controls` and `recording_controls` (an
+  engine that implements the trait keeps compiling; without them it is an engine against a
+  Sew that sends no recording controls).
+- `RecordingControls` gains `record_unavailable` and `source` (it is `#[non_exhaustive]`).
+
+### Added
+
+- Record and Stop from Sew: when the call's Sew server computes each person's Record and Stop,
+  the plugin takes them from the server instead of the host's rights. The
+  `recording_controls` event, the `state` command's `recording_controls` and the `recording`
+  event's `can_record` and `can_stop` keep their shapes; the controls gain `source: "sew"`
+  (`ControlsSource`; written only as `sew`, absent means `host`: worked out from
+  `set_recording_rights` as before) and Sew's `record_unavailable` hint (`recording_capacity`
+  or `recorder_unavailable`, while `can_record` is `true`). Sew's values are still gated by
+  the call state (both `false` unless connected or reconnecting), are both `false` until the
+  server's first value, and are cleared by a move until the destination's arrive. The `state`
+  command writes `recording_controls` whenever `source` is `sew`.
+- The fake engine's server mode: `FakeEngine::set_server_controls` (new calls are to a Sew
+  that computes them) and `FakeCall::set_server_controls` (a value, or `None`); a
+  `FakeCall::move_to` clears the value as the real engine does.
+- The contract fixture's `recording.controls.from_sew`.
+- A DM call joins with the answer of Sew's `call/join` passed through unchanged: a host's
+  `JoinProvider` returns `JoinAnswer::from_json` of the `CallJoinResponse` body (or an App
+  server route's `join` holding it, `app_server_answer`), and `join(target, room)` with the
+  DM's id as `room` connects as for a voice channel. `JoinAnswer::dm_call` and `DmCall` are
+  re-exported from sew-call-client.
+
+### Changed
+
+- `set_recording_rights` is for Sew servers that don't send recording controls: it is still
+  validated, answers `null` and is kept, but while the controls' `source` is `sew` the rights
+  are not used. The plugin's own rule table is now Sew's (`sew_proto::recording::controls`),
+  with the same answers.
+- After a moderator move into a DM call, `room` (the `state` event, the re-join's
+  `JoinRequest`) is the DM's id, not the call's id, as sew-call-client's `CallMoved::room`.
+
+### Dependencies
+
+- Through sew-call-client 0.7.0, updates the WebRTC dependencies (str0m fork updates);
+  recommended for everyone. Includes upstream str0m fixes for TWCC feedback handling (PRs
+  #1151 and #1152).
+
 ## 0.6.2 (2026-11-12, Sew 0.9.3)
 
 ### Added

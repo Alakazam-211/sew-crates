@@ -187,6 +187,13 @@
         "null"
       ]
     },
+    "agents.dm_with_box_people": {
+      "description": "`agents.dm_with_box_people` (since 0.10.0).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "calls.dm_enabled": {
       "description": "`calls.dm_enabled`.",
       "type": [

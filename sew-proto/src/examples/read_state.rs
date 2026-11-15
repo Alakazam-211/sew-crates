@@ -26,6 +26,7 @@ pub(super) fn read_state_full() -> ReadState {
         last_message_id: Some(ID_REPLY),
         mention_count: 2,
         unread: true,
+        unread_count: 5,
         muted: true,
         seq: 4_411,
     }
@@ -38,6 +39,7 @@ fn read_state_min() -> ReadState {
         last_message_id: None,
         mention_count: 0,
         unread: false,
+        unread_count: 0,
         muted: false,
         seq: 0,
     }

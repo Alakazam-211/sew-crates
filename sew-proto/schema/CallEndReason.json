@@ -41,6 +41,11 @@
       "const": "perms_lost",
       "description": "Nobody left who may connect.",
       "type": "string"
+    },
+    {
+      "const": "cancelled",
+      "description": "The starter cancelled the call before anyone else joined (flag `call_cancel`).",
+      "type": "string"
     }
   ],
   "title": "CallEndReason"

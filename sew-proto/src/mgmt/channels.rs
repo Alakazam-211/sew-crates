@@ -17,7 +17,13 @@
 //! - `POST /mgmt/v1/channels/bulk` ([`MgmtChannelBulkRequest`] → [`MgmtChannelBulkResponse`]):
 //!   1–200 ops (`ensure`, `rename`, `archive`, `unarchive`) in a Space whose
 //!   governing App is `app_id`, run as the Space's owner through the same functions as the
-//!   single calls, each answered on its own ([`MgmtChannelOpResult`]).
+//!   single calls, each answered on its own ([`MgmtChannelOpResult`]). Since 0.10.0 the op
+//!   `update` sets `members_can_leave` on an existing channel.
+//! - Since 0.10.0, `POST /mgmt/v1/channels/{channel_id}/members/add` and
+//!   `POST /mgmt/v1/channels/{channel_id}/members/remove` ([`MgmtChannelMemberRequest`] →
+//!   [`MgmtChannelMemberResponse`]): one member in or out of one channel of an App-governed
+//!   Space or the server-governed Space, named by external id, through the client add and
+//!   remove as the Space's owner. Idempotent: `changed: false` when nothing changed.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -34,6 +40,9 @@ use crate::id::{Id, parse_id_str};
 use crate::limits::NAME_MAX_CHARS;
 
 use super::spaces::{MgmtSpaceMemberRef, check_app_id};
+
+/// Feature flag: `POST /mgmt/v1/channels/{channel_id}/members/add` and `…/members/remove`.
+pub const FEATURE_CHANNEL_MEMBER_ADD_REMOVE: &str = "channel_member_add_remove";
 
 /// Most members in one mgmt channel create.
 pub const CHANNEL_MEMBERS_ADD_MAX: usize = 100;
@@ -137,6 +146,11 @@ pub struct MgmtChannelCreateRequest {
     /// create only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_limit: Option<u8>,
+    /// Since 0.10.0: the members of this channel may leave it although its Space is governed
+    /// (`Channel.members_can_leave`). Absent = `false`. Used at create only; the bulk op
+    /// `update` changes it later.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub members_can_leave: bool,
 }
 
 impl MgmtChannelCreateRequest {
@@ -230,6 +244,10 @@ pub struct MgmtChannelCreateResponse {
     /// Voice only (additive): its current per-channel limit, 0 = none. Absent for text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_limit: Option<u8>,
+    /// Since 0.10.0: its current `members_can_leave` (a repeat never changes it). Absent from
+    /// an older Sew = `false`.
+    #[serde(default)]
+    pub members_can_leave: bool,
     /// Whether this call created it.
     pub created: bool,
     /// Listed members this call added. The owner, who is always a member, is never here; when
@@ -286,6 +304,19 @@ pub enum MgmtChannelOp {
         /// create only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user_limit: Option<u8>,
+        /// Since 0.10.0: `Channel.members_can_leave` (absent = `false`). Used at create only;
+        /// `update` changes it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        members_can_leave: bool,
+    },
+    /// Since 0.10.0: changes settings of a channel of the Space. An absent field is kept; at
+    /// least one must be present.
+    Update {
+        /// The channel.
+        channel_id: Id,
+        /// `Channel.members_can_leave`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        members_can_leave: Option<bool>,
     },
     /// A new name (1–100 characters) for a channel of the Space.
     Rename {
@@ -311,6 +342,7 @@ impl MgmtChannelOp {
     pub fn kind(&self) -> MgmtChannelOpKind {
         match self {
             MgmtChannelOp::Ensure { .. } => MgmtChannelOpKind::Ensure,
+            MgmtChannelOp::Update { .. } => MgmtChannelOpKind::Update,
             MgmtChannelOp::Rename { .. } => MgmtChannelOpKind::Rename,
             MgmtChannelOp::Archive { .. } => MgmtChannelOpKind::Archive,
             MgmtChannelOp::Unarchive { .. } => MgmtChannelOpKind::Unarchive,
@@ -348,6 +380,17 @@ impl MgmtChannelOp {
             MgmtChannelOp::Rename { name, .. } => {
                 check_chars("name", name, 1, NAME_MAX_CHARS).map_err(at)
             }
+            MgmtChannelOp::Update {
+                members_can_leave, ..
+            } => {
+                if members_can_leave.is_none() {
+                    return Err(at(ValidationError::invalid(
+                        "members_can_leave",
+                        "update needs at least one field",
+                    )));
+                }
+                Ok(())
+            }
             MgmtChannelOp::Archive { .. } | MgmtChannelOp::Unarchive { .. } => Ok(()),
         }
     }
@@ -365,6 +408,8 @@ unit_enum! {
         Archive = "archive",
         /// Unarchive.
         Unarchive = "unarchive",
+        /// Since 0.10.0: change settings (`members_can_leave`).
+        Update = "update",
     }
 }
 
@@ -414,7 +459,8 @@ pub struct MgmtChannelOpResult {
     /// `ensure` that succeeded: whether this op created the channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<bool>,
-    /// `rename`, `archive` and `unarchive` that succeeded: whether the op changed the channel
+    /// `rename`, `archive`, `unarchive` and `update` that succeeded: whether the op changed the
+    /// channel
     /// (`false`: it already had that name or state, and nothing was written).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<bool>,
@@ -422,6 +468,44 @@ pub struct MgmtChannelOpResult {
     /// details, such as `channel_type_mismatch` or `channel_not_found`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::error::ApiError>,
+}
+
+/// Body of `POST /mgmt/v1/channels/{channel_id}/members/add` and
+/// `POST /mgmt/v1/channels/{channel_id}/members/remove` (since 0.10.0).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MgmtChannelMemberRequest {
+    /// The channel's Space's governing App; absent for the server-governed Space (the same
+    /// rule as `channels/create`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    /// The member.
+    pub external_id: ExternalId,
+}
+
+impl Validate for MgmtChannelMemberRequest {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(a) = &self.app_id {
+            check_app_id("app_id", a)?;
+        }
+        Ok(())
+    }
+}
+
+/// Response of `POST /mgmt/v1/channels/{channel_id}/members/add` and `…/members/remove`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MgmtChannelMemberResponse {
+    /// The channel.
+    pub channel_id: Id,
+    /// Its Space.
+    pub space_id: Id,
+    /// The member, as named.
+    pub external_id: ExternalId,
+    /// The member's id.
+    pub member_id: Id,
+    /// Whether this call changed the membership: `false` when the member was already in the
+    /// channel (add) or not in it (remove).
+    pub changed: bool,
 }
 
 /// Response of `POST /mgmt/v1/channels/bulk`.

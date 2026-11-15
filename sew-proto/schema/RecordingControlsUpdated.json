@@ -1,0 +1,69 @@
+{
+  "$defs": {
+    "RecordUnavailable": {
+      "description": "Why Record would be refused for now although the person may record: a hint a client\nmay show on a greyed Record. It never changes `can_record`.",
+      "oneOf": [
+        {
+          "const": "recording_capacity",
+          "description": "The install runs as many recordings as it allows.",
+          "type": "string"
+        },
+        {
+          "const": "recorder_unavailable",
+          "description": "The recorder does not answer.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`recording_controls_updated` (to the person's own sessions only): their Record and Stop in\nthe room they are in changed, or a new session needs the current value.",
+  "properties": {
+    "call_id": {
+      "description": "The DM call (`calls.id`) of a DM call.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "can_record": {
+      "description": "Sew would take this person's Record now.",
+      "type": "boolean"
+    },
+    "can_stop": {
+      "description": "Sew would take this person's Stop now.",
+      "type": "boolean"
+    },
+    "channel_id": {
+      "description": "The room's voice channel or DM.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "record_unavailable": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordUnavailable"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "While the person may record: why a start would be refused for now (a hint only)."
+    },
+    "rev": {
+      "description": "The value's revision ([`RecordingControls::rev`]).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "channel_id",
+    "can_record",
+    "can_stop",
+    "rev"
+  ],
+  "title": "RecordingControlsUpdated",
+  "type": "object"
+}

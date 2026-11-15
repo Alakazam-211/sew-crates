@@ -18,6 +18,7 @@ use crate::time::Timestamp;
 
 mod apps;
 mod consent_text;
+pub mod controls;
 pub use apps::{
     RecordingEventKind, RecordingRequiredPolicy, RecordingRule, RecordingStartLevel,
     RecordingTrigger,
@@ -679,6 +680,10 @@ pub struct Recording {
     /// The consent modal (self only, while the viewer is `pending`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consent_prompt: Option<ConsentPrompt>,
+    /// The viewer's own Record and Stop (self only), while the viewer is in the recording's
+    /// room. Absent from servers that predate it, and for viewers outside the room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub my_controls: Option<RecordingControls>,
 }
 
 impl Recording {
@@ -712,6 +717,7 @@ impl Recording {
             participants: Vec::new(),
             my_consent: None,
             consent_prompt: None,
+            my_controls: None,
         }
     }
 }
@@ -1037,6 +1043,104 @@ pub struct DownloadSegment {
 pub struct RecordingUpdated {
     /// The recording (with the receiver's own `my_consent` / `consent_prompt`).
     pub recording: Recording,
+}
+
+unit_enum! {
+    /// Why Record would be refused for now although the person may record: a hint a client
+    /// may show on a greyed Record. It never changes `can_record`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    pub enum RecordUnavailable {
+        /// The install runs as many recordings as it allows.
+        RecordingCapacity = "recording_capacity",
+        /// The recorder does not answer.
+        RecorderUnavailable = "recorder_unavailable",
+    }
+}
+
+/// A person's Record and Stop in the room they are in, as Sew would take them now
+/// (`Recording.my_controls`, the call socket's READY). Of two values, the larger `rev` is the
+/// newer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct RecordingControls {
+    /// Sew would take this person's Record now (passing conditions aside).
+    pub can_record: bool,
+    /// Sew would take this person's Stop now.
+    pub can_stop: bool,
+    /// A server-wide increasing revision.
+    #[serde(default)]
+    pub rev: u64,
+    /// While the person may record: why a start would be refused for now (a hint only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_unavailable: Option<RecordUnavailable>,
+}
+
+impl RecordingControls {
+    /// The pair with `rev` 0 and no hint.
+    pub const fn new(can_record: bool, can_stop: bool) -> RecordingControls {
+        RecordingControls {
+            can_record,
+            can_stop,
+            rev: 0,
+            record_unavailable: None,
+        }
+    }
+
+    /// Whether `other` says the same (`rev` aside).
+    pub fn same_as(&self, other: &RecordingControls) -> bool {
+        self.can_record == other.can_record
+            && self.can_stop == other.can_stop
+            && self.record_unavailable == other.record_unavailable
+    }
+}
+
+/// `recording_controls_updated` (to the person's own sessions only): their Record and Stop in
+/// the room they are in changed, or a new session needs the current value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct RecordingControlsUpdated {
+    /// The room's voice channel or DM.
+    pub channel_id: Id,
+    /// The DM call (`calls.id`) of a DM call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<Id>,
+    /// Sew would take this person's Record now.
+    pub can_record: bool,
+    /// Sew would take this person's Stop now.
+    pub can_stop: bool,
+    /// The value's revision ([`RecordingControls::rev`]).
+    pub rev: u64,
+    /// While the person may record: why a start would be refused for now (a hint only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_unavailable: Option<RecordUnavailable>,
+}
+
+impl RecordingControlsUpdated {
+    /// The event for `channel_id` with `controls`.
+    pub fn new(
+        channel_id: Id,
+        call_id: Option<Id>,
+        controls: &RecordingControls,
+    ) -> RecordingControlsUpdated {
+        RecordingControlsUpdated {
+            channel_id,
+            call_id,
+            can_record: controls.can_record,
+            can_stop: controls.can_stop,
+            rev: controls.rev,
+            record_unavailable: controls.record_unavailable,
+        }
+    }
+
+    /// The value it carries.
+    pub fn controls(&self) -> RecordingControls {
+        RecordingControls {
+            can_record: self.can_record,
+            can_stop: self.can_stop,
+            rev: self.rev,
+            record_unavailable: self.record_unavailable,
+        }
+    }
 }
 
 /// `status.recording`.

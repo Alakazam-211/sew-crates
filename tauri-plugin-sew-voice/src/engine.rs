@@ -31,6 +31,10 @@ fn no_video<T>() -> Result<T, EngineError> {
     Err(EngineError::failed(video_code::VIDEO_UNSUPPORTED))
 }
 
+/// The person's Record and Stop as a Sew server that computes them sent them
+/// ([`CallEvent::RecordingControls`], [`CallHandle::recording_controls`]), from
+/// `sew-call-client`.
+pub use sew_call_client::ServerControls;
 /// The host's sign-in callback and its types, from `sew-call-client`.
 ///
 /// One method, called to join and to re-join when Sew has dropped the join (`req.rejoin` says
@@ -48,13 +52,14 @@ fn no_video<T>() -> Result<T, EngineError> {
 /// [`RecordingRequest`]) the same way.
 pub use sew_call_client::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
-    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED, RecordingControl,
-    RecordingRequest, RejoinReason,
+    DmCall, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED,
+    RecordingControl, RecordingRequest, RejoinReason,
 };
 
-/// Reads the App server route's `200` body, `{"join": <Sew's VoiceJoinResponse, unchanged>,
-/// "api_base": "https://…"}`, as a [`JoinAnswer`]; `join` keeps
-/// its `call_credential`.
+/// Reads the App server route's `200` body, `{"join": <Sew's answer, unchanged>,
+/// "api_base": "https://…"}`, as a [`JoinAnswer`]: `join` is a voice join's
+/// `VoiceJoinResponse` or a DM call join's `CallJoinResponse` ([`JoinAnswer::from_json`]), and
+/// keeps its `call_credential`.
 ///
 /// The error never quotes the body (it carries the media token and the call credential).
 pub fn app_server_answer(body: &[u8]) -> Result<JoinAnswer, ProviderError> {
@@ -155,7 +160,7 @@ pub enum CallEvent {
     /// A non-fatal error or warning (`device_lost`, `key_storage_file`, ...).
     Error(ErrorInfo),
     /// A moderator moved the call (Sew's `voice_server_updated`): `room` is the destination as
-    /// a host joins it (the DM call's id when it is a call, else the voice channel's id).
+    /// a host joins it (the channel's id: the voice channel's, or the DM's for a DM call).
     Moved {
         /// The destination room.
         room: String,
@@ -178,6 +183,11 @@ pub enum CallEvent {
     /// The room's media policy changed (Sew's `media_policy_updated`; the engine also sends
     /// the join answer's at the start).
     Policy(serde_json::Value),
+    /// The person's Record and Stop from a Sew server that computes them (0.7.0): a new value,
+    /// or `None` when the server sends them but has none for the call's room (yet, or since a
+    /// move). Sending it at all says the server computes them
+    /// ([`CallHandle::server_controls`]); an engine against an older server never sends it.
+    RecordingControls(Option<ServerControls>),
 }
 
 /// A call's video now, for a late subscriber ([`CallHandle::video_snapshot`]).
@@ -222,6 +232,18 @@ pub trait CallHandle: Send + Sync + 'static {
     /// The room a moderator move took the call to (the last [`CallEvent::Moved`]); `None` when
     /// there was no move (or the engine does not say).
     fn moved_room(&self) -> Option<String> {
+        None
+    }
+    /// This call's server computes the person's Record and Stop (0.7.0): the plugin then takes
+    /// them from [`CallHandle::recording_controls`] and the [`CallEvent::RecordingControls`]
+    /// events instead of working them out from the host's rights. The default, `false`, is an
+    /// older server (or an engine that does not say).
+    fn server_controls(&self) -> bool {
+        false
+    }
+    /// The person's Record and Stop as the server sent them last for the call's room (0.7.0);
+    /// `None` when it sent none (yet). The default has none.
+    fn recording_controls(&self) -> Option<ServerControls> {
         None
     }
     /// The person's answer to the recording notice (Sew 0.7.3): held at `consent_required`,

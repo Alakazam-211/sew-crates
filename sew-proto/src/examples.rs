@@ -579,6 +579,7 @@ fn channel_full() -> Channel {
         recording_rule: crate::recording::RecordingRule::None,
         meeting: None,
         closing: false,
+        members_can_leave: true,
     }
 }
 
@@ -637,6 +638,7 @@ fn channel_min() -> Channel {
         recording_rule: crate::recording::RecordingRule::None,
         meeting: None,
         closing: false,
+        members_can_leave: false,
     }
 }
 
@@ -751,6 +753,20 @@ impl Example for AddChannelMembersRequest {
                 member_ids: vec![ID_BOB, ID_CAROL],
             },
         )]
+    }
+}
+
+impl Example for ChannelTypingRequest {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                ChannelTypingRequest {
+                    thread_id: Some(ID_MESSAGE),
+                },
+            ),
+            ("min", ChannelTypingRequest::default()),
+        ]
     }
 }
 
@@ -1840,6 +1856,7 @@ impl Example for CallReady {
                 install_id: ID_INSTALL,
                 call_keys: Some(call_keys::ready_call_keys_full()),
                 recording: Some(recording::recording_full()),
+                recording_controls: Some(recording::controls_in_recording()),
             },
         )]
     }
@@ -1877,6 +1894,7 @@ fn ready_full() -> Ready {
             voice_enabled: true,
             video_enabled: true,
             media: Some(calls::media_policy_full()),
+            recording_controls: true,
         },
         spaces: vec![ReadySpace {
             id: ID_SPACE,
@@ -1930,6 +1948,7 @@ fn ready_full() -> Ready {
                 recording_require_consent: None,
                 recording_required: None,
                 recording_rule: crate::recording::RecordingRule::None,
+                members_can_leave: true,
             },
             ReadyChannel {
                 id: ID_DM,
@@ -1954,6 +1973,7 @@ fn ready_full() -> Ready {
                 recording_require_consent: None,
                 recording_required: None,
                 recording_rule: crate::recording::RecordingRule::None,
+                members_can_leave: false,
             },
             // An auto-record voice channel.
             ReadyChannel {
@@ -1979,6 +1999,7 @@ fn ready_full() -> Ready {
                 recording_require_consent: Some(true),
                 recording_required: Some(true),
                 recording_rule: crate::recording::RecordingRule::Auto,
+                members_can_leave: false,
             },
         ],
         read_states: vec![read_state::ready_read_state()],
@@ -3331,6 +3352,7 @@ fn policy_patch_full() -> PolicyPatch {
         presence_show_to_guests: Some(true),
         digest_enabled: Some(true),
         agents_allowed_in_dms: Some(false),
+        agents_dm_with_box_people: Some(false),
         files_strip_image_location: Some(false),
         messages_deleted_purge_days: Some(30),
         guests_enabled: Some(false),
@@ -3998,6 +4020,7 @@ impl Example for MgmtChannelCreateRequest {
             members: vec![ext(PRINCIPAL).into(), MgmtMemberRef::Member(ID_BOB)],
             kind: Some(ChannelType::Voice),
             user_limit: Some(12),
+            members_can_leave: true,
         };
         let min = MgmtChannelCreateRequest {
             slug: slug("general"),
@@ -4006,6 +4029,7 @@ impl Example for MgmtChannelCreateRequest {
             members: vec![],
             kind: None,
             user_limit: None,
+            members_can_leave: false,
             ..full.clone()
         };
         vec![("full", full), ("min", min)]
@@ -4022,6 +4046,7 @@ impl Example for MgmtChannelCreateResponse {
             private: true,
             kind: ChannelType::Voice,
             user_limit: Some(12),
+            members_can_leave: true,
             created: true,
             added: vec![MgmtSpaceMemberRef {
                 external_id: ext(PRINCIPAL),
@@ -4048,9 +4073,41 @@ impl Example for MgmtChannelCreateResponse {
             not_added: vec![],
             kind: ChannelType::Text,
             user_limit: None,
+            members_can_leave: false,
             ..full.clone()
         };
         vec![("full", full), ("min", min)]
+    }
+}
+
+impl Example for MgmtChannelMemberRequest {
+    fn examples() -> Vec<(&'static str, Self)> {
+        let full = MgmtChannelMemberRequest {
+            app_id: Some("jobs".into()),
+            external_id: ext(PRINCIPAL),
+        };
+        let min = MgmtChannelMemberRequest {
+            app_id: None,
+            external_id: ext(CONNECT_USER),
+        };
+        vec![("full", full), ("min", min)]
+    }
+}
+
+impl Example for MgmtChannelMemberResponse {
+    fn examples() -> Vec<(&'static str, Self)> {
+        let full = MgmtChannelMemberResponse {
+            channel_id: ID_CHANNEL,
+            space_id: ID_SPACE,
+            external_id: ext(PRINCIPAL),
+            member_id: ID_BOB,
+            changed: true,
+        };
+        let unchanged = MgmtChannelMemberResponse {
+            changed: false,
+            ..full.clone()
+        };
+        vec![("full", full), ("full_unchanged", unchanged)]
     }
 }
 
@@ -4094,6 +4151,7 @@ impl Example for MgmtChannelBulkRequest {
                     private: true,
                     kind: Some(ChannelType::Voice),
                     user_limit: Some(12),
+                    members_can_leave: true,
                 },
                 MgmtChannelOp::Ensure {
                     slug: slug("general"),
@@ -4101,6 +4159,11 @@ impl Example for MgmtChannelBulkRequest {
                     private: false,
                     kind: None,
                     user_limit: None,
+                    members_can_leave: false,
+                },
+                MgmtChannelOp::Update {
+                    channel_id: ID_CHANNEL,
+                    members_can_leave: Some(false),
                 },
                 MgmtChannelOp::Rename {
                     channel_id: ID_CHANNEL,
@@ -4154,6 +4217,7 @@ impl Example for MgmtChannelBulkResponse {
                 ok(MgmtChannelOpKind::Rename, ID_CHANNEL, None, Some(true)),
                 ok(MgmtChannelOpKind::Archive, ID_CHANNEL, None, Some(true)),
                 ok(MgmtChannelOpKind::Unarchive, ID_CHANNEL, None, Some(false)),
+                ok(MgmtChannelOpKind::Update, ID_CHANNEL, None, Some(true)),
             ],
         };
         vec![("full", full)]

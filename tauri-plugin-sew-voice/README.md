@@ -90,9 +90,10 @@ Not affiliated with or endorsed by LiveKit.
 ## Usage
 
 The crate is not published on crates.io yet, because the voice engine it runs,
-`sew-call-client`, is not: the engine waits on dependencies of its own (`sew-e2ee` and
-Alakazam Labs' fork of `str0m`; `kessel-audio` and `kessel-video` come from
-crates.io). Until then,
+`sew-call-client`, is not. Its WebRTC stack is Alakazam Labs' fork of `str0m`, here
+`sew-str0m` 0.25.2: that release is on crates.io, and for this release the engine still takes
+it from the fork's git repository; `sew-e2ee`, `kessel-audio` and `kessel-video` come from
+crates.io. Until then,
 get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository,
 which holds it with the Sew crates it depends on: clone it into your project (for example as
 `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists into your
@@ -103,7 +104,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.6.2"
+tauri-plugin-sew-voice = "0.7.0"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -197,6 +198,11 @@ await listen("sew-voice://recording_controls", (e) => {
   showStop(e.payload.can_stop);
 });
 ```
+
+A Sew server that computes each person's Record and Stop (0.7.0) sends them to the call
+itself: the same event then says `source: "sew"` (and may carry Sew's `record_unavailable`
+hint), and your rights are not used. `set_recording_rights` is for Sew servers that don't send
+recording controls.
 
 On macOS the app needs `NSMicrophoneUsageDescription` in its `Info.plist`, and the
 `com.apple.security.device.audio-input` entitlement for a hardened-runtime build.

@@ -1,26 +1,36 @@
 //! The recording controls ([`RecordingControls`]): whether Sew would take this person's Record
-//! and Stop now, from the host's [`RecordingRights`] and what the plugin knows of the call.
+//! and Stop now.
 //!
-//! It mirrors Sew's own checks on the two routes, in their order:
+//! - **From Sew** ([`from_sew`]): a server that computes them sends them to the call; the
+//!   plugin passes them on, gated by its own call state (both `false` unless the call is
+//!   connected or reconnecting, so the gap before the server's first value and after the call
+//!   ends shows nothing).
+//! - **From the host's rights** ([`controls`]): against a server that does not send them, the
+//!   plugin works them out from the host's [`RecordingRights`] and what it knows of the call,
+//!   with the one rule table Sew's own checks use (`sew_proto::recording::controls::decide`):
 //!
-//! - **Both.** The person is in the call (connected or reconnecting: Sew acts only for a voice
-//!   entry in the room, and a join held for a notice has none), is not an agent, and the
-//!   session's pass is not refused `voice:record` (`cap_ceiling`).
-//! - **Record.** No recording is active (Sew answers `recording_active`), the org policy
-//!   `recording.enabled` is on, a DM also needs `recording.dm_enabled`, and the person holds
-//!   RECORD_CALLS on the room's channel (Sew's DM permissions hold it only for a person, never
-//!   a guest, while `recording.dm_enabled` is on).
-//! - **Stop.** A recording is active; in a DM anyone in the call may stop it; elsewhere its
-//!   starter, a person in the call with RECORD_CALLS, or one with MANAGE_CHANNELS. A
-//!   recording Sew started because the room requires one (`trigger: required`) is not stopped
-//!   while two or more people are in the room (`recording_required`).
+//!   - **Both.** The person is in the call (connected or reconnecting: Sew acts only for a
+//!     voice entry in the room, and a join held for a notice has none), is not an agent, and
+//!     the session's pass is not refused `voice:record` (`cap_ceiling`).
+//!   - **Record.** No recording is active (Sew answers `recording_active`), the org policy
+//!     `recording.enabled` is on, a DM also needs `recording.dm_enabled`, and the person holds
+//!     RECORD_CALLS on the room's channel (Sew's DM permissions hold it only for a person,
+//!     never a guest, while `recording.dm_enabled` is on).
+//!   - **Stop.** A recording is active; in a DM anyone in the call may stop it; elsewhere its
+//!     starter, a person in the call with RECORD_CALLS, or one with MANAGE_CHANNELS. A
+//!     recording Sew started because the room requires one (`trigger: required`) is not
+//!     stopped while two or more people are in the room (`recording_required`).
 //!
-//! What the plugin cannot see (the server's recorder switched off, a Space whose App forbids
-//! uploads, capacity) stays Sew's to refuse; the command's error then says why.
+//!   What the host's rights cannot carry (the server's recorder switched off, a Space whose
+//!   App forbids uploads, capacity) stays Sew's to refuse; the command's error then says why.
 
 use sew_proto::perms::Perms;
+use sew_proto::recording::controls::{ActiveInput, ControlsInput, decide};
 
-use crate::wire::{CallState, Participant, RecordingControls, RecordingInfo, RecordingRights};
+use crate::engine::ServerControls;
+use crate::wire::{
+    CallState, ControlsSource, Participant, RecordingControls, RecordingInfo, RecordingRights,
+};
 
 /// What the plugin knows of the call.
 pub(crate) struct CallView<'a> {
@@ -31,47 +41,64 @@ pub(crate) struct CallView<'a> {
     pub(crate) participants: &'a [Participant],
 }
 
+/// The person has a voice entry in the room: connected, or reconnecting (Sew keeps the entry).
+fn in_call(state: &CallState) -> bool {
+    matches!(state, CallState::Connected | CallState::Reconnecting { .. })
+}
+
 /// The controls for `call` with the host's `rights` and the active recording `rec`.
 pub(crate) fn controls(
     rights: Option<&RecordingRights>,
     call: &CallView<'_>,
     rec: Option<&RecordingInfo>,
 ) -> RecordingControls {
-    let none = RecordingControls::default();
     let Some(r) = rights.filter(|r| call.room == Some(r.room.as_str())) else {
-        return none;
+        return RecordingControls::default();
     };
-    if !matches!(
-        call.state,
-        CallState::Connected | CallState::Reconnecting { .. }
-    ) || r.agent
-        || r.record_capped
-    {
-        return none;
-    }
     let perms = Perms(r.perms().unwrap_or(0));
-    let can_record = rec.is_none()
-        && r.recording_enabled
-        && (!r.dm || r.recording_dm_enabled)
-        && perms.contains(Perms::RECORD_CALLS);
-    let can_stop = rec.is_some_and(|rec| {
-        let me = call
-            .participants
-            .iter()
-            .find(|p| p.is_self)
-            .map(|p| p.member_id.as_str());
-        let allowed = r.dm
-            || (me.is_some() && rec.started_by.as_deref() == me)
-            || perms.contains(Perms::RECORD_CALLS)
-            || perms.contains(Perms::MANAGE_CHANNELS);
-        let held_by_rule =
-            rec.trigger == crate::wire::trigger::REQUIRED && call.participants.len() >= 2;
-        allowed && !held_by_rule
+    let me = call
+        .participants
+        .iter()
+        .find(|p| p.is_self)
+        .map(|p| p.member_id.as_str());
+    let persons = u32::try_from(call.participants.len()).unwrap_or(u32::MAX);
+    let mut input = ControlsInput::new();
+    input.in_call = in_call(call.state);
+    input.agent = r.agent;
+    input.record_capped = r.record_capped;
+    input.recording_enabled = r.recording_enabled;
+    input.dm = r.dm;
+    input.recording_dm_enabled = r.recording_dm_enabled;
+    input.record_calls = perms.contains(Perms::RECORD_CALLS);
+    input.manage_channels = perms.contains(Perms::MANAGE_CHANNELS);
+    input.active = rec.map(|rec| {
+        ActiveInput::new(
+            me.is_some() && rec.started_by.as_deref() == me,
+            rec.trigger == crate::wire::trigger::REQUIRED,
+            persons,
+        )
     });
+    let d = decide(&input);
     RecordingControls {
-        can_record,
-        can_stop,
+        can_record: d.can_record,
+        can_stop: d.can_stop,
+        ..RecordingControls::default()
     }
+}
+
+/// The controls from a server that computes them: its latest `value` for the call's room
+/// (`None`: none yet), while the call is connected or reconnecting; both `false` otherwise.
+pub(crate) fn from_sew(value: Option<&ServerControls>, state: &CallState) -> RecordingControls {
+    let mut c = RecordingControls {
+        source: ControlsSource::Sew,
+        ..RecordingControls::default()
+    };
+    if let Some(v) = value.filter(|_| in_call(state)) {
+        c.can_record = v.can_record;
+        c.can_stop = v.can_stop;
+        c.record_unavailable = v.record_unavailable;
+    }
+    c
 }
 
 #[cfg(test)]
@@ -287,5 +314,155 @@ mod tests {
             Some(&mine),
         );
         assert!(c.is_none());
+    }
+}
+
+/// The adapter against the rule table's checked-in vectors (sew-proto's
+/// `vectors/recording-controls-vectors.json`, the full cross product of its facts): the host's
+/// rights and the call as the plugin sees them give exactly the vector's answer.
+#[cfg(test)]
+mod vectors {
+    #![allow(clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    const ME: &str = "1001";
+    const OTHER: &str = "1002";
+    const ROOM: &str = "2002";
+
+    fn person(id: String, me: bool) -> Participant {
+        Participant {
+            member_id: id,
+            is_self: me,
+            muted: false,
+            deafened: false,
+            server_muted: false,
+            server_deafened: false,
+            speak_denied: false,
+        }
+    }
+
+    fn rec(started_by: &str, trigger: &str) -> RecordingInfo {
+        serde_json::from_value(serde_json::json!({
+            "recording_id": "77", "auto": trigger != "manual", "started_by": started_by,
+            "my_consent": "granted", "participants": [], "recorder_present": true,
+            "trigger": trigger, "required": trigger == "required",
+        }))
+        .expect("recording")
+    }
+
+    #[test]
+    fn the_adapter_answers_every_vector() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sew-proto/vectors/recording-controls-vectors.json"
+        );
+        let text =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("the vectors at {path}: {e}"));
+        let file: serde_json::Value = serde_json::from_str(&text).expect("the vectors' JSON");
+        assert_eq!(
+            file["format"],
+            serde_json::json!(1),
+            "a format this test reads"
+        );
+        let vectors = file["vectors"].as_array().expect("vectors");
+        // 256 fact combinations, 7 recording cases, 3 headcounts.
+        assert_eq!(vectors.len(), 256 * 7 * 3);
+        for v in vectors {
+            let id = v["id"].as_str().expect("id");
+            let mut parts = id.split('.');
+            let (Some(flags), Some(active), Some(persons), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                panic!("{id}: not <flags>.<active>.<persons>");
+            };
+            let bits: Vec<bool> = flags.chars().map(|c| c == '1').collect();
+            assert_eq!(bits.len(), 8, "{id}");
+            let persons: usize = persons.parse().expect("persons");
+            let mut perms = Perms::CONNECT.0 | Perms::SPEAK.0;
+            if bits[6] {
+                perms |= Perms::RECORD_CALLS.0;
+            }
+            if bits[7] {
+                perms |= Perms::MANAGE_CHANNELS.0;
+            }
+            let mut r = RecordingRights::new(ROOM, perms.to_string());
+            r.agent = bits[1];
+            r.record_capped = bits[2];
+            r.recording_enabled = bits[3];
+            r.dm = bits[4];
+            r.recording_dm_enabled = bits[5];
+            let state = if bits[0] {
+                CallState::Connected
+            } else {
+                CallState::Connecting
+            };
+            let mut people = vec![person(ME.to_owned(), true)];
+            for i in 1..persons {
+                people.push(person(format!("20{i:02}"), false));
+            }
+            let recording = match active {
+                "none" => None,
+                a => {
+                    let (trigger, who) = a.split_once('_').expect("<trigger>_<mine|other>");
+                    let by = match who {
+                        "mine" => ME,
+                        "other" => OTHER,
+                        _ => panic!("{id}: {who}"),
+                    };
+                    Some(rec(by, trigger))
+                }
+            };
+            let c = controls(
+                Some(&r),
+                &CallView {
+                    state: &state,
+                    room: Some(ROOM),
+                    participants: &people,
+                },
+                recording.as_ref(),
+            );
+            let want = (
+                v["can_record"].as_bool().expect("can_record"),
+                v["can_stop"].as_bool().expect("can_stop"),
+            );
+            assert_eq!((c.can_record, c.can_stop), want, "{id}");
+            assert_eq!(c.source, ControlsSource::Host, "{id}");
+            assert_eq!(c.record_unavailable, None, "{id}");
+        }
+    }
+
+    #[test]
+    fn sews_value_is_gated_by_the_call_state() {
+        let mut v = ServerControls::new(true, true);
+        v.record_unavailable = Some(sew_call_client::RecordUnavailable::RecordingCapacity);
+        let c = from_sew(Some(&v), &CallState::Connected);
+        assert_eq!((c.can_record, c.can_stop), (true, true));
+        assert_eq!(c.source, ControlsSource::Sew);
+        assert_eq!(
+            c.record_unavailable,
+            Some(sew_call_client::RecordUnavailable::RecordingCapacity)
+        );
+        let c = from_sew(Some(&v), &CallState::Reconnecting { attempt: 2 });
+        assert!(c.can_record && c.can_stop, "reconnecting keeps them");
+        for state in [
+            CallState::Idle,
+            CallState::Connecting,
+            CallState::ConsentRequired {
+                recording_id: "77".into(),
+                notice_version: 1,
+            },
+            CallState::Ended {
+                reason: "left".into(),
+            },
+        ] {
+            let c = from_sew(Some(&v), &state);
+            assert!(c.is_none(), "{state:?}");
+            assert_eq!(c.record_unavailable, None, "{state:?}");
+            assert_eq!(c.source, ControlsSource::Sew, "{state:?}");
+        }
+        // No value yet: neither, still Sew's.
+        let c = from_sew(None, &CallState::Connected);
+        assert!(c.is_none() && !c.is_unset());
     }
 }

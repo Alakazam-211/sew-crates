@@ -38,7 +38,7 @@ use sew_e2ee::{
 };
 use sew_proto::e2ee::{CallKeysInit, CallScope, ConsentState, E2eeJoin};
 use sew_proto::id::Id;
-use sew_proto::recording::Recording;
+use sew_proto::recording::{Recording, RecordingControls};
 use sew_proto::voice::{MediaPolicy, VoiceServerUpdated, VoiceStateUpdated};
 use tokio::sync::mpsc;
 use url::Url;
@@ -229,6 +229,15 @@ pub enum KeySessionEvent {
     /// socket's READY `recording`); `None`: READY says the call has no active recording. Never
     /// fed to the keys by the session itself: see [`MlsSession::set_recording`].
     Recording(Option<Box<Recording>>),
+    /// The member's Record and Stop from a server that computes them: the call socket's READY
+    /// `recording_controls` (`channel_id` `None`: the call's room; `controls` `None`: no value
+    /// yet) or its `recording_controls_updated`.
+    RecordingControls {
+        /// The room's channel, when the server named it.
+        channel_id: Option<Id>,
+        /// The value, when the server has one.
+        controls: Option<RecordingControls>,
+    },
     /// `media_policy_updated` (new layer hints, video on or off).
     MediaPolicy(Box<MediaPolicy>),
     /// A warning for the host (`key_storage_file`, `pins_reset`).
@@ -357,6 +366,12 @@ impl<C: FrameCrypto> MlsSession<C> {
         }
         if let Some(r) = ready.recording.clone() {
             let _ = ev_tx.send(KeySessionEvent::Recording(r.map(Box::new)));
+        }
+        if let Some(c) = ready.recording_controls.clone() {
+            let _ = ev_tx.send(KeySessionEvent::RecordingControls {
+                channel_id: None,
+                controls: c,
+            });
         }
         let trust = trust_from_ready(&ready, install, &mut vault, &http).await?;
         let now = (cfg.clock)();
@@ -950,6 +965,12 @@ async fn on_socket<C: FrameCrypto>(shared: &Arc<Shared<C>>, ev: SocketEvent) -> 
             if let Some(rec) = r.recording.clone() {
                 shared.emit(KeySessionEvent::Recording(rec.map(Box::new)));
             }
+            if let Some(c) = r.recording_controls.clone() {
+                shared.emit(KeySessionEvent::RecordingControls {
+                    channel_id: None,
+                    controls: c,
+                });
+            }
             {
                 let mut guard = lock(&shared.core);
                 let c = &mut *guard;
@@ -1006,6 +1027,13 @@ async fn on_socket<C: FrameCrypto>(shared: &Arc<Shared<C>>, ev: SocketEvent) -> 
         }
         SocketEvent::MediaPolicyUpdated(m) => {
             shared.emit(KeySessionEvent::MediaPolicy(m));
+            None
+        }
+        SocketEvent::RecordingControls(u) => {
+            shared.emit(KeySessionEvent::RecordingControls {
+                channel_id: Some(u.channel_id),
+                controls: Some(u.controls()),
+            });
             None
         }
         SocketEvent::Closed(SocketClosed::Revoked) => Some(KeyEnd::CredentialLost {

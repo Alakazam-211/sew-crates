@@ -27,7 +27,7 @@ The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `s
 str0m crates and dimpl come from crates.io). In Sew's tree the engine takes `sew-str0m` straight
 from the fork's git repository at an exact commit, so the plugin needs no `[patch]` row for it.
 The packaged crates (`scripts/package-public-crates.sh`, published read-only as `sew-crates`)
-name it by version, so until `sew-str0m` is on crates.io their README lists one
+name it by version. This release uses `sew-str0m` 0.25.2, the same release as on crates.io, taken from the fork's git repository for this release, so their README lists one
 `[patch.crates-io]` row for it, beside the rows for the Sew crates; Cargo applies `[patch]` only
 from the workspace you build, so copy those rows into your app's workspace root. Linux builds need ALSA's development files (`libasound2-dev`; Arch:
 `alsa-lib`).
@@ -158,7 +158,13 @@ plugin and the engine alike.
   An App usually sends a channel id as `room`, and a space or workspace name as `target`.
 - **Your provider calls Sew's join for the signed-in person with `call_credential: true`**, and
   without an `e2ee` object. That's Sew's voice join `POST /api/v1/channels/{id}/voice/join`,
-  or the DM call join `POST /api/v1/channels/{id}/call/join`. It returns Sew's answer **unchanged** as `join`. That answer carries the
+  or the DM call join `POST /api/v1/channels/{id}/call/join`. It returns Sew's answer
+  **unchanged** as `join`: the voice join's `VoiceJoinResponse`, or the DM call join's whole
+  `CallJoinResponse` (`{call, created, voice, recording}`). `JoinAnswer::from_json` reads
+  either: for a DM call it takes the voice answer and its call credential from `voice`, and
+  keeps the call (`JoinAnswer::dm_call`: the call's id, the DM, the starter, `created`). For a
+  DM call, `room` is the DM's id (the id `call/join` takes); the call's id is only for decline,
+  cancel and re-ring. That answer carries the
   media token and the call credential (`sewcc_…`), which the engine uses for its own key
   traffic, leave, mute state and stats. Renewals don't go through your provider: the engine
   renews the media token over signalling and the credential with Sew itself, at half of each
@@ -201,7 +207,7 @@ The example's provider uses this route on your server, and nothing else:
 | | |
 |---|---|
 | Request | `POST <your join URL>`, `Authorization: Bearer <your App's session>`, body `{"target", "room", "muted", "deafened", "rejoin", "recording_notice"?}` (`rejoin`: `null`, `"admit_lost"` or `"credential_expired"`; `recording_notice` only when the person answered a notice; the `JoinRequest`'s JSON) |
-| `200` | `{"join": <Sew's VoiceJoinResponse, unchanged>, "api_base": "https://…"}` |
+| `200` | `{"join": <Sew's VoiceJoinResponse or CallJoinResponse, unchanged>, "api_base": "https://…"}` |
 | `401` | the session is gone → `SigninRequired` |
 | `409` | `{"code": "recording_consent_required", "detail": <Sew's error.details, unchanged>}` → `ConsentRequired` (§3a) |
 | `429` / `503` | busy; `Retry-After` in seconds → `Unavailable` |
@@ -259,12 +265,12 @@ Commands are invoked as `plugin:sew-voice|<name>`. Every command rejects with `{
 | `mute` | `{muted?, deafened?}` (at least one) | `null`. Deafened implies muted; un-deafening returns `muted` to its value before the deafen. `not_in_call` with no call |
 | `devices` | — | `{inputs: [{id, name, default}], outputs: [...], input, output}` (`input`/`output`: `null` = the OS default) |
 | `set_device` | `{input?, output?}` (at least one): a device id, or `"default"` for the OS default (followed when it changes later; `devices` then says `null`). An absent or `null` direction stays as it is | `null`. Hot-swaps the stream without leaving the call. On an input, it resolves while the OS permission prompt is up and rejects `mic_denied` once the microphone was refused (§5) |
-| `state` | — | `{state, attempt?, reason?, recording_id?, notice_version?, target?, room?, participants, call_id, recording?, recording_controls?}`. Use it when a window opens mid-call (`recording_controls` from plugin 0.6.1, only while one of them is `true`) |
+| `state` | — | `{state, attempt?, reason?, recording_id?, notice_version?, target?, room?, participants, call_id, recording?, recording_controls?}`. Use it when a window opens mid-call (`recording_controls` from plugin 0.6.1, only while one of them is `true`, there is a `record_unavailable` hint, or `source` is `sew`) |
 | `consent` | `{granted, notice_version}` | `null`. The person's answer to the recording notice (§3a). Rejects `not_in_call`, `no_recording`, `recording_consent_required` (the notice changed: `detail` has the new one), `consent_unsupported`, or your provider's refusal |
 | `withdraw_consent` | — | `null`. "Stop recording me" (§3a). Rejects as `consent` |
 | `start_recording` | — | `null`. Record (Sew 0.9.0, §3a): the person's own act, sent by your provider; the `recording` event follows Sew's answer. Not in `sew-voice:default` (§4). Rejects `not_in_call`, `not_in_voice` (the join is held for a notice), `recording_unsupported`, or Sew's refusal as your provider gave it (`recording_active`, `recording_disabled`, `cap_ceiling`, …) |
 | `stop_recording` | — | `null`. Stop (Sew 0.9.0, §3a). Not in `sew-voice:default`. Rejects `not_in_call`, `no_recording`, `recording_unsupported`, or Sew's refusal (`recording_required` while the room requires its recording and two or more people are in it) |
-| `set_recording_rights` | `{room, my_perms, dm?, recording_enabled?, recording_dm_enabled?, record_capped?, agent?}` | `null`. The person's rights in `room` (plugin 0.6.1, §3a, Which buttons): the `recording_controls` event and the `recording` event's `can_record` and `can_stop` follow them. Any time, with or without a call. Not in `sew-voice:default` (in `sew-voice:recording`). Rejects `invalid_args` (`my_perms` is not a decimal string) |
+| `set_recording_rights` | `{room, my_perms, dm?, recording_enabled?, recording_dm_enabled?, record_capped?, agent?}` | `null`. For Sew servers that don't send recording controls. The person's rights in `room` (plugin 0.6.1, §3a, Which buttons): the `recording_controls` event and the `recording` event's `can_record` and `can_stop` follow them while the controls' `source` is `host`; while it is `sew` (plugin 0.7.0) they are kept but not used. Any time, with or without a call. Not in `sew-voice:default` (in `sew-voice:recording`). Rejects `invalid_args` (`my_perms` is not a decimal string) |
 | `forget_server` | `{install_id}` (a decimal string) | `[{install_id, member_id, device_scope, account}]`, the device keys removed (§6). Not in `sew-voice:default` (§4). Rejects `in_call`, `invalid_args`, `device_store` |
 | `known_device_keys` | — | `[{install_id, member_id, device_scope, account}]`, every key the device store holds (§6). Not in `sew-voice:default`. Rejects `device_store` |
 
@@ -278,7 +284,7 @@ Events go to every window as `sew-voice://<name>`:
 | `sew-voice://devices` | the `devices` answer, on hot-plug, a default change or a `set_device` |
 | `sew-voice://errors` | `{code, detail}` |
 | `sew-voice://recording` | `{recording_id, auto, started_by?, my_consent, consent_prompt?, participants: [{member_id, consent, recorded}], recorder_present, trigger, required, can_record?, can_stop?}`, or `null` once no recording is active (Sew 0.7.3, §3a; `trigger` and `required` Sew 0.9.0; `can_record` and `can_stop` plugin 0.6.1, each only when `true`) |
-| `sew-voice://recording_controls` | `{can_record, can_stop}`: whether Sew would take a Record or a Stop from this person now, sent when either changes (plugin 0.6.1, §3a, Which buttons) |
+| `sew-voice://recording_controls` | `{can_record, can_stop, record_unavailable?, source?}`: whether Sew would take a Record or a Stop from this person now, sent when any of them changes (plugin 0.6.1, §3a, Which buttons). `source` (plugin 0.7.0) is `sew` when the Sew server computed them and absent (meaning `host`) when the plugin worked them out from `set_recording_rights`; `record_unavailable` (plugin 0.7.0, from Sew only) is `recording_capacity` or `recorder_unavailable` while `can_record` is `true` but a Record would be refused for now |
 
 **States.**
 - `idle` → `connecting` (on `join`) → `connected` ⇄ `reconnecting {attempt}` → `ended {reason}`.
@@ -290,9 +296,10 @@ Events go to every window as `sew-voice://<name>`:
 - **Which call.** From `connecting` until its `ended`, the `state` event and the `state`
   command carry the call's `target` and `room`: your `join` arguments as given. Both are
   absent while `idle`. After a moderator move (Sew's `voice_server_updated`) `room` is the
-  destination as Sew names it, the voice channel's id (the DM call's id when the destination
-  is a call), and a `state` event says so, with the state unchanged. A re-join after the move
-  asks your provider for that room. `target` doesn't change.
+  destination as Sew names it, the channel's id (the voice channel's, or the DM's when the
+  destination is a DM call; never the call's id), and a `state` event says so, with the state
+  unchanged. A re-join after the move asks your provider for that room. `target` doesn't
+  change.
 - `ended.reason` is Sew's leave reason as it arrives (Sew 0.7.2: `perms_lost`,
   `removed_from_space`, `timed_out`, `channel_archived`, `account_removed`,
   `removed_by_moderator`, `session_revoked`, `device_revoked`, `media_path_down`, and
@@ -658,8 +665,36 @@ reject `recording_unsupported`.
 
 ### Which buttons (plugin 0.6.1)
 
-The plugin can't read the person's permissions itself (the call socket carries none), so your
-app tells it what it knows of the room with `set_recording_rights` (in Rust,
+**From Sew (plugin 0.7.0).** A Sew server that computes each person's Record and Stop sends
+them to the call, and the plugin passes them on in the same `sew-voice://recording_controls`
+event, the `recording` event's `can_record` and `can_stop`, and the `state` command's
+`recording_controls`, now with `source: "sew"`:
+
+```json
+{ "can_record": true, "can_stop": false, "source": "sew" }
+```
+
+- They are both `false` until Sew's first value, which comes shortly after the call connects,
+  and whenever the call is not `connected` or `reconnecting` (reconnecting keeps them).
+- Sew's value wins over any rights you gave: `set_recording_rights` still answers `null`, and
+  what you sent is kept but not used. Once you see `source: "sew"` for a call you can stop
+  sending rights for it.
+- A move clears them until the destination's first value arrives.
+- `record_unavailable` is Sew's hint while `can_record` is `true`: Record is allowed but would
+  be refused for now, because the install already runs as many recordings as it allows
+  (`recording_capacity`) or the recorder does not answer (`recorder_unavailable`). Grey Record
+  out with that reason, or show Sew's refusal if the person presses it anyway.
+- The `state` command writes `recording_controls` whenever `source` is `sew`, even with both
+  `false`.
+
+Sew's own value already takes in what the rights below can't carry (an App Space's managed
+moderators, the pass's `voice:record`, the recorder switched off on the server, an App's Space
+without uploads), so it is the better answer whenever the server sends it.
+
+**From your rights: for Sew servers that don't send recording controls.** Against an older Sew
+the controls have no `source` (read it as `host`) and the plugin works them out itself. It
+can't read the person's permissions (the call socket carries none), so your app tells it what
+it knows of the room with `set_recording_rights` (in Rust,
 `VoiceControl::set_recording_rights` with a `RecordingRights`):
 
 ```js
@@ -695,7 +730,8 @@ They change as the call does: the rights, the state, the room, the participants 
 room's headcount) and the recording. Both are `false` with no call, while a join is held for a
 notice, and until you send the rights. Sew still decides, and checks things the plugin can't
 see (the recorder switched off on the server, an App's Space without uploads, capacity), so
-show its refusal when one comes.
+show its refusal when one comes. The same table is the one Sew's own computation uses, so the
+two agree whenever your rights are right.
 
 ## 3b. Phones: the native listener and control (plugin 0.3.0)
 
@@ -1067,7 +1103,9 @@ tile, the connection bars, an incoming DM call) also uses these. They are not in
 - **Rings.** The plugin learns of a ring from your page (Sew's `call_ring` on its gateway) or
   your host (a push: `VoiceControl::ring`). It holds no session of its own: declining is your
   page's or host's request to Sew (`POST /api/v1/channels/{id}/call/decline`), then
-  `ring_ended`. On a phone, the listener's `on_incoming(Some)` is where CallKit's
+  `ring_ended`; the caller's own cancel before anyone answered is
+  `POST /api/v1/channels/{id}/call/cancel` (flag `call_cancel`), and the callee's sessions then
+  get `call_ring` with `ringing: false` and reason `cancelled`. On a phone, the listener's `on_incoming(Some)` is where CallKit's
   `reportNewIncomingCall` (or Telecom's `addNewIncomingCall`) goes, and answering is
   `VoiceControl::join` with the ring's `target` and `room`.
 - The exact payloads are in the plugin's `tests/native-voice-details.json`; the fake call

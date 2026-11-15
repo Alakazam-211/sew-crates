@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.7.0 (2026-11-15, Sew 0.10.0)
+
+### Breaking
+
+- 0.7.0 follows sew-proto 0.10, whose types it re-exports.
+- sew-proto 0.10: the re-exported recording types (`Recording`, `ConsentPrompt`,
+  `RecordingNotice`, `RecordingRef`, `RecordingTrigger`, and the new `RecordUnavailable`) are
+  sew-proto 0.10's, whose own breaks are in its CHANGELOG. `Recording` gains `my_controls`
+  (it is already `#[non_exhaustive]`).
+- `CallSnapshot` gains `recording_controls` and `server_controls`, `CallRecording` gains
+  `my_controls`, `CallEvent` gains `RecordingControls`, `SocketEvent` gains
+  `RecordingControls`, `CallReadyInfo` gains `recording_controls` and `E2eeEvent` gains
+  `RecordingControls`. All of these types are `#[non_exhaustive]`, so only a `match` without
+  a `_` arm or a struct literal outside the crate is affected.
+
+### Added
+
+- The person's Record and Stop from a Sew server that computes them: `Call::recording_controls`
+  (the newest by `rev` of the call socket's READY `recording_controls`, its
+  `recording_controls_updated` for the call's room and the recording's `my_controls`;
+  `ServerControls {can_record, can_stop, rev, record_unavailable}`), `Call::server_controls`
+  (the call's server computes them: its call socket's READY carried the field, even `null`, or
+  a value arrived), the event `CallEvent::RecordingControls` (a new value, the server's first
+  word, or `None` when a move took the call to a room with no value yet) and
+  `CallRecording::my_controls`. `record_unavailable` is Sew's hint (`recording_capacity`,
+  `recorder_unavailable`) while Record is allowed but would be refused for now. Against an
+  older server none of these are set and nothing changes.
+- The call socket passes `recording_controls_updated` (`CALL_SOCKET_EVENTS`,
+  `filter_dispatch`), and `parse_ready` reads the call socket's `recording_controls`: absent
+  (an older server), `null` (no value yet) or the value.
+- `JoinAnswer::from_json` takes a DM call join's answer unchanged: a `CallJoinResponse`
+  (`{call, created, voice, recording}`) as well as a voice join's `VoiceJoinResponse`. The
+  voice answer and its `call_credential` are read from `voice`; the call is kept as
+  `JoinAnswer::dm_call` (`DmCall {call_id, channel_id, started_by, created}`,
+  `#[non_exhaustive]`; `None` for a voice join's answer). A provider that calls Sew's
+  `call/join` for a DM hands the body through as it does a voice join's.
+
+### Changed
+
+- `CallMoved::room` is the destination channel's id for a DM call too (the DM's id, which
+  Sew's `call/join` takes), no longer the call's id, so a re-join after a move into a DM call
+  asks the host for the DM. `CallMoved::call_id` still carries the call. A voice channel's
+  room is unchanged.
+
+### Dependencies
+
+- **Updates the WebRTC dependencies (str0m fork updates); recommended for everyone.**
+  Includes upstream str0m fixes for TWCC feedback handling (PRs #1151 and #1152), and the
+  earlier upstream TWCC fixes from str0m PRs #1143 and #1144.
+  `sew-str0m` 0.25.2, the same release as on crates.io, taken from the fork's git repository
+  for this release (commit `18977e74b1fbabee1a9096ca60a28509ef739f3c`).
+- sew-proto, sew-lkproto, sew-lk-compat and sew-e2ee 0.10.0.
+
 ## 0.6.2 (2026-11-12, Sew 0.9.3)
 
 ### Added

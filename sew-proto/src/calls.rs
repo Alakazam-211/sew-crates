@@ -33,6 +33,7 @@ unit_enum! {
 unit_enum! {
     /// A ring's state as every DM member sees it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum RingState {
         /// Ringing.
         Ringing = "ringing",
@@ -44,12 +45,16 @@ unit_enum! {
         Declined = "declined",
         /// Not answered in time, or the call ended first.
         Missed = "missed",
+        /// The starter cancelled the call before anyone else joined (flag `call_cancel`); not
+        /// a missed call.
+        Cancelled = "cancelled",
     }
 }
 
 coded_enum! {
     /// Why a call ended. Stored in `calls.end_reason`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum CallEndReason {
         /// Nobody left in the call.
         Empty = "empty" => 1,
@@ -67,6 +72,8 @@ coded_enum! {
         VoiceDisabled = "voice_disabled" => 7,
         /// Nobody left who may connect.
         PermsLost = "perms_lost" => 8,
+        /// The starter cancelled the call before anyone else joined (flag `call_cancel`).
+        Cancelled = "cancelled" => 9,
     }
 }
 
@@ -146,7 +153,7 @@ pub struct CallSummary {
     pub rung_ids: Vec<Id>,
     /// Rings resolved `declined`.
     pub declined_ids: Vec<Id>,
-    /// Rings resolved `missed`.
+    /// Rings resolved `missed` (a cancelled call's rings are not).
     pub missed_ids: Vec<Id>,
 }
 
@@ -247,6 +254,24 @@ impl Validate for CallDeclineRequest {
     }
 }
 
+/// `POST /api/v1/channels/{id}/call/cancel` body (flag `call_cancel`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CallCancelRequest {
+    /// The active call.
+    pub call_id: Id,
+}
+
+impl Validate for CallCancelRequest {
+    fn validate(&self) -> Result<(), ValidationError> {
+        Ok(())
+    }
+}
+
+/// Flag `call_cancel`: `POST /api/v1/channels/{id}/call/cancel`, the `cancelled` end reason,
+/// ring state and `call_ring` stop reason.
+pub const FEATURE_CALL_CANCEL: &str = "call_cancel";
+
 /// `POST /api/v1/channels/{id}/call/ring` body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -313,7 +338,7 @@ pub struct CallRingEvent {
     /// A silent ring (busy, DND, muted).
     pub silent: bool,
     /// Why: `busy`, `dnd`, `muted` (a silent ring); `accepted`, `declined`, `timeout`,
-    /// `call_ended` (a stop).
+    /// `call_ended`, `cancelled` (a stop).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// When the ring becomes missed (while ringing).
@@ -337,6 +362,8 @@ pub mod ring_reason {
     pub const TIMEOUT: &str = "timeout";
     /// The call ended first.
     pub const CALL_ENDED: &str = "call_ended";
+    /// The starter cancelled the call (flag `call_cancel`).
+    pub const CANCELLED: &str = "cancelled";
 }
 
 /// Every call reason string under the existing error codes.
@@ -351,6 +378,8 @@ pub mod reasons {
     pub const CALL_NOT_ACTIVE: &str = "call_not_active";
     /// `422`: the caller has no pending ring.
     pub const NOT_RINGING: &str = "not_ringing";
+    /// `422`: a cancel needs the call's starter, before anyone else joined.
+    pub const NOT_CANCELLABLE: &str = "not_cancellable";
     /// `422`: a re-ring needs the caller in the call.
     pub const NOT_IN_CALL: &str = "not_in_call";
     /// `422`: the member cannot be rung (`details.member_id`).

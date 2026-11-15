@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Op 10 TYPING.",
+  "description": "Op 10 TYPING. Without a socket (since 0.10.0) the same signal goes over HTTP:\n`POST /api/v1/channels/{id}/typing` with [`crate::api::channels::ChannelTypingRequest`]\n(the same permission, throttle and `typing_started`; it answers `204` even when dropped).",
   "properties": {
     "channel_id": {
       "description": "The channel.",

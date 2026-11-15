@@ -56,14 +56,14 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.9.3 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.9.3 | Apache-2.0 |
-| `sew-mls-crypto` | 0.9.3 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.9.3 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.9.3 | Apache-2.0 |
-| `sew-noise` | 0.9.3 | MIT OR Apache-2.0 |
-| `sew-call-client` | 0.6.2 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.6.2 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.10.0 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.10.0 | Apache-2.0 |
+| `sew-mls-crypto` | 0.10.0 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.10.0 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.10.0 | Apache-2.0 |
+| `sew-noise` | 0.10.0 | MIT OR Apache-2.0 |
+| `sew-call-client` | 0.7.0 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.7.0 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
@@ -99,12 +99,13 @@ sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }
 sew-call-client = { path = "third_party/sew-crates/sew-call-client" }
 tauri-plugin-sew-voice = { path = "third_party/sew-crates/tauri-plugin-sew-voice" }
 sew-noise = { path = "third_party/sew-crates/sew-noise" }
-sew-str0m = { git = "https://github.com/Alakazam-211/str0m", rev = "268150e15444b0d08a1167c2a5e4306c4376e953" }
+sew-str0m = { git = "https://github.com/Alakazam-211/str0m", rev = "18977e74b1fbabee1a9096ca60a28509ef739f3c" }
 ```
 
 The `sew-str0m` row is Alakazam Labs' public fork of `str0m` 0.25 (the WebRTC stack; library
-name `str0m`), which the voice engine needs, at the commit it is published from, until it is on
-crates.io. Its own fork of `is` comes with it; the other str0m crates and its DTLS, `dimpl`,
+name `str0m`), which the voice engine needs, at the commit it is published from: `sew-str0m`
+0.25.2, the same release as on crates.io, taken from the fork's git repository for this release.
+Its own fork of `is` comes with it; the other str0m crates and its DTLS, `dimpl`,
 come from crates.io.
 
 **kessel-audio** and **kessel-video** (K2's audio and video pipelines, MIT OR Apache-2.0) come

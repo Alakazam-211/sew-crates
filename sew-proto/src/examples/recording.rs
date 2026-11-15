@@ -142,6 +142,27 @@ pub(super) fn recording_full() -> Recording {
         participants: participants(),
         my_consent: Some(Consent::Pending),
         consent_prompt: Some(consent_prompt_full()),
+        my_controls: Some(controls_in_recording()),
+    }
+}
+
+/// The viewer's controls while a recording they may stop runs.
+pub(super) fn controls_in_recording() -> RecordingControls {
+    RecordingControls {
+        can_record: false,
+        can_stop: true,
+        rev: 1_791_158_400_000_042,
+        record_unavailable: None,
+    }
+}
+
+/// Controls with every field set: Record allowed but the install is at capacity.
+fn controls_full() -> RecordingControls {
+    RecordingControls {
+        can_record: true,
+        can_stop: false,
+        rev: 1_791_158_400_000_041,
+        record_unavailable: Some(RecordUnavailable::RecordingCapacity),
     }
 }
 
@@ -167,6 +188,7 @@ pub(super) fn recording_min() -> Recording {
         participants: vec![],
         my_consent: None,
         consent_prompt: None,
+        my_controls: None,
     }
 }
 
@@ -326,6 +348,30 @@ impl Example for RecordingUpdated {
                 recording: recording_full(),
             },
         )]
+    }
+}
+
+impl Example for RecordingControls {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            ("full", controls_full()),
+            ("min", RecordingControls::new(false, false)),
+        ]
+    }
+}
+
+impl Example for RecordingControlsUpdated {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "full",
+                RecordingControlsUpdated::new(ID_DM, Some(ID_CALL_RECORD), &controls_full()),
+            ),
+            (
+                "min",
+                RecordingControlsUpdated::new(ID_CHANNEL, None, &controls_in_recording()),
+            ),
+        ]
     }
 }
 

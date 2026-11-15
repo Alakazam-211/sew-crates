@@ -331,6 +331,11 @@
       "const": "meeting_admission",
       "description": "A host decided on the receiver's knock, or it expired (body\n`MeetingAdmission`, to the knocking member).",
       "type": "string"
+    },
+    {
+      "const": "recording_controls_updated",
+      "description": "The receiver's own Record and Stop in the room they are in changed (body\n`RecordingControlsUpdated`, to the member's own sessions only).",
+      "type": "string"
     }
   ],
   "title": "EventName"

@@ -486,6 +486,12 @@ pub fn all() -> Vec<WireType> {
             RemoveChannelMemberRequest,
             "remove channel member"
         ),
+        wire!(
+            Request,
+            "api/channels",
+            ChannelTypingRequest,
+            "POST /api/v1/channels/{id}/typing"
+        ),
         wire!(Request, "api/channels", OpenDmRequest, "open DM"),
         // api/resolve
         wire!(Request, "api/resolve", ResolveQuery, "GET /api/v1/resolve"),
@@ -1103,6 +1109,18 @@ pub fn all() -> Vec<WireType> {
             "POST /mgmt/v1/channels/bulk"
         ),
         wire!(Enum, "mgmt", MgmtChannelOpKind, "MgmtChannelOpResult.op"),
+        wire!(
+            Request,
+            "mgmt",
+            MgmtChannelMemberRequest,
+            "POST /mgmt/v1/channels/{channel_id}/members/add, …/members/remove"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            MgmtChannelMemberResponse,
+            "POST /mgmt/v1/channels/{channel_id}/members/add, …/members/remove"
+        ),
         // Voice states and the voice feed over mgmt.
         wire!(
             Response,
@@ -3128,6 +3146,12 @@ pub fn all() -> Vec<WireType> {
         wire!(
             Request,
             "calls",
+            CallCancelRequest,
+            "POST /api/v1/channels/{id}/call/cancel"
+        ),
+        wire!(
+            Request,
+            "calls",
             CallRingRequest,
             "POST /api/v1/channels/{id}/call/ring"
         ),
@@ -3228,6 +3252,24 @@ pub fn all() -> Vec<WireType> {
             "recording",
             RecordingUpdated,
             "event recording_updated"
+        ),
+        wire!(
+            Event,
+            "recording",
+            RecordingControlsUpdated,
+            "event recording_controls_updated"
+        ),
+        wire!(
+            Record,
+            "recording",
+            RecordingControls,
+            "Recording.my_controls, CallReady.recording_controls"
+        ),
+        wire!(
+            Enum,
+            "recording",
+            RecordUnavailable,
+            "RecordingControls.record_unavailable"
         ),
         wire!(
             Request,

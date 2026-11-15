@@ -21,7 +21,7 @@
       ]
     },
     "reason": {
-      "description": "Why: `busy`, `dnd`, `muted` (a silent ring); `accepted`, `declined`, `timeout`,\n`call_ended` (a stop).",
+      "description": "Why: `busy`, `dnd`, `muted` (a silent ring); `accepted`, `declined`, `timeout`,\n`call_ended`, `cancelled` (a stop).",
       "type": [
         "string",
         "null"

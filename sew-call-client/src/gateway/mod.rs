@@ -3,12 +3,15 @@
 //! - **Connect** `GET <door>/api/v1/gateway?v=1&encoding=json` with `Authorization: Bearer
 //!   sewcc_…` on the upgrade (K2's lane needs it), then IDENTIFY with the same token.
 //! - **READY** of a call socket is `{v, session_id, user: {id}, install_id, call_keys,
-//!   recording}`; a full READY (a `sews_` session in tests) is read the same way. `session_id`
-//!   is the join's `e2ee.gateway_session`; `recording` (Sew 0.7.3) is the call channel's active
-//!   recording as the member sees it, `null` for none.
+//!   recording, recording_controls}`; a full READY (a `sews_` session in tests) is read the
+//!   same way. `session_id` is the join's `e2ee.gateway_session`; `recording` (Sew 0.7.3) is the
+//!   call channel's active recording as the member sees it, `null` for none;
+//!   `recording_controls` is the member's Record and Stop in the call's room from a server that
+//!   computes them, `null` until the member is connected there (absent: an older server).
 //! - **Delivered** (and the only dispatches passed on, whatever the server sends):
-//!   `call_keys_delivered`, `voice_server_updated`, `voice_state_updated` and (Sew 0.7.3) the
-//!   member's own `recording_updated`. Everything else is dropped and counted (defence in depth;
+//!   `call_keys_delivered`, `voice_server_updated`, `voice_state_updated`, (Sew 0.7.3) the
+//!   member's own `recording_updated`, `media_policy_updated` and the member's own
+//!   `recording_controls_updated`. Everything else is dropped and counted (defence in depth;
 //!   the server filters too).
 //! - **Ops sent**: HEARTBEAT, IDENTIFY once, RESUME after a drop, REAUTH with the renewed token
 //!   of the same credential (the `session_id` stays). Nothing else.
@@ -35,7 +38,9 @@ use sew_proto::gateway::client::{
 };
 use sew_proto::gateway::{Frame, Opcode};
 use sew_proto::id::Id;
-use sew_proto::recording::{Recording, RecordingUpdated};
+use sew_proto::recording::{
+    Recording, RecordingControls, RecordingControlsUpdated, RecordingUpdated,
+};
 use sew_proto::voice::{MediaPolicy, VoiceServerUpdated, VoiceStateUpdated, call_close};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -57,6 +62,7 @@ pub const CALL_SOCKET_EVENTS: &[&str] = &[
     "voice_state_updated",
     "recording_updated",
     "media_policy_updated",
+    "recording_controls_updated",
 ];
 
 /// Connect and handshake timeout.
@@ -89,6 +95,9 @@ pub enum SocketEvent {
     /// `media_policy_updated`: the client media policy changed (layer hints, video on or
     /// off).
     MediaPolicyUpdated(Box<MediaPolicy>),
+    /// `recording_controls_updated`: the member's own Record and Stop in the room they are in
+    /// changed (a server that computes them). The engine keeps only its call channel's.
+    RecordingControls(Box<RecordingControlsUpdated>),
     /// The socket is gone for good.
     Closed(SocketClosed),
 }
@@ -109,6 +118,11 @@ pub struct CallReadyInfo {
     /// READY has no `recording` field (an older Sew, or a full READY), `Some(None)` when it
     /// says none is active.
     pub recording: Option<Option<Recording>>,
+    /// The member's Record and Stop in the call's room (`CallReady.recording_controls`):
+    /// `None` when the READY has no such field (an older Sew, or a full READY), `Some(None)`
+    /// when the server computes them but has no value yet (the member is not connected in the
+    /// room yet), `Some(Some(..))` with the value.
+    pub recording_controls: Option<Option<RecordingControls>>,
 }
 
 impl fmt::Debug for CallReadyInfo {
@@ -121,6 +135,7 @@ impl fmt::Debug for CallReadyInfo {
                 "recording",
                 &self.recording.as_ref().map(|r| r.as_ref().map(|r| r.id)),
             )
+            .field("recording_controls", &self.recording_controls)
             .finish_non_exhaustive()
     }
 }
@@ -414,12 +429,22 @@ pub fn parse_ready(d: &Value) -> Option<CallReadyInfo> {
         (Some(_), Some(r)) => Some(Some(serde_json::from_value::<Recording>(r.clone()).ok()?)),
         _ => None,
     };
+    // Likewise its `recording_controls`: absent from an older server, `null` before the member
+    // is connected in the room.
+    let recording_controls = match (&w.user, d.get("recording_controls")) {
+        (Some(_), Some(Value::Null)) => Some(None),
+        (Some(_), Some(c)) => Some(Some(
+            serde_json::from_value::<RecordingControls>(c.clone()).ok()?,
+        )),
+        _ => None,
+    };
     Some(CallReadyInfo {
         session_id: w.session_id,
         member_id: w.user.or(w.member).map(|m| m.id),
         install_id: w.install_id.or(w.install.map(|i| i.id)),
         call_keys: w.call_keys,
         recording,
+        recording_controls,
     })
 }
 
@@ -441,6 +466,11 @@ pub fn filter_dispatch(t: &str, d: &Value) -> Option<SocketEvent> {
         "media_policy_updated" => serde_json::from_value::<MediaPolicy>(d.clone())
             .ok()
             .map(|m| SocketEvent::MediaPolicyUpdated(Box::new(m))),
+        "recording_controls_updated" => {
+            serde_json::from_value::<RecordingControlsUpdated>(d.clone())
+                .ok()
+                .map(|m| SocketEvent::RecordingControls(Box::new(m)))
+        }
         _ => None,
     }
 }
@@ -796,6 +826,88 @@ mod tests {
         let full =
             serde_json::json!({"session_id": "gw_4", "member": {"id": "42"}, "recording": null});
         assert_eq!(parse_ready(&full).unwrap().recording, None);
+    }
+
+    #[test]
+    fn a_call_ready_says_whether_the_server_computes_controls() {
+        let base = serde_json::json!({"v": 1, "session_id": "gw_5", "user": {"id": "42"}});
+        // An older server: no field.
+        assert_eq!(parse_ready(&base).unwrap().recording_controls, None);
+        // A server that computes them, before the member is connected in the room.
+        let mut none = base.clone();
+        none["recording_controls"] = Value::Null;
+        assert_eq!(parse_ready(&none).unwrap().recording_controls, Some(None));
+        // A value, with the capacity hint.
+        let mut some = base.clone();
+        some["recording_controls"] = serde_json::json!({
+            "can_record": true, "can_stop": false, "rev": 41,
+            "record_unavailable": "recording_capacity"
+        });
+        let c = parse_ready(&some)
+            .unwrap()
+            .recording_controls
+            .unwrap()
+            .unwrap();
+        assert!(c.can_record && !c.can_stop);
+        assert_eq!(c.rev, 41);
+        assert_eq!(
+            c.record_unavailable,
+            Some(sew_proto::recording::RecordUnavailable::RecordingCapacity)
+        );
+        // A value without the hint or `rev` still reads.
+        let mut bare = base;
+        bare["recording_controls"] = serde_json::json!({"can_record": false, "can_stop": true});
+        let c = parse_ready(&bare)
+            .unwrap()
+            .recording_controls
+            .unwrap()
+            .unwrap();
+        assert_eq!((c.can_record, c.can_stop, c.rev), (false, true, 0));
+        assert_eq!(c.record_unavailable, None);
+        // A full READY's field of that name is not the call's.
+        let full = serde_json::json!({
+            "session_id": "gw_6", "member": {"id": "42"}, "recording_controls": null
+        });
+        assert_eq!(parse_ready(&full).unwrap().recording_controls, None);
+    }
+
+    #[test]
+    fn recording_controls_updated_passes() {
+        assert!(CALL_SOCKET_EVENTS.contains(&"recording_controls_updated"));
+        let d = serde_json::json!({
+            "channel_id": "2002", "can_record": false, "can_stop": true, "rev": 7
+        });
+        match filter_dispatch("recording_controls_updated", &d) {
+            Some(SocketEvent::RecordingControls(u)) => {
+                assert_eq!(u.channel_id, Id::new(2002).unwrap());
+                assert_eq!(u.call_id, None);
+                assert_eq!((u.can_record, u.can_stop, u.rev), (false, true, 7));
+                assert_eq!(u.record_unavailable, None);
+            }
+            other => panic!("recording_controls_updated: {other:?}"),
+        }
+        let dm = serde_json::json!({
+            "channel_id": "2002", "call_id": "3003", "can_record": true, "can_stop": false,
+            "rev": 8, "record_unavailable": "recorder_unavailable"
+        });
+        match filter_dispatch("recording_controls_updated", &dm) {
+            Some(SocketEvent::RecordingControls(u)) => {
+                assert_eq!(u.call_id, Id::new(3003));
+                assert_eq!(
+                    u.record_unavailable,
+                    Some(sew_proto::recording::RecordUnavailable::RecorderUnavailable)
+                );
+            }
+            other => panic!("recording_controls_updated (DM): {other:?}"),
+        }
+        // A body that is not one is dropped, as any other.
+        assert!(
+            filter_dispatch(
+                "recording_controls_updated",
+                &serde_json::json!({"can_record": true})
+            )
+            .is_none()
+        );
     }
 
     #[test]

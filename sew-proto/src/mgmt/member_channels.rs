@@ -24,6 +24,9 @@ use super::spaces::check_app_id;
 
 /// The feature flag of the member-channels sync. Listed in [`super::FEATURES`].
 pub const FEATURE_APP_MEMBER_CHANNELS: &str = "app_member_channels";
+/// Feature flag (since 0.10.0): `channel_ids` may be left out (or `null`) to change only the
+/// level.
+pub const FEATURE_MEMBER_CHANNELS_LEVEL_ONLY: &str = "member_channels_level_only";
 
 /// Most channel ids in one sync item (the person's full list of private channels).
 pub const MEMBER_CHANNELS_MAX: usize = 5_000;
@@ -59,8 +62,11 @@ pub struct MgmtMemberChannelsRequest {
     pub app_id: Option<String>,
     /// The person's full list of private channels in the Space, 0–5,000 distinct ids. Public
     /// channels are open to every member and are not listed (a listed one comes back in
-    /// `unknown_channel_ids`).
-    pub channel_ids: Vec<Id>,
+    /// `unknown_channel_ids`). `[]` takes the person out of every private channel. Since
+    /// 0.10.0, absent or `null` changes only `level` and leaves the person's private channels
+    /// as they are (no adds, no removals).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_ids: Option<Vec<Id>>,
     /// The person's level: `member` (`@everyone`), `moderator` or `admin` (the managed roles),
     /// at most the App's `max_level`.
     pub level: SpaceLevel,
@@ -72,7 +78,10 @@ impl Validate for MgmtMemberChannelsRequest {
             check_app_id("app_id", a)?;
         }
         check_known("level", self.level)?;
-        check_channels("channel_ids", &self.channel_ids)
+        match &self.channel_ids {
+            Some(ids) => check_channels("channel_ids", ids),
+            None => Ok(()),
+        }
     }
 }
 
@@ -82,8 +91,9 @@ impl Validate for MgmtMemberChannelsRequest {
 pub struct MgmtMemberChannelsItem {
     /// The person.
     pub external_id: ExternalId,
-    /// As [`MgmtMemberChannelsRequest::channel_ids`].
-    pub channel_ids: Vec<Id>,
+    /// As [`MgmtMemberChannelsRequest::channel_ids`] (absent or `null`: the level only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_ids: Option<Vec<Id>>,
     /// As [`MgmtMemberChannelsRequest::level`].
     pub level: SpaceLevel,
 }
@@ -119,7 +129,9 @@ impl Validate for MgmtMemberChannelsBulkRequest {
                 ));
             }
             check_known(&format!("items.{i}.level"), it.level)?;
-            check_channels(&format!("items.{i}.channel_ids"), &it.channel_ids)?;
+            if let Some(ids) = &it.channel_ids {
+                check_channels(&format!("items.{i}.channel_ids"), ids)?;
+            }
         }
         Ok(())
     }

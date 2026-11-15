@@ -196,6 +196,11 @@
           "const": "unarchive",
           "description": "Unarchive.",
           "type": "string"
+        },
+        {
+          "const": "update",
+          "description": "Since 0.10.0: change settings (`members_can_leave`).",
+          "type": "string"
         }
       ]
     },
@@ -203,7 +208,7 @@
       "description": "One op's answer in `POST /mgmt/v1/channels/bulk`, in request order.",
       "properties": {
         "changed": {
-          "description": "`rename`, `archive` and `unarchive` that succeeded: whether the op changed the channel\n(`false`: it already had that name or state, and nothing was written).",
+          "description": "`rename`, `archive`, `unarchive` and `update` that succeeded: whether the op changed the\nchannel\n(`false`: it already had that name or state, and nothing was written).",
           "type": [
             "boolean",
             "null"

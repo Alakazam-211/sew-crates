@@ -1,5 +1,105 @@
 # Changelog
 
+## 0.10.0 (2026-11-15)
+
+### Added
+
+- **Each person's Record and Stop, from the server.** `recording::controls::decide`
+  (`ControlsInput`, `ActiveInput`): the one rule table for whether Sew would take a person's
+  Record and Stop now, pure and without IO. `recording::RecordingControls { can_record,
+  can_stop, rev, record_unavailable }` (`#[non_exhaustive]`), with the hint
+  `RecordUnavailable` (`recording_capacity`, `recorder_unavailable`; it never changes
+  `can_record`). The event `recording_controls_updated` (`EventName::RecordingControlsUpdated`,
+  `Event::RecordingControlsUpdated`, body `RecordingControlsUpdated`, to the person's own
+  sessions only); `Recording.my_controls` (self only, skipped when `None`);
+  `ReadyInstall.recording_controls` (skipped when `false`); `CallReady.recording_controls`
+  (written as `null` while the member has no connected voice entry; absent from older
+  servers). Of two values, the larger `rev` is the newer. `mgmt::FEATURE_RECORDING_CONTROLS`
+  (`recording_controls`) in `FEATURES`.
+- `vectors/recording-controls-vectors.json`: `decide` over the full cross product of its
+  facts, for other implementations to check themselves against.
+- **One channel member in or out over mgmt.** `routes::MGMT_CHANNEL_MEMBERS_ADD` and
+  `MGMT_CHANNEL_MEMBERS_REMOVE` (`/mgmt/v1/channels/{channel_id}/members/add`, `…/remove`):
+  `mgmt::MgmtChannelMemberRequest {app_id?, external_id}` →
+  `MgmtChannelMemberResponse {channel_id, space_id, external_id, member_id, changed}`.
+  `mgmt::FEATURE_CHANNEL_MEMBER_ADD_REMOVE` (`channel_member_add_remove`) in `FEATURES`.
+- **Members who may leave a governed channel.** `Channel.members_can_leave` (additive:
+  `Channel` is `#[non_exhaustive]`) and `ReadyChannel.members_can_leave` (skipped when `false`); `MgmtChannelCreateRequest.members_can_leave`
+  (skipped when `false`), `MgmtChannelCreateResponse.members_can_leave` (always written; absent
+  reads as `false`); `members_can_leave` on `MgmtChannelOp::Ensure` and the new op
+  `MgmtChannelOp::Update {channel_id, members_can_leave?}` (`MgmtChannelOpKind::Update`,
+  `update`). `api::channels::FEATURE_CHANNEL_MEMBERS_CAN_LEAVE` (`channel_members_can_leave`)
+  in `FEATURES`.
+- **Export minor 13.** `export::ChannelRecord.members_can_leave` (skipped when `false`; an
+  older archive without it reads as `false`). `EXPORT_FORMAT_MINOR` is 13.
+- **Typing over HTTP.** `routes::CHANNEL_TYPING` (`POST /api/v1/channels/{id}/typing`) with
+  `api::channels::ChannelTypingRequest {thread_id?}`; it answers `204`.
+  `api::channels::FEATURE_HTTP_TYPING` (`http_typing`) in `FEATURES`.
+- **Unread count.** `ReadState.unread_count` (always written; absent from an older server reads
+  as `0`): unread timeline messages, capped at `api::read_state::UNREAD_COUNT_CAP` (99, meaning
+  99 or more). `api::read_state::FEATURE_READ_STATE_UNREAD_COUNT` (`read_state_unread_count`)
+  in `FEATURES`.
+- **Level-only member-channels sync.** `MgmtMemberChannelsRequest.channel_ids` and
+  `MgmtMemberChannelsItem.channel_ids` are `Option<Vec<Id>>`: absent or `null` changes only the
+  level; `[]` still empties the person's private channels.
+  `mgmt::FEATURE_MEMBER_CHANNELS_LEVEL_ONLY` (`member_channels_level_only`) in `FEATURES`.
+- **Agents and box people in DMs.** The policy `agents.dm_with_box_people`
+  (`Policies.agents_dm_with_box_people`, default `true`, old payloads read `true`;
+  `PolicyPatch.agents_dm_with_box_people`; `PolicyKey::AgentsDmWithBoxPeople`, the last
+  variant): off refuses opening a DM or group DM that puts an agent with a box person
+  (`k2:owner`, `k2:connect:`). `policy::FEATURE_AGENTS_DM_WITH_BOX_PEOPLE`
+  (`agents_dm_with_box_people`) in `FEATURES`.
+- **A DM call's starter cancels it.** `routes::CHANNEL_CALL_CANCEL`
+  (`POST /api/v1/channels/{id}/call/cancel`) with `calls::CallCancelRequest { call_id }`, only
+  by the call's starter and only before anyone else joined (otherwise `422 invalid_state`
+  with `calls::reasons::NOT_CANCELLABLE`, `not_cancellable`). The call ends with
+  `CallEndReason::Cancelled` (`cancelled`, storage code 9); its pending rings become
+  `RingState::Cancelled` (`cancelled`), not `missed`, and stop with `call_ring` reason
+  `ring_reason::CANCELLED` (`cancelled`). `calls::FEATURE_CALL_CANCEL` (`call_cancel`) in
+  `FEATURES`. On the wire this is additive: an older client reads the new values as `Unknown`.
+
+### Changed
+
+- `ReadyChannel.has_guests` is left out of READY when `false` (it has always read as `false`
+  when absent), so READY stays within its size bound with `ReadState.unread_count` added.
+
+### Breaking
+
+- `CallEndReason` and `RingState` have a new variant, `Cancelled`, so a `match` on either
+  written for 0.9.x no longer compiles. Add a `Cancelled` arm (or a wildcard). Both are now
+  `#[non_exhaustive]` (see below).
+- `PolicyKey` has a new variant, `AgentsDmWithBoxPeople`, and is not `#[non_exhaustive]`, so an
+  exhaustive `match` on it written for 0.9.x no longer compiles. The new variant comes just
+  before `Unknown`, whose discriminant moves from 44 to 45; no other variant's moves.
+  (`Policies.agents_dm_with_box_people` is additive: `Policies` is already `#[non_exhaustive]`.)
+- New public fields on structs that are not `#[non_exhaustive]`, so a struct literal written
+  for 0.9.x no longer compiles: `ReadState.unread_count`, `MgmtChannelCreateRequest.members_can_leave`,
+  `MgmtChannelCreateResponse.members_can_leave` and `members_can_leave` on
+  `MgmtChannelOp::Ensure`. `MgmtChannelOp` and `MgmtChannelOpKind` have a new variant (`Update`),
+  so an exhaustive `match` on either no longer compiles. `MgmtMemberChannelsRequest.channel_ids` and
+  `MgmtMemberChannelsItem.channel_ids` changed from `Vec<Id>` to `Option<Vec<Id>>` (wrap a list
+  in `Some`). Every 0.9.x payload still reads as before.
+- **`gateway::events::EventName`, `gateway::events::Event`, `gateway::server::ReadyInstall`,
+  `gateway::server::CallReady`, `calls::CallEndReason` and `calls::RingState` are now
+  `#[non_exhaustive]`.** This is a one-time change so that later events, call end reasons,
+  ring states and READY fields are additive and do not need a breaking release. Outside the
+  crate, a `match` on `EventName`, `Event`, `CallEndReason` or `RingState` needs a `_` arm (a
+  value this build does not know already decodes as `Unknown`; a `_` arm also covers values
+  added later). A struct
+  literal of `ReadyInstall` or `CallReady` no longer compiles: build them with
+  `ReadyInstall::new(id, name, policy_digest)` or `CallReady::new(session_id, user,
+  install_id)` (which sets `v` to `PROTOCOL_VERSION`) and set the other public fields;
+  destructuring them needs `..`. The wire format does not change.
+
+### Fixed (server behaviour)
+
+- Posting in a public Space channel now joins the poster. Before, a Space member who had not
+  joined a public channel could not post there (`403`); now a top-level post or a thread reply by a member who
+  may join it (not an assistant or a guest, the channel not archived) joins them in the post's
+  transaction, as `POST /channels/{id}/join` does (`channel_member_added`, the change-log
+  entries, the read cursor at the new message), so they get `@channel`, `@here` and mention
+  rows from then on. Private channels, DMs and meeting channels are unchanged.
+
 ## 0.9.3 (2026-11-12)
 
 - The version follows Sew 0.9.3. No API or behaviour change.

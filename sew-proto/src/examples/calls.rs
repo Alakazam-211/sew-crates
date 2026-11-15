@@ -248,6 +248,12 @@ impl Example for CallDeclineRequest {
     }
 }
 
+impl Example for CallCancelRequest {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![("full", CallCancelRequest { call_id: ID_CALL })]
+    }
+}
+
 impl Example for CallRingRequest {
     fn examples() -> Vec<(&'static str, Self)> {
         vec![

@@ -14,6 +14,11 @@
 //! person's own acts, also through the host ([`JoinProvider::recording`]). The recording says
 //! what started it ([`CallRecording::trigger`]) and whether the room requires it
 //! ([`CallRecording::required`]).
+//!
+//! The person's Record and Stop: a Sew server that computes them sends them to the call
+//! ([`Call::recording_controls`], [`CallEvent::RecordingControls`],
+//! [`CallRecording::my_controls`]); [`Call::server_controls`] says whether this call's server
+//! does. Against an older server both stay empty, and the host works the buttons out itself.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -208,6 +213,51 @@ pub struct CallRecording {
     /// started it under that rule (`trigger: required`) or its notice says so
     /// (`consent_prompt.required`).
     pub required: bool,
+    /// This person's Record and Stop in the call's room as Sew computed them, carried in the
+    /// recording (`None` from a server that does not compute them, or outside the room).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub my_controls: Option<ServerControls>,
+}
+
+/// A person's Record and Stop in the call's room, as Sew computes them
+/// ([`Call::recording_controls`], [`CallEvent::RecordingControls`],
+/// [`CallRecording::my_controls`]). Of two values, the larger `rev` is the newer. Sew still
+/// decides each Record and Stop; show its refusal if one comes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct ServerControls {
+    /// Sew would take this person's Record now.
+    pub can_record: bool,
+    /// Sew would take this person's Stop now.
+    pub can_stop: bool,
+    /// The value's revision (server-wide, increasing).
+    pub rev: u64,
+    /// While the person may record: why a start would be refused for now (the install's
+    /// recording capacity is full, or the recorder does not answer). A hint only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_unavailable: Option<sew_proto::recording::RecordUnavailable>,
+}
+
+impl ServerControls {
+    /// The value Sew sent.
+    pub fn from_sew(c: &sew_proto::recording::RecordingControls) -> ServerControls {
+        ServerControls {
+            can_record: c.can_record,
+            can_stop: c.can_stop,
+            rev: c.rev,
+            record_unavailable: c.record_unavailable,
+        }
+    }
+
+    /// The pair, with `rev` 0 and no hint (for a host's own engine or a test).
+    pub fn new(can_record: bool, can_stop: bool) -> ServerControls {
+        ServerControls {
+            can_record,
+            can_stop,
+            rev: 0,
+            record_unavailable: None,
+        }
+    }
 }
 
 /// What started `r`: Sew's `trigger`. An older Sew sends none (read as `manual`), so an
@@ -249,6 +299,7 @@ impl CallRecording {
             trigger,
             required: trigger == RecordingTrigger::Required
                 || r.consent_prompt.as_ref().is_some_and(prompt_required),
+            my_controls: r.my_controls.as_ref().map(ServerControls::from_sew),
         }
     }
 
@@ -285,6 +336,7 @@ impl CallRecording {
                         RecordingTrigger::from_auto(c.auto)
                     },
                     required,
+                    my_controls: None,
                 }
             }
         }
@@ -345,6 +397,10 @@ pub enum CallEvent {
     /// The call's recording changed (Sew 0.7.3): started, someone answered, this person's
     /// prompt, or `None` once no recording is active (also [`Call::recording`]).
     Recording(Option<Box<CallRecording>>),
+    /// The person's Record and Stop in the call's room, from a Sew server that computes them
+    /// (also [`Call::recording_controls`]): a newer value, or `None` once a move took the call
+    /// to a room the server has sent none for yet. Never sent by an older server.
+    RecordingControls(Option<ServerControls>),
     /// The call's key state or its security code changed (also [`CallSnapshot::security`]):
     /// a new epoch, the keys securing or recovering, or a re-join's new key session.
     Security(CallSecurity),
@@ -421,7 +477,8 @@ impl CallSecurity {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct CallMoved {
-    /// The destination voice channel (Sew's id, a decimal string).
+    /// The destination channel (Sew's id, a decimal string): a voice channel, or the DM or
+    /// group DM of a DM call.
     pub channel_id: String,
     /// The destination DM call, when the destination is one (Sew's id, a decimal string).
     pub call_id: Option<String>,
@@ -439,10 +496,11 @@ impl CallMoved {
         }
     }
 
-    /// The `room` a host joins for the destination: the DM call's id when it is a call, else
-    /// the voice channel's id. The engine's re-joins after the move ask for this room.
+    /// The `room` a host joins for the destination: the channel's id, the voice channel's or,
+    /// for a DM call, the DM's (Sew's `call/join` takes the DM, never the call's id). The
+    /// engine's re-joins after the move ask for this room.
     pub fn room(&self) -> &str {
-        self.call_id.as_deref().unwrap_or(&self.channel_id)
+        &self.channel_id
     }
 }
 
@@ -531,6 +589,13 @@ pub struct CallSnapshot {
     /// ([`CallEvent::Security`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<CallSecurity>,
+    /// The person's Record and Stop in the call's room, as Sew computed them last
+    /// ([`Call::recording_controls`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_controls: Option<ServerControls>,
+    /// This call's server computes the person's Record and Stop ([`Call::server_controls`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub server_controls: bool,
 }
 
 impl Default for CallSnapshot {
@@ -544,6 +609,8 @@ impl Default for CallSnapshot {
             moved: None,
             recording: None,
             security: None,
+            recording_controls: None,
+            server_controls: false,
         }
     }
 }
@@ -1000,6 +1067,26 @@ impl Call {
             .lock()
             .ok()
             .and_then(|s| s.recording.clone())
+    }
+
+    /// The person's Record and Stop in the call's room as Sew computed them last (the newest
+    /// by `rev` of its `recording_controls_updated`, the call socket's READY and the
+    /// recording's `my_controls`). `None` from an older server, before the server's first
+    /// value (Sew sends one once the call is connected), and after a move until the
+    /// destination's arrives.
+    pub fn recording_controls(&self) -> Option<ServerControls> {
+        self.shared
+            .snapshot
+            .lock()
+            .ok()
+            .and_then(|s| s.recording_controls)
+    }
+
+    /// This call's server computes the person's Record and Stop: its call socket's READY
+    /// carried `recording_controls` (even `null`), or a value arrived. `false` against an
+    /// older server: the host works the buttons out itself.
+    pub fn server_controls(&self) -> bool {
+        self.shared.snapshot.lock().is_ok_and(|s| s.server_controls)
     }
 
     /// The person's answer to the recording's notice (`notice_version`: the version they saw,

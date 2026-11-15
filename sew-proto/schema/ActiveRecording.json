@@ -276,6 +276,21 @@
       ],
       "type": "object"
     },
+    "RecordUnavailable": {
+      "description": "Why Record would be refused for now although the person may record: a hint a client\nmay show on a greyed Record. It never changes `can_record`.",
+      "oneOf": [
+        {
+          "const": "recording_capacity",
+          "description": "The install runs as many recordings as it allows.",
+          "type": "string"
+        },
+        {
+          "const": "recorder_unavailable",
+          "description": "The recorder does not answer.",
+          "type": "string"
+        }
+      ]
+    },
     "Recording": {
       "description": "A recording.",
       "properties": {
@@ -352,6 +367,17 @@
           ],
           "description": "The viewer's own consent (self only; absent for non-participants)."
         },
+        "my_controls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingControls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The viewer's own Record and Stop (self only), while the viewer is in the recording's\nroom. Absent from servers that predate it, and for viewers outside the room."
+        },
         "participants": {
           "description": "Members in the room plus members who ever granted, ascending.",
           "items": {
@@ -418,6 +444,42 @@
         "audio_keep_days",
         "max_duration_ms",
         "participants"
+      ],
+      "type": "object"
+    },
+    "RecordingControls": {
+      "description": "A person's Record and Stop in the room they are in, as Sew would take them now\n(`Recording.my_controls`, the call socket's READY). Of two values, the larger `rev` is the\nnewer.",
+      "properties": {
+        "can_record": {
+          "description": "Sew would take this person's Record now (passing conditions aside).",
+          "type": "boolean"
+        },
+        "can_stop": {
+          "description": "Sew would take this person's Stop now.",
+          "type": "boolean"
+        },
+        "record_unavailable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordUnavailable"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "While the person may record: why a start would be refused for now (a hint only)."
+        },
+        "rev": {
+          "default": 0,
+          "description": "A server-wide increasing revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "can_record",
+        "can_stop"
       ],
       "type": "object"
     },

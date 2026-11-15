@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.0 (2026-11-15)
+
+- The version follows Sew 0.10.0. No API or behaviour change.
+
 ## 0.9.3 (2026-11-12)
 
 - `Stage`: a capture stage for native audio paths. It processes one 480-sample block of 48 kHz

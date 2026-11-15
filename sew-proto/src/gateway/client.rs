@@ -418,7 +418,9 @@ impl Validate for SubscribeRequest {
     }
 }
 
-/// Op 10 TYPING.
+/// Op 10 TYPING. Without a socket (since 0.10.0) the same signal goes over HTTP:
+/// `POST /api/v1/channels/{id}/typing` with [`crate::api::channels::ChannelTypingRequest`]
+/// (the same permission, throttle and `typing_started`; it answers `204` even when dropped).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TypingRequest {

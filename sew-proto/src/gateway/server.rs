@@ -91,6 +91,7 @@ pub struct RateLimitedCloseReason {
 
 /// The install section of READY.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ReadyInstall {
     /// The install id.
     pub id: Id,
@@ -115,10 +116,34 @@ pub struct ReadyInstall {
     /// The client media policy for the current tier; absent when voice is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<crate::voice::MediaPolicy>,
+    /// The server computes each person's Record and Stop (`recording_controls_updated`,
+    /// `Recording.my_controls`): a client takes them from there rather than working them out.
+    /// Absent means `false` (an older server).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recording_controls: bool,
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+impl ReadyInstall {
+    /// An install section with its id, name and policy digest; every other field takes the
+    /// value its absence means (empty `sync_epoch`, `None`, `false`). Set the rest on the
+    /// result: the struct is `#[non_exhaustive]`, so later fields stay additive.
+    pub fn new(id: Id, name: impl Into<String>, policy_digest: PolicyDigest) -> Self {
+        ReadyInstall {
+            id,
+            name: name.into(),
+            policy_digest,
+            sync_epoch: String::new(),
+            profile_fields_version: None,
+            voice_enabled: false,
+            video_enabled: false,
+            media: None,
+            recording_controls: false,
+        }
+    }
 }
 
 /// Etags for lazy per-space fetches with `If-None-Match`.
@@ -242,8 +267,9 @@ pub struct ReadyChannel {
     /// Effective file retention in days; absent = forever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_retention_days: Option<u32>,
-    /// At least one guest is a member. Old payloads read as `false`.
-    #[serde(default)]
+    /// At least one guest is a member. Old payloads read as `false`; since 0.10.0 it is left
+    /// out when `false` (READY stays within its size bound with `ReadState.unread_count`).
+    #[serde(default, skip_serializing_if = "is_false")]
     pub has_guests: bool,
     /// Assistants that read this DM through their pinned person;
     /// absent for space channels.
@@ -271,6 +297,9 @@ pub struct ReadyChannel {
         skip_serializing_if = "crate::recording::RecordingRule::is_none"
     )]
     pub recording_rule: crate::recording::RecordingRule,
+    /// Since 0.10.0: `Channel.members_can_leave` (absent when `false`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub members_can_leave: bool,
 }
 
 impl ReadyChannel {
@@ -300,6 +329,7 @@ impl ReadyChannel {
             recording_require_consent: None,
             recording_required: None,
             recording_rule: crate::recording::RecordingRule::None,
+            members_can_leave: false,
         }
     }
 }
@@ -320,9 +350,10 @@ pub struct ThreadsInbox {
 /// The `ready` dispatch of a call socket (a socket IDENTIFYed with a `sewcc_` call
 /// credential): no Spaces, channels, presence or read states; the socket indexes nothing and
 /// gets only `call_keys_delivered`, its member's `voice_server_updated`, its call channel's
-/// `voice_state_updated` and (Sew 0.7.3) its member's own copy of the call channel's
-/// `recording_updated`.
+/// `voice_state_updated`, (Sew 0.7.3) its member's own copy of the call channel's
+/// `recording_updated` and its member's `recording_controls_updated` for the call channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct CallReady {
     /// The protocol version (1).
     pub v: u32,
@@ -347,6 +378,28 @@ pub struct CallReady {
     /// field means a Sew older than 0.7.3.
     #[serde(default)]
     pub recording: Option<crate::recording::Recording>,
+    /// The member's Record and Stop in the call's room, or `null` while the member has no
+    /// connected voice entry there yet. Always written by a server that computes them, so an
+    /// absent field means an older server.
+    #[serde(default)]
+    pub recording_controls: Option<crate::recording::RecordingControls>,
+}
+
+impl CallReady {
+    /// A call socket READY at this build's [`crate::PROTOCOL_VERSION`] for a session, member
+    /// and install; `call_keys`, `recording` and `recording_controls` start as `None`. Set the
+    /// rest on the result: the struct is `#[non_exhaustive]`, so later fields stay additive.
+    pub fn new(session_id: impl Into<String>, user: CallReadyUser, install_id: Id) -> Self {
+        CallReady {
+            v: crate::PROTOCOL_VERSION,
+            session_id: session_id.into(),
+            user,
+            install_id,
+            call_keys: None,
+            recording: None,
+            recording_controls: None,
+        }
+    }
 }
 
 /// [`CallReady`]'s member.

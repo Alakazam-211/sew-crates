@@ -133,6 +133,11 @@
           "const": "perms_lost",
           "description": "Nobody left who may connect.",
           "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The starter cancelled the call before anyone else joined (flag `call_cancel`).",
+          "type": "string"
         }
       ]
     },
@@ -224,6 +229,11 @@
         {
           "const": "missed",
           "description": "Not answered in time, or the call ended first.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The starter cancelled the call before anyone else joined (flag `call_cancel`); not\na missed call.",
           "type": "string"
         }
       ]

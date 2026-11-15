@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /mgmt/v1/channels/{channel_id}/members/add` and\n`POST /mgmt/v1/channels/{channel_id}/members/remove` (since 0.10.0).",
+  "properties": {
+    "app_id": {
+      "description": "The channel's Space's governing App; absent for the server-governed Space (the same\nrule as `channels/create`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "external_id": {
+      "description": "The member.",
+      "maxLength": 128,
+      "pattern": "^(k2:(principal|workspace|connect):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|k2:owner|k2:server|local:[a-z0-9_-]{2,64}|link:[1-9][0-9]{0,18}:[A-Z2-7]{16}|app:[a-z0-9][a-z0-9._-]{0,63}|erased:[1-9][0-9]{0,18})$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "external_id"
+  ],
+  "title": "MgmtChannelMemberRequest",
+  "type": "object"
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /api/v1/channels/{id}/typing` (since 0.10.0): the caller is typing in the\nchannel, or in a thread of it. The HTTP twin of the gateway's op 10 `TYPING`, for clients\nand agents without a socket: the same permission (SEND_MESSAGES, or SEND_IN_THREADS with\n`thread_id`), the same throttle (one per channel per [`crate::limits::TYPING_INTERVAL_MS`])\nand the same `typing_started` to the channel's typing subscribers. It answers `204` even\nwhen the send was dropped (no permission or throttled), as op 10 drops it silently.",
+  "properties": {
+    "thread_id": {
+      "description": "The thread root, when typing in a thread.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ChannelTypingRequest",
+  "type": "object"
+}

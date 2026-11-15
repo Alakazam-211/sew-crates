@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use sew_proto::e2ee::ConsentState;
 use sew_proto::id::Id;
-use sew_proto::recording::Recording;
+use sew_proto::recording::{Recording, RecordingControls};
 use sew_proto::voice::{MediaPolicy, VoiceJoinResponse, VoiceServerUpdated, VoiceState};
 use tokio::sync::{mpsc, watch};
 
@@ -154,6 +154,16 @@ pub enum E2eeEvent {
     /// recording. The engine keeps its call channel's and feeds it back through
     /// [`KeySession::recording`].
     Recording(Option<Box<Recording>>),
+    /// The member's Record and Stop from a server that computes them: the call socket's
+    /// READY `recording_controls` (`channel_id` `None`: the call's own room; `controls` `None`:
+    /// no value yet) or its `recording_controls_updated` (`channel_id` the room it is for).
+    /// The engine keeps its call channel's, the newest by `rev`.
+    RecordingControls {
+        /// The room's channel, when the server named it.
+        channel_id: Option<Id>,
+        /// The value, when the server has one.
+        controls: Option<RecordingControls>,
+    },
     /// Sew ended this join and said why (Sew 0.7.2): the self copy of `voice_state_updated`
     /// leaving the call (its `reason`), or the call socket's `4011` close that named one.
     /// `reason` is Sew's voice leave reason as it arrived (`perms_lost`, `removed_from_space`,

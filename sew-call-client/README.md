@@ -89,12 +89,12 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.6.2"
+sew-call-client = "0.7.0"
 ```
 
 The engine's WebRTC stack is `sew-str0m`, Alakazam Labs' fork of `str0m` 0.25 (library name
 `str0m`), which carries Sew's fixes (among them one to the bandwidth estimate at the start of a
-call).
+call). This release uses `sew-str0m` 0.25.2, the same release as on crates.io, taken from the fork's git repository for this release.
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
 session and returns it. A minimal one, and a call through it (the same code is compiled as the

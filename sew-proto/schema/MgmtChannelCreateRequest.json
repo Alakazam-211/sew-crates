@@ -51,6 +51,10 @@
       },
       "type": "array"
     },
+    "members_can_leave": {
+      "description": "Since 0.10.0: the members of this channel may leave it although its Space is governed\n(`Channel.members_can_leave`). Absent = `false`. Used at create only; the bulk op\n`update` changes it later.",
+      "type": "boolean"
+    },
     "name": {
       "description": "The name, 1–100 characters. Used at create only.",
       "type": "string"

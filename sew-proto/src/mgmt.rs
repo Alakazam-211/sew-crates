@@ -50,10 +50,11 @@ pub use apps::{
 };
 pub use backups::{BACKUP_JOB_KIND, BackupJobResult, MgmtBackup, MgmtBackupList};
 pub use channels::{
-    CHANNEL_BULK_OPS_MAX, CHANNEL_MEMBERS_ADD_MAX, MgmtChannelBulkRequest, MgmtChannelBulkResponse,
-    MgmtChannelCreateRequest, MgmtChannelCreateResponse, MgmtChannelNotAdded,
-    MgmtChannelNotAddedReason, MgmtChannelOp, MgmtChannelOpKind, MgmtChannelOpResult,
-    MgmtChannelTypeMismatchDetails, MgmtMemberRef,
+    CHANNEL_BULK_OPS_MAX, CHANNEL_MEMBERS_ADD_MAX, FEATURE_CHANNEL_MEMBER_ADD_REMOVE,
+    MgmtChannelBulkRequest, MgmtChannelBulkResponse, MgmtChannelCreateRequest,
+    MgmtChannelCreateResponse, MgmtChannelMemberRequest, MgmtChannelMemberResponse,
+    MgmtChannelNotAdded, MgmtChannelNotAddedReason, MgmtChannelOp, MgmtChannelOpKind,
+    MgmtChannelOpResult, MgmtChannelTypeMismatchDetails, MgmtMemberRef,
 };
 pub use erase::{
     EraseKeptKind, EraseKeptReason, EraseMode, EraseState, FEATURE_PRINCIPAL_ERASE,
@@ -67,10 +68,10 @@ pub use identity::{
 };
 pub use meet::{MEET_RETENTION_DAYS_MAX, MeetInitRequest, MeetInitResponse};
 pub use member_channels::{
-    FEATURE_APP_MEMBER_CHANNELS, MEMBER_CHANNELS_ITEMS_MAX, MEMBER_CHANNELS_MAX,
-    MgmtMemberChannelsBulkRequest, MgmtMemberChannelsBulkResponse, MgmtMemberChannelsItem,
-    MgmtMemberChannelsItemResult, MgmtMemberChannelsRequest, MgmtMemberChannelsResponse,
-    MgmtMemberChannelsSkip,
+    FEATURE_APP_MEMBER_CHANNELS, FEATURE_MEMBER_CHANNELS_LEVEL_ONLY, MEMBER_CHANNELS_ITEMS_MAX,
+    MEMBER_CHANNELS_MAX, MgmtMemberChannelsBulkRequest, MgmtMemberChannelsBulkResponse,
+    MgmtMemberChannelsItem, MgmtMemberChannelsItemResult, MgmtMemberChannelsRequest,
+    MgmtMemberChannelsResponse, MgmtMemberChannelsSkip,
 };
 pub use notifications::{
     CursorExpiredDetails, FEATURE_PERSON_NOTIFICATIONS, PERSON_NOTIFICATION_PREVIEW_MAX_CHARS,
@@ -82,10 +83,10 @@ pub use ops::{
     AuditVerifyMode, AuditVerifyReport, AuditVerifyRequest, EXPORT_RECIPIENTS_MAX, ExportRequest,
 };
 pub use recordings::{
-    FEATURE_APP_RECORDING, FEATURE_MGMT_RECORDING_READS, FEATURE_RECORDING_REQUIRED,
-    FEATURE_VOICE_RECORD_CAP, MGMT_RECORDINGS_LIMIT_DEFAULT, MGMT_RECORDINGS_LIMIT_MAX,
-    MGMT_TRANSCRIPT_LIMIT_DEFAULT, MGMT_TRANSCRIPT_LIMIT_MAX, MgmtAppRecording,
-    MgmtAppRecordingRequest, MgmtChannelRecording, MgmtChannelRecordingRequest,
+    FEATURE_APP_RECORDING, FEATURE_MGMT_RECORDING_READS, FEATURE_RECORDING_CONTROLS,
+    FEATURE_RECORDING_REQUIRED, FEATURE_VOICE_RECORD_CAP, MGMT_RECORDINGS_LIMIT_DEFAULT,
+    MGMT_RECORDINGS_LIMIT_MAX, MGMT_TRANSCRIPT_LIMIT_DEFAULT, MGMT_TRANSCRIPT_LIMIT_MAX,
+    MgmtAppRecording, MgmtAppRecordingRequest, MgmtChannelRecording, MgmtChannelRecordingRequest,
     MgmtRecordingChange, MgmtRecordingChanges, MgmtRecordingChangesQuery, MgmtRecordingParticipant,
     MgmtRecordingQuery, MgmtRecordingStopRequest, MgmtRecordingSummary, MgmtRecordingsPage,
     MgmtRecordingsQuery, MgmtTranscriptPage, MgmtTranscriptQuery, MgmtTranscriptTurn,
@@ -759,6 +760,8 @@ pub struct StatusGatewayReauth {
 /// Every feature flag of this build, sorted: `features` in `GET /mgmt/v1/status` and
 /// `sew version --json`. A flag is never removed or renamed once shipped.
 pub const FEATURES: &[&str] = &[
+    // Since 0.10.0: the policy `agents.dm_with_box_people`.
+    crate::policy::FEATURE_AGENTS_DM_WITH_BOX_PEOPLE,
     // `POST /mgmt/v1/channels/create`.
     "app_channel_create",
     "app_controls", // channels/bulk, sessions/revoke app_id, uploads off.
@@ -783,11 +786,19 @@ pub const FEATURES: &[&str] = &[
     "app_session_member_role", // An App session acts with install role at most `member`.
     // `type: voice` and `user_limit` on `POST /mgmt/v1/channels/create`.
     "app_voice_channel_create",
+    // A DM call's starter cancels it before anyone else joined (`call/cancel`, `cancelled`).
+    crate::calls::FEATURE_CALL_CANCEL,
     // Since 0.7.1: the call-scoped credential (`call_credential: true` on voice and DM
     // call joins, `sewcc_`, the call socket, `POST /api/v1/me/voice/credential`).
     FEATURE_CALL_CREDENTIAL,
     // Since 0.7.1: the beacon's client `native` and audio fields (`stats.audio_fields`).
     FEATURE_CALL_STATS_NATIVE,
+    // Since 0.10.0: one channel member in or out over mgmt
+    // (`channels/{channel_id}/members/add`, `…/remove`).
+    FEATURE_CHANNEL_MEMBER_ADD_REMOVE,
+    // Since 0.10.0: `Channel.members_can_leave` (mgmt create, the bulk `ensure` and `update`)
+    // and the leave it allows in a governed Space.
+    crate::api::channels::FEATURE_CHANNEL_MEMBERS_CAN_LEAVE,
     // Since 0.9.2: the DMs by latest activity (`GET /api/v1/me/channels?order=activity`).
     crate::api::channels::FEATURE_DM_ORDER_ACTIVITY,
     // Since 0.9.2: group DM names (the update's `name` on a group DM, the rename notice).
@@ -795,11 +806,15 @@ pub const FEATURES: &[&str] = &[
     // `/mgmt/v1/home-client` and `hidden_from_home`.
     FEATURE_HOME_CLIENT,
     "home_client_owner_approval", // `POST /mgmt/v1/home-client` needs the owner's approval.
+    // Since 0.10.0: `POST /api/v1/channels/{id}/typing` (typing over HTTP, act-as included).
+    crate::api::channels::FEATURE_HTTP_TYPING,
     // `sew import --to-standalone [--identity-map]` (moving off K2).
     "import_identity_map",
     // Policy `identity.managed_fields` (an avatar K2 owns: client uploads refused).
     "k2_managed_avatar",
     "k2_managed_guard", // `--i-am-k2` and `sew install --managed-by` (the K2-managed guard).
+    // Since 0.10.0: the member-channels sync without `channel_ids` changes only the level.
+    FEATURE_MEMBER_CHANNELS_LEVEL_ONLY,
     // `external_id` on the client `Member` (K2 installs, shared Spaces and DMs).
     crate::api::members::FEATURE_MEMBER_EXTERNAL_ID,
     // Since 0.9.0: the mgmt recording reads, the transcript route and an App's recording feed
@@ -815,6 +830,11 @@ pub const FEATURES: &[&str] = &[
     FEATURE_PRINCIPAL_RELINK,
     // Private Spaces (`Space.private`, `/mgmt/v1/spaces/{space_id}/settings`).
     FEATURE_PRIVATE_SPACES,
+    // Since 0.10.0: `ReadState.unread_count` (unread timeline messages, capped at 99).
+    crate::api::read_state::FEATURE_READ_STATE_UNREAD_COUNT,
+    // Each person's Record and Stop, computed by the server (`recording_controls_updated`,
+    // `Recording.my_controls`, `CallReady.recording_controls`).
+    FEATURE_RECORDING_CONTROLS,
     // Since 0.9.0: rooms that record every call with more than one person (policy
     // `recording.required`, the App, Space and channel `required`, `Channel.recording_rule`).
     FEATURE_RECORDING_REQUIRED,

@@ -128,6 +128,8 @@ pub const CHANNEL_UPDATE: &str = "/api/v1/channels/{id}/update";
 pub const CHANNEL_UNARCHIVE: &str = "/api/v1/channels/{id}/unarchive";
 /// `POST`: join a channel.
 pub const CHANNEL_JOIN: &str = "/api/v1/channels/{id}/join";
+/// `POST` (since 0.10.0): the caller is typing in the channel (op 10 `TYPING` over HTTP).
+pub const CHANNEL_TYPING: &str = "/api/v1/channels/{id}/typing";
 /// `POST`: leave a channel.
 pub const CHANNEL_LEAVE: &str = "/api/v1/channels/{id}/leave";
 /// `GET`: channel members.
@@ -342,6 +344,11 @@ pub const MGMT_CHANNELS_BULK: &str = "/mgmt/v1/channels/bulk";
 pub const MGMT_SPACE_VOICE_STATES: &str = "/mgmt/v1/spaces/{space_id}/voice/states";
 /// `GET`: a Space's voice changes after a cursor (long-poll).
 pub const MGMT_SPACE_VOICE_CHANGES: &str = "/mgmt/v1/spaces/{space_id}/voice/changes";
+/// `POST` (since 0.10.0): add one member to a channel of a governed Space, by external id.
+pub const MGMT_CHANNEL_MEMBERS_ADD: &str = "/mgmt/v1/channels/{channel_id}/members/add";
+/// `POST` (since 0.10.0): remove one member from a channel of a governed Space, by external
+/// id.
+pub const MGMT_CHANNEL_MEMBERS_REMOVE: &str = "/mgmt/v1/channels/{channel_id}/members/remove";
 /// `POST`: close (or reopen) a voice room.
 pub const MGMT_CHANNEL_CLOSING: &str = "/mgmt/v1/channels/{channel_id}/closing";
 /// `POST`: K2 reports the media path (the TURN lane) down or up.
@@ -728,6 +735,9 @@ pub const DEVICES_CRL: &str = "/api/v1/devices/crl";
 pub const CHANNEL_CALL_JOIN: &str = "/api/v1/channels/{id}/call/join";
 /// `POST`: decline the caller's ring (body `CallDeclineRequest`).
 pub const CHANNEL_CALL_DECLINE: &str = "/api/v1/channels/{id}/call/decline";
+/// `POST`: the starter cancels the call before anyone else joined (body `CallCancelRequest`,
+/// flag `call_cancel`).
+pub const CHANNEL_CALL_CANCEL: &str = "/api/v1/channels/{id}/call/cancel";
 /// `POST`: ring members again (body `CallRingRequest`).
 pub const CHANNEL_CALL_RING: &str = "/api/v1/channels/{id}/call/ring";
 /// `GET`: the DM's active call.

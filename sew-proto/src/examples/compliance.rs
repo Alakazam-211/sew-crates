@@ -880,6 +880,7 @@ impl Example for ChannelRecord {
             recording_require_consent: Some(true),
             recording_required: Some(true),
             closing: false,
+            members_can_leave: true,
             source: source(),
         };
         let min = ChannelRecord {
@@ -907,6 +908,7 @@ impl Example for ChannelRecord {
             recording_require_consent: None,
             recording_required: None,
             closing: false,
+            members_can_leave: false,
             source: None,
         };
         // Minor 9: a voice room K2 is closing (never archived as well).

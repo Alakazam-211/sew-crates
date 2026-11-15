@@ -580,11 +580,21 @@ pub struct RecordingInfo {
 /// What the person may do about the call's recording now (plugin 0.6.1): the
 /// `recording_controls` event and the `state` command's `recording_controls`.
 ///
-/// `{"can_record": true, "can_stop": false}`. The plugin works both out from the host's
-/// [`RecordingRights`] (`set_recording_rights`) and what it knows of the call: the state, who
-/// is in the room, the recording and who started it. Both are `false` with no call, while the
-/// join is held for a notice, and until the host gives the rights. They follow Sew's own
-/// checks; Sew still decides, so show its refusal if one comes.
+/// `{"can_record": true, "can_stop": false}`, plus (0.7.0) `"source": "sew"` and
+/// `"record_unavailable"` when they apply.
+///
+/// - **From Sew** (`source: "sew"`): a Sew server that computes each person's Record and Stop
+///   sends them to the call, and the plugin passes them on, still `false` while the call is
+///   not connected or reconnecting (and both `false` until Sew's first value arrives, shortly
+///   after the call connects). The host's [`RecordingRights`] are not used then.
+/// - **From the host's rights** (`source` absent, read as `host`): against a Sew that does not
+///   send them, the plugin works both out from the host's [`RecordingRights`]
+///   (`set_recording_rights`) and what it knows of the call: the state, who is in the room,
+///   the recording and who started it. Both are `false` with no call, while the join is held
+///   for a notice, and until the host gives the rights.
+///
+/// Either way they follow Sew's own checks; Sew still decides, so show its refusal if one
+/// comes.
 ///
 /// Non-exhaustive: later releases add fields without a breaking change.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -600,17 +610,62 @@ pub struct RecordingControls {
     /// nor a session whose pass may not record, and the recording is not a required one with
     /// two or more people in the room.
     pub can_stop: bool,
+    /// From Sew only (0.7.0), while `can_record` is `true`: why a Record would still be
+    /// refused for now, a hint to show beside it: `recording_capacity` (the install runs as
+    /// many recordings as it allows) or `recorder_unavailable` (the recorder does not answer).
+    /// Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_unavailable: Option<sew_call_client::RecordUnavailable>,
+    /// Who decided (0.7.0): `sew` (the server computes them) or `host` (the plugin, from the
+    /// host's rights). Written only as `sew`; absent reads as `host`. While it is `sew`, the
+    /// host need not send `set_recording_rights` for this call.
+    #[serde(default, skip_serializing_if = "ControlsSource::is_host")]
+    pub source: ControlsSource,
 }
 
 impl RecordingControls {
-    /// Neither (the `state` command leaves it out then).
+    /// Neither (both `false`).
     pub fn is_none(&self) -> bool {
         !self.can_record && !self.can_stop
+    }
+
+    /// Nothing to say: neither, no hint, from the host's rights (the `state` command leaves
+    /// `recording_controls` out then).
+    pub fn is_unset(&self) -> bool {
+        self.is_none() && self.record_unavailable.is_none() && self.source.is_host()
+    }
+}
+
+/// Who decided [`RecordingControls`] (0.7.0).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ControlsSource {
+    /// The plugin, from the host's [`RecordingRights`] (a Sew that does not send them).
+    #[default]
+    Host,
+    /// The Sew server, which computes each person's Record and Stop.
+    Sew,
+}
+
+impl ControlsSource {
+    /// `host`.
+    pub fn is_host(&self) -> bool {
+        *self == ControlsSource::Host
+    }
+
+    /// The wire string: `host` or `sew`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ControlsSource::Host => "host",
+            ControlsSource::Sew => "sew",
+        }
     }
 }
 
 /// `set_recording_rights`' arguments (plugin 0.6.1): what the host knows of the person's
-/// rights in the call's room, for [`RecordingControls`].
+/// rights in the call's room, for [`RecordingControls`]. For Sew servers that don't send
+/// recording controls: while the controls' `source` is `sew`, the rights are kept but not used.
 ///
 /// `{"room": "48831765147549698", "my_perms": "8388608", "dm": false,
 /// "recording_enabled": true, "recording_dm_enabled": false, "record_capped": false,
@@ -758,8 +813,8 @@ impl DeviceChoice {
 /// `{"state": "connected", "target": "acme", "room": "48831765147549698"}`. `target` and `room`
 /// are the `join` arguments as given, from `connecting` until the call's `ended` (both absent
 /// while `idle`). After a moderator move (Sew's `voice_server_updated`) `room` is the
-/// destination as Sew names it: the DM call's id when it is a call, else the voice channel's
-/// id (decimal strings); the plugin sends a `state` event with the new `room` (the state may
+/// destination as Sew names it: the channel's id, the voice channel's or, for a DM call, the
+/// DM's (decimal strings); the plugin sends a `state` event with the new `room` (the state may
 /// be unchanged). Both are written only when present, so a reader that refuses unknown fields
 /// and predates them still reads an `idle` state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -832,8 +887,10 @@ pub struct StateSnapshot {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_video: bool,
     /// What the person may do about the recording now (plugin 0.6.1), as the
-    /// `recording_controls` event; absent while both are `false`.
-    #[serde(default, skip_serializing_if = "RecordingControls::is_none")]
+    /// `recording_controls` event; absent while both are `false` with no hint and the source is
+    /// the host's rights (so present, with `source: "sew"`, from the moment Sew's own controls
+    /// apply to the call).
+    #[serde(default, skip_serializing_if = "RecordingControls::is_unset")]
     pub recording_controls: RecordingControls,
 }
 

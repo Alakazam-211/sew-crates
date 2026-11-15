@@ -222,6 +222,11 @@
           "const": "identity.managed_fields",
           "description": "The profile fields K2 owns in K2 mode (a list of [`ManagedProfileField`]).\nUnset: the default (`display_name`, `title`, `pronouns`; members upload their own\navatar). Set over mgmt only; a standalone install ignores it.",
           "type": "string"
+        },
+        {
+          "const": "agents.dm_with_box_people",
+          "description": "Whether a DM or group DM may put an agent with a box person (`k2:owner`,\n`k2:connect:`); off refuses opening one (since 0.10.0).",
+          "type": "string"
         }
       ]
     }

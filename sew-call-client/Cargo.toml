@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-call-client"
-version = "0.6.2"
+version = "0.7.0"
 build = "build.rs"
 include = [
     "src/**",
@@ -173,16 +173,16 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-e2ee]
-version = "0.9.3"
+version = "0.10.0"
 
 [dependencies.sew-lk-compat]
-version = "0.9.3"
+version = "0.10.0"
 
 [dependencies.sew-lkproto]
-version = "0.9.3"
+version = "0.10.0"
 
 [dependencies.sew-proto]
-version = "0.9.3"
+version = "0.10.0"
 
 [dependencies.sha1]
 version = "0.10"
@@ -192,7 +192,7 @@ version = "0.10"
 optional = true
 
 [dependencies.str0m]
-version = "=0.25.1"
+version = "=0.25.2"
 features = ["pii"]
 default-features = false
 package = "sew-str0m"
@@ -226,7 +226,7 @@ version = "1"
 features = ["derive"]
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies.str0m]
-version = "=0.25.1"
+version = "=0.25.2"
 features = [
     "aws-lc-rs",
     "pii",

@@ -185,6 +185,10 @@
       "minimum": 0,
       "type": "integer"
     },
+    "members_can_leave": {
+      "description": "Since 0.10.0: in a governed Space (App- or server-governed), the members of this\nprivate channel may leave it (`POST /channels/{id}/leave`), which they otherwise cannot.\nSet over mgmt only. Absent when `false` (and from older servers).",
+      "type": "boolean"
+    },
     "my_perms": {
       "description": "The viewer's effective permissions here.",
       "pattern": "^(0|[1-9][0-9]{0,19})$",

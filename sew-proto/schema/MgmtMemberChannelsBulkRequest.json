@@ -5,13 +5,16 @@
       "description": "One item of a bulk sync.",
       "properties": {
         "channel_ids": {
-          "description": "As [`MgmtMemberChannelsRequest::channel_ids`].",
+          "description": "As [`MgmtMemberChannelsRequest::channel_ids`] (absent or `null`: the level only).",
           "items": {
             "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
             "pattern": "^[1-9][0-9]{0,18}$",
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "external_id": {
           "description": "The person.",
@@ -26,7 +29,6 @@
       },
       "required": [
         "external_id",
-        "channel_ids",
         "level"
       ],
       "type": "object"

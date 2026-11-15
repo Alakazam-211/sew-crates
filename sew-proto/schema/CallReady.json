@@ -442,6 +442,21 @@
       ],
       "type": "object"
     },
+    "RecordUnavailable": {
+      "description": "Why Record would be refused for now although the person may record: a hint a client\nmay show on a greyed Record. It never changes `can_record`.",
+      "oneOf": [
+        {
+          "const": "recording_capacity",
+          "description": "The install runs as many recordings as it allows.",
+          "type": "string"
+        },
+        {
+          "const": "recorder_unavailable",
+          "description": "The recorder does not answer.",
+          "type": "string"
+        }
+      ]
+    },
     "Recording": {
       "description": "A recording.",
       "properties": {
@@ -518,6 +533,17 @@
           ],
           "description": "The viewer's own consent (self only; absent for non-participants)."
         },
+        "my_controls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingControls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The viewer's own Record and Stop (self only), while the viewer is in the recording's\nroom. Absent from servers that predate it, and for viewers outside the room."
+        },
         "participants": {
           "description": "Members in the room plus members who ever granted, ascending.",
           "items": {
@@ -584,6 +610,42 @@
         "audio_keep_days",
         "max_duration_ms",
         "participants"
+      ],
+      "type": "object"
+    },
+    "RecordingControls": {
+      "description": "A person's Record and Stop in the room they are in, as Sew would take them now\n(`Recording.my_controls`, the call socket's READY). Of two values, the larger `rev` is the\nnewer.",
+      "properties": {
+        "can_record": {
+          "description": "Sew would take this person's Record now (passing conditions aside).",
+          "type": "boolean"
+        },
+        "can_stop": {
+          "description": "Sew would take this person's Stop now.",
+          "type": "boolean"
+        },
+        "record_unavailable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordUnavailable"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "While the person may record: why a start would be refused for now (a hint only)."
+        },
+        "rev": {
+          "default": 0,
+          "description": "A server-wide increasing revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "can_record",
+        "can_stop"
       ],
       "type": "object"
     },
@@ -750,7 +812,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "The `ready` dispatch of a call socket (a socket IDENTIFYed with a `sewcc_` call\ncredential): no Spaces, channels, presence or read states; the socket indexes nothing and\ngets only `call_keys_delivered`, its member's `voice_server_updated`, its call channel's\n`voice_state_updated` and (Sew 0.7.3) its member's own copy of the call channel's\n`recording_updated`.",
+  "description": "The `ready` dispatch of a call socket (a socket IDENTIFYed with a `sewcc_` call\ncredential): no Spaces, channels, presence or read states; the socket indexes nothing and\ngets only `call_keys_delivered`, its member's `voice_server_updated`, its call channel's\n`voice_state_updated`, (Sew 0.7.3) its member's own copy of the call channel's\n`recording_updated` and its member's `recording_controls_updated` for the call channel.",
   "properties": {
     "call_keys": {
       "anyOf": [
@@ -779,6 +841,18 @@
       ],
       "default": null,
       "description": "The call channel's active recording as this member sees it (`my_consent`, and\n`consent_prompt` while the member has not answered), or `null` when none is active\n(Sew 0.7.3). A native client rebuilds its recording state (`Input::Recording`) from it\nafter a new gateway session. Always written, so `null` means none is active; an absent\nfield means a Sew older than 0.7.3."
+    },
+    "recording_controls": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordingControls"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The member's Record and Stop in the call's room, or `null` while the member has no\nconnected voice entry there yet. Always written by a server that computes them, so an\nabsent field means an older server."
     },
     "session_id": {
       "description": "The gateway session id: the call credential's `gateway_session` and RESUME's\n`session_id`.",

@@ -127,6 +127,11 @@
       "description": "Whether this call created it.",
       "type": "boolean"
     },
+    "members_can_leave": {
+      "default": false,
+      "description": "Since 0.10.0: its current `members_can_leave` (a repeat never changes it). Absent from\nan older Sew = `false`.",
+      "type": "boolean"
+    },
     "name": {
       "description": "Its current name (a repeat never changes it).",
       "type": "string"

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Why Record would be refused for now although the person may record: a hint a client\nmay show on a greyed Record. It never changes `can_record`.",
+  "oneOf": [
+    {
+      "const": "recording_capacity",
+      "description": "The install runs as many recordings as it allows.",
+      "type": "string"
+    },
+    {
+      "const": "recorder_unavailable",
+      "description": "The recorder does not answer.",
+      "type": "string"
+    }
+  ],
+  "title": "RecordUnavailable"
+}

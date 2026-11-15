@@ -23,6 +23,17 @@
 //! fake leaves them `false`; [`FakeCall::add_remote`] and [`FakeCall::remove_remote`] change
 //! the room's headcount.
 //!
+//! **Server mode** (Record and Stop computed by Sew): by default the fake is an older Sew that
+//! sends none, so the plugin works the buttons out from the host's rights. With
+//! [`FakeEngine::set_server_controls`] each new call starts as a call to a Sew that computes
+//! them, before its first value ([`CallHandle::server_controls`] is true,
+//! [`CallHandle::recording_controls`] `None`: the call socket's READY with
+//! `recording_controls: null`). [`FakeCall::set_server_controls`] then sends a value (or
+//! `None`) as Sew's `recording_controls_updated` reaches the real engine, and turns server mode
+//! on for that call if it was not. A [`FakeCall::move_to`] in server mode clears the value
+//! (the `RecordingControls(None)` event after `Moved`), as the real engine does until the
+//! destination's first value.
+//!
 //! Video: off until [`FakeEngine::enable_video`] (then the demo cameras and capabilities). A
 //! call's frame channel is fed with [`FakeCall::push_video`]; its tracks, camera and policy are
 //! set with [`FakeCall::set_video_tracks`], [`FakeCall::set_local_video`] and
@@ -48,7 +59,7 @@ use crate::details::{IncomingCall, QualityInfo, RosterEntry, SecurityInfo};
 use crate::engine::{
     AppScene, AudioSessionEvent, BoxFuture, CallEvent, CallHandle, CallSnapshot, ConsentRequired,
     EngineError, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RecordingControl,
-    VideoSnapshot, VoiceEngine,
+    ServerControls, VideoSnapshot, VoiceEngine,
 };
 use crate::listener::VoiceListener;
 use crate::service::EventSink;
@@ -161,6 +172,8 @@ struct EngineState {
     stranded: bool,
     /// How many times [`VoiceEngine::release_calls`] ran.
     releases: usize,
+    /// New calls are to a Sew that computes Record and Stop ([`FakeEngine::set_server_controls`]).
+    server_controls: bool,
 }
 
 impl Default for FakeEngine {
@@ -186,6 +199,7 @@ impl FakeEngine {
                 next_forget_error: None,
                 stranded: false,
                 releases: 0,
+                server_controls: false,
             }),
             devices_tx,
             video: Mutex::new(FakeVideoEngine::default()),
@@ -318,6 +332,12 @@ impl FakeEngine {
         let e = FakeEngine::new();
         lock(&e.state).devices = demo_devices();
         e
+    }
+
+    /// When true, every new call is to a Sew that computes the person's Record and Stop (server
+    /// mode, no value yet); when false (the default), to an older Sew that sends none.
+    pub fn set_server_controls(&self, on: bool) {
+        lock(&self.state).server_controls = on;
     }
 
     /// When false, a joined call stays `connecting` until [`FakeCall::connect`].
@@ -472,7 +492,7 @@ impl VoiceEngine for FakeEngine {
         req: JoinRequest,
     ) -> BoxFuture<'_, Result<Arc<dyn CallHandle>, EngineError>> {
         Box::pin(async move {
-            let (fail, auto_connect) = {
+            let (fail, auto_connect, server_controls) = {
                 let mut s = lock(&self.state);
                 s.joins.push(req.clone());
                 let fail = if s.stranded {
@@ -480,7 +500,7 @@ impl VoiceEngine for FakeEngine {
                 } else {
                     s.next_join_error.take()
                 };
-                (fail, s.auto_connect)
+                (fail, s.auto_connect, s.server_controls)
             };
             if let Some(e) = fail {
                 return Err(e);
@@ -494,6 +514,7 @@ impl VoiceEngine for FakeEngine {
                 }
                 Err(e) => return Err(EngineError::Provider(e)),
             };
+            lock(&call.state).server_controls = server_controls;
             lock(&self.state).calls.push(Arc::clone(&call));
             let handle: Arc<dyn CallHandle> = call;
             Ok(handle)
@@ -1051,6 +1072,10 @@ struct CallFake {
     security: Option<SecurityInfo>,
     roster: Vec<RosterEntry>,
     quality: QualityInfo,
+    /// Server mode: the call's Sew computes Record and Stop.
+    server_controls: bool,
+    /// Its latest value for the call's room.
+    recording_controls: Option<ServerControls>,
 }
 
 fn me_of(answer: &JoinAnswer, req: &JoinRequest) -> Participant {
@@ -1137,6 +1162,8 @@ impl FakeCall {
                 security: None,
                 roster: Vec::new(),
                 quality: QualityInfo::unknown(),
+                server_controls: false,
+                recording_controls: None,
             }),
             held: Mutex::new(Some(Held {
                 provider,
@@ -1188,6 +1215,8 @@ impl FakeCall {
                 security: None,
                 roster: Vec::new(),
                 quality: QualityInfo::unknown(),
+                server_controls: false,
+                recording_controls: None,
             }),
         }
     }
@@ -1583,10 +1612,31 @@ impl FakeCall {
     }
 
     /// A moderator move to `room` (Sew's `voice_server_updated`, as the real engine passes it
-    /// on: the DM call's id or the voice channel's id). Sends [`CallEvent::Moved`].
+    /// on: the voice channel's id, or the DM's for a DM call). Sends [`CallEvent::Moved`]; in server
+    /// mode with a value, then `RecordingControls(None)` (the source room's no longer apply).
     pub fn move_to(&self, room: &str) {
-        lock(&self.state).moved_room = Some(room.to_owned());
+        let cleared = {
+            let mut s = lock(&self.state);
+            s.moved_room = Some(room.to_owned());
+            s.recording_controls.take().is_some()
+        };
         let _ = self.tx.send(CallEvent::Moved { room: room.into() });
+        if cleared {
+            let _ = self.tx.send(CallEvent::RecordingControls(None));
+        }
+    }
+
+    /// Sew's Record and Stop for the call's room, as the real engine passes on a server that
+    /// computes them (`None`: none for the room yet): server mode on for this call, the value
+    /// kept for [`CallHandle::recording_controls`] and sent as
+    /// [`CallEvent::RecordingControls`].
+    pub fn set_server_controls(&self, value: Option<ServerControls>) {
+        {
+            let mut s = lock(&self.state);
+            s.server_controls = true;
+            s.recording_controls = value;
+        }
+        let _ = self.tx.send(CallEvent::RecordingControls(value));
     }
 
     /// A move the plugin is not told of (to test a missed event; [`CallHandle::moved_room`]
@@ -1624,6 +1674,14 @@ impl FakeCall {
 impl CallHandle for FakeCall {
     fn call_id(&self) -> String {
         lock(&self.call_id).clone()
+    }
+
+    fn server_controls(&self) -> bool {
+        lock(&self.state).server_controls
+    }
+
+    fn recording_controls(&self) -> Option<ServerControls> {
+        lock(&self.state).recording_controls
     }
 
     fn consent(

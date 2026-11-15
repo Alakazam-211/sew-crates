@@ -148,6 +148,11 @@
           "const": "perms_lost",
           "description": "Nobody left who may connect.",
           "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The starter cancelled the call before anyone else joined (flag `call_cancel`).",
+          "type": "string"
         }
       ]
     },
@@ -1580,6 +1585,13 @@
         "unread": {
           "description": "Whether a message by someone else is past the cursor.",
           "type": "boolean"
+        },
+        "unread_count": {
+          "default": 0,
+          "description": "Since 0.10.0: how many timeline messages are past the cursor (the messages behind\n`unread`: top-level ones and replies also sent to the channel, live, that the member can\nread), capped at [`UNREAD_COUNT_CAP`]: `99` means 99 or more. `0` when `unread` is false.\nOlder servers leave it out (read as `0`; use `unread`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -1709,8 +1721,7 @@
           ]
         },
         "has_guests": {
-          "default": false,
-          "description": "At least one guest is a member. Old payloads read as `false`.",
+          "description": "At least one guest is a member. Old payloads read as `false`; since 0.10.0 it is left\nout when `false` (READY stays within its size bound with `ReadState.unread_count`).",
           "type": "boolean"
         },
         "head_seq": {
@@ -1731,6 +1742,10 @@
             "string",
             "null"
           ]
+        },
+        "members_can_leave": {
+          "description": "Since 0.10.0: `Channel.members_can_leave` (absent when `false`).",
+          "type": "boolean"
         },
         "my_perms": {
           "description": "The member's effective permissions.",
@@ -1869,6 +1884,10 @@
             "string",
             "null"
           ]
+        },
+        "recording_controls": {
+          "description": "The server computes each person's Record and Stop (`recording_controls_updated`,\n`Recording.my_controls`): a client takes them from there rather than working them out.\nAbsent means `false` (an older server).",
+          "type": "boolean"
         },
         "sync_epoch": {
           "default": "",
@@ -2110,6 +2129,21 @@
       ],
       "type": "object"
     },
+    "RecordUnavailable": {
+      "description": "Why Record would be refused for now although the person may record: a hint a client\nmay show on a greyed Record. It never changes `can_record`.",
+      "oneOf": [
+        {
+          "const": "recording_capacity",
+          "description": "The install runs as many recordings as it allows.",
+          "type": "string"
+        },
+        {
+          "const": "recorder_unavailable",
+          "description": "The recorder does not answer.",
+          "type": "string"
+        }
+      ]
+    },
     "Recording": {
       "description": "A recording.",
       "properties": {
@@ -2186,6 +2220,17 @@
           ],
           "description": "The viewer's own consent (self only; absent for non-participants)."
         },
+        "my_controls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordingControls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The viewer's own Record and Stop (self only), while the viewer is in the recording's\nroom. Absent from servers that predate it, and for viewers outside the room."
+        },
         "participants": {
           "description": "Members in the room plus members who ever granted, ascending.",
           "items": {
@@ -2252,6 +2297,42 @@
         "audio_keep_days",
         "max_duration_ms",
         "participants"
+      ],
+      "type": "object"
+    },
+    "RecordingControls": {
+      "description": "A person's Record and Stop in the room they are in, as Sew would take them now\n(`Recording.my_controls`, the call socket's READY). Of two values, the larger `rev` is the\nnewer.",
+      "properties": {
+        "can_record": {
+          "description": "Sew would take this person's Record now (passing conditions aside).",
+          "type": "boolean"
+        },
+        "can_stop": {
+          "description": "Sew would take this person's Stop now.",
+          "type": "boolean"
+        },
+        "record_unavailable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordUnavailable"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "While the person may record: why a start would be refused for now (a hint only)."
+        },
+        "rev": {
+          "default": 0,
+          "description": "A server-wide increasing revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "can_record",
+        "can_stop"
       ],
       "type": "object"
     },
@@ -2387,6 +2468,11 @@
         {
           "const": "missed",
           "description": "Not answered in time, or the call ended first.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The starter cancelled the call before anyone else joined (flag `call_cancel`); not\na missed call.",
           "type": "string"
         }
       ]

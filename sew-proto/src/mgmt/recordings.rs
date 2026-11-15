@@ -51,6 +51,10 @@ pub const FEATURE_VOICE_RECORD_CAP: &str = "voice_record_cap";
 pub const FEATURE_RECORDING_REQUIRED: &str = "recording_required";
 /// The mgmt recording reads, the transcript route and an App's recording feed.
 pub const FEATURE_MGMT_RECORDING_READS: &str = "mgmt_recording_reads";
+/// The server computes each person's Record and Stop (`recording_controls_updated`,
+/// `Recording.my_controls`, `CallReady.recording_controls`, READY's
+/// `install.recording_controls`).
+pub const FEATURE_RECORDING_CONTROLS: &str = "recording_controls";
 
 /// How long an App's recording feed keeps an event, in days.
 pub const RECORDING_EVENTS_KEEP_DAYS: u32 = 7;

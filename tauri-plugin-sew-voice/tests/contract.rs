@@ -590,6 +590,54 @@ fn fixture_recording_rights_round_trip() {
     assert!(none.recording_controls.is_none());
 }
 
+/// Plugin 0.7.0: the controls a Sew server computes, as the fixture writes them: `source:
+/// "sew"` and the `record_unavailable` hint; `source` absent reads as the host's, and the
+/// `state` command writes the controls whenever they are Sew's.
+#[test]
+fn fixture_recording_controls_from_sew_round_trip() {
+    use tauri_plugin_sew_voice::ControlsSource;
+    use tauri_plugin_sew_voice::sew_call_client::RecordUnavailable;
+    let f = fixture();
+    let r = &f["recording"]["controls"]["from_sew"];
+    assert_eq!(r["event"], json!("sew-voice://recording_controls"));
+    for (k, want, hint) in [
+        ("neither", (false, false), None),
+        ("may_record", (true, false), None),
+        ("may_stop", (false, true), None),
+        (
+            "hinted",
+            (true, false),
+            Some(RecordUnavailable::RecordingCapacity),
+        ),
+    ] {
+        let c: RecordingControls = serde_json::from_value(r[k].clone()).expect(k);
+        exact(&c, r[k].clone());
+        assert_eq!((c.can_record, c.can_stop), want, "{k}");
+        assert_eq!(c.source, ControlsSource::Sew, "{k}");
+        assert_eq!(c.record_unavailable, hint, "{k}");
+        assert!(!c.is_unset(), "{k}: Sew's are always said");
+        assert_eq!(PluginEvent::RecordingControls(c).payload(), r[k]);
+    }
+    // `source: "host"` reads as the host's and is not written; the host's fixture payloads
+    // (no `source`) are the host's.
+    let host: RecordingControls =
+        serde_json::from_value(json!({"can_record": true, "can_stop": false, "source": "host"}))
+            .expect("host");
+    assert_eq!(host.source, ControlsSource::Host);
+    assert_eq!(
+        serde_json::to_value(host).expect("json"),
+        f["recording"]["controls"]["rights"]["may_record"]
+    );
+    assert_eq!(ControlsSource::Sew.as_str(), "sew");
+    assert_eq!(ControlsSource::Host.as_str(), "host");
+    refused::<RecordingControls>(json!({"can_record": true, "can_stop": false, "source": "x"}));
+    // The `state` command before Sew's first value: present, neither, Sew's.
+    let s: StateSnapshot = serde_json::from_value(r["state_snapshot"].clone()).expect("snapshot");
+    assert!(s.recording_controls.is_none());
+    assert_eq!(s.recording_controls.source, ControlsSource::Sew);
+    assert_eq!(serde_json::to_value(&s).expect("json"), r["state_snapshot"]);
+}
+
 /// A notice that changed before the answer reached Sew: the command error carries Sew's
 /// refusal details for the app to show the new notice.
 #[test]
@@ -910,6 +958,102 @@ fn provider_http_shapes() {
             }
             other => panic!("{bad}: {other:?}"),
         }
+    }
+}
+
+/// A DM call join's answer as Sew writes it (`CallJoinResponse`): `{call, created, voice,
+/// recording?}`, the voice answer with its call credential under `voice`.
+fn call_join_answer() -> Value {
+    json!({
+        "call": {
+            "id": "48831765147549720",
+            "channel_id": "48831765147549711",
+            "message_id": "48831765147549721",
+            "started_by": "48831765147549699",
+            "started_at": "2026-11-02T12:00:00.000Z",
+            "state": "active",
+            "participant_ids": ["48831765147549699"],
+            "rings": [{"member_id": "48831765147549700", "state": "ringing",
+                       "expires_at": "2026-11-02T12:00:45.000Z"}],
+            "my_ring": null
+        },
+        "created": true,
+        "voice": {
+            "url": "wss://voice.sew.invalid",
+            "token": "fake-media-token",
+            "expires_at": "2026-11-02T12:02:00.000Z",
+            "room": "r_fakeroomfakeroomfakeroomfa",
+            "call_id": "48831765147549720",
+            "state": {
+                "member_id": "48831765147549699",
+                "channel_id": "48831765147549711",
+                "connection": "connecting",
+                "secure": false,
+                "self_mute": false,
+                "self_deaf": false,
+                "server_deaf": false,
+                "server_mute": false,
+                "speak_denied": false,
+                "joined_at": "2026-11-02T12:00:00.000Z",
+                "call_id": "48831765147549720"
+            },
+            "call_credential": {
+                "token": "sewcc_sel.secret",
+                "expires_at": "2026-11-02T12:10:00Z",
+                "join_id": "0123456789abcdef0123456789abcdef",
+                "device_scope": "fedcba9876543210fedcba9876543210"
+            }
+        }
+    })
+}
+
+#[test]
+fn a_dm_call_join_answer_passes_through_unchanged() {
+    use tauri_plugin_sew_voice::JoinAnswer;
+    let answer = call_join_answer();
+    // A provider that calls Sew's `call/join` itself hands the body over as it came.
+    let base = url::Url::parse("https://example.com/_k2/voice/sew/").expect("url");
+    let direct = JoinAnswer::from_json(&serde_json::to_vec(&answer).expect("json"), base)
+        .expect("a call/join answer parses");
+    // An App server route returns it as `join`, unchanged.
+    let routed = app_server_answer(
+        &serde_json::to_vec(
+            &json!({"join": answer, "api_base": "https://example.com/_k2/voice/sew/"}),
+        )
+        .expect("json"),
+    )
+    .expect("the route's answer parses");
+    for a in [&direct, &routed] {
+        assert_eq!(a.api_base.as_str(), "https://example.com/_k2/voice/sew/");
+        assert_eq!(a.join.room.as_str(), "r_fakeroomfakeroomfakeroomfa");
+        assert_eq!(a.join.token, "fake-media-token");
+        assert_eq!(
+            a.join.call_id.map(|c| c.to_string()).as_deref(),
+            Some("48831765147549720")
+        );
+        let cred = a.call_credential().expect("call_credential from voice");
+        assert_eq!(cred.join_id, "0123456789abcdef0123456789abcdef");
+        let call = a.dm_call().expect("the DM call");
+        assert_eq!(call.call_id.to_string(), "48831765147549720");
+        // The DM is the room the host joins (and re-joins) with, as `call/join` takes it.
+        assert_eq!(call.channel_id.to_string(), "48831765147549711");
+        assert_eq!(a.join.state.channel_id, call.channel_id);
+        assert_eq!(call.started_by.to_string(), "48831765147549699");
+        assert!(call.created);
+    }
+    // A broken call/join answer fails without quoting it (it carries tokens).
+    let mut bad = call_join_answer();
+    bad["call"]["channel_id"] = json!(42);
+    match app_server_answer(
+        &serde_json::to_vec(&json!({"join": bad, "api_base": "https://x.invalid/"})).expect("json"),
+    ) {
+        Err(ProviderError::Other(s)) => {
+            assert!(
+                !s.contains("sewcc_") && !s.contains("fake-media-token"),
+                "{s}"
+            )
+        }
+        other => panic!("{other:?}"),
     }
 }
 

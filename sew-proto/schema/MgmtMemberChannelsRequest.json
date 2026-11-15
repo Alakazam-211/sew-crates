@@ -33,13 +33,16 @@
       ]
     },
     "channel_ids": {
-      "description": "The person's full list of private channels in the Space, 0–5,000 distinct ids. Public\nchannels are open to every member and are not listed (a listed one comes back in\n`unknown_channel_ids`).",
+      "description": "The person's full list of private channels in the Space, 0–5,000 distinct ids. Public\nchannels are open to every member and are not listed (a listed one comes back in\n`unknown_channel_ids`). `[]` takes the person out of every private channel. Since\n0.10.0, absent or `null` changes only `level` and leaves the person's private channels\nas they are (no adds, no removals).",
       "items": {
         "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
         "pattern": "^[1-9][0-9]{0,18}$",
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "level": {
       "$ref": "#/$defs/SpaceLevel",
@@ -47,7 +50,6 @@
     }
   },
   "required": [
-    "channel_ids",
     "level"
   ],
   "title": "MgmtMemberChannelsRequest",

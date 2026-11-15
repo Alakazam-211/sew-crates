@@ -51,7 +51,7 @@ use crate::api;
 use crate::call::{
     BusyGuard, CallCounters, CallError, CallErrorEvent, CallEvent, CallMoved, CallRecording,
     CallSecurity, CallSnapshot, CallState, Cmd, EndReason, OpusFrame, Participant, RecvItem,
-    RecvOpus, Speaking,
+    RecvOpus, ServerControls, Speaking,
 };
 use crate::config::ClientConfig;
 use crate::e2ee::{
@@ -71,7 +71,7 @@ use crate::video::publish::{Ctx as VideoCtx, LeaseApi, Publisher, VideoStep};
 use crate::video::subscribe::{Out as VideoOut, Subscriptions};
 use sew_proto::e2ee::ConsentState;
 use sew_proto::id::Id;
-use sew_proto::recording::{Recording, RecordingNotice, RecordingRef};
+use sew_proto::recording::{Recording, RecordingControls, RecordingNotice, RecordingRef};
 
 /// First retry delay.
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
@@ -404,6 +404,35 @@ async fn hold(p: &mut Parts, first: ConsentRequired) -> Option<JoinAnswer> {
             }
         }
     }
+}
+
+/// A word from Sew on the person's Record and Stop, into the call's snapshot: any word says
+/// the server computes them; a value for the call's room (`here`) replaces the held one unless
+/// its `rev` is older or it says the same. `Some(value)` when the host should hear of it (a new
+/// value, or the server's first word), with the value now.
+pub(crate) fn merge_controls(
+    s: &mut CallSnapshot,
+    here: bool,
+    controls: Option<&RecordingControls>,
+) -> Option<Option<ServerControls>> {
+    let first = !s.server_controls;
+    s.server_controls = true;
+    let next = controls.filter(|_| here).map(ServerControls::from_sew);
+    let newer = match (next, s.recording_controls) {
+        (Some(n), Some(cur)) => n.rev >= cur.rev && n != cur,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if newer {
+        s.recording_controls = next;
+    }
+    (newer || first).then_some(s.recording_controls)
+}
+
+/// The call moved to another room: the held Record and Stop no longer apply. True when there
+/// was a value (the host hears `None`).
+pub(crate) fn clear_controls_in(s: &mut CallSnapshot) -> bool {
+    s.recording_controls.take().is_some()
 }
 
 /// The held state and the notice of a join held from the start, in the snapshot (no event:
@@ -1351,6 +1380,13 @@ impl Engine {
     /// recording of another room is not this call's; a stopped one clears the call's only if
     /// it is the call's. Fed to the keys and shown to the host when it changed.
     fn apply_recording(&mut self, rec: Option<Recording>) {
+        // The person's own Record and Stop it carries (a server that computes them).
+        if let Some(r) = &rec
+            && let Some(c) = &r.my_controls
+            && r.channel_id == self.channel
+        {
+            self.apply_controls(Some(r.channel_id), Some(c.clone()));
+        }
         let next = match rec {
             Some(r) if r.channel_id != self.channel => return,
             Some(r) if !r.state.is_active() => match &self.recording {
@@ -1376,6 +1412,34 @@ impl Engine {
         self.recording = next;
         self.feed_recording();
         self.sync_recording_view();
+    }
+
+    /// Sew's word on the person's Record and Stop (a server that computes them):
+    /// `channel_id` `None` is the call's own room (the call socket's READY). A value for the
+    /// call's channel replaces the one held when its `rev` is not older; any word at all says
+    /// the server computes them ([`crate::Call::server_controls`]). The host hears of a new
+    /// value, and of the server's first word.
+    fn apply_controls(&mut self, channel_id: Option<Id>, controls: Option<RecordingControls>) {
+        let here = channel_id.is_none_or(|c| c == self.channel);
+        let changed = match self.shared.snapshot.lock() {
+            Ok(mut s) => merge_controls(&mut s, here, controls.as_ref()),
+            Err(_) => None,
+        };
+        if let Some(value) = changed {
+            let _ = self.shared.events.send(CallEvent::RecordingControls(value));
+        }
+    }
+
+    /// The call is in another room now (a move, a re-join elsewhere): the source room's
+    /// Record and Stop no longer apply until the destination's arrive.
+    fn clear_controls(&mut self) {
+        let cleared = match self.shared.snapshot.lock() {
+            Ok(mut s) => clear_controls_in(&mut s),
+            Err(_) => false,
+        };
+        if cleared {
+            let _ = self.shared.events.send(CallEvent::RecordingControls(None));
+        }
     }
 
     /// The keys get the call's recording state (Sew's; `pending` until Sew says otherwise).
@@ -1724,7 +1788,10 @@ impl Engine {
                 }
                 let _ = self.shared.events.send(CallEvent::Moved(moved));
                 // The destination's recording (`pending` for the moved member), or none.
-                self.channel = u.channel_id;
+                if self.channel != u.channel_id {
+                    self.channel = u.channel_id;
+                    self.clear_controls();
+                }
                 self.apply_recording(u.recording.clone());
                 self.answer.join.url = u.url;
                 self.answer.join.token = u.token;
@@ -1779,6 +1846,10 @@ impl Engine {
                 self.keys_removed(Instant::now(), &reason);
             }
             E2eeEvent::Recording(r) => self.apply_recording(r.map(|b| *b)),
+            E2eeEvent::RecordingControls {
+                channel_id,
+                controls,
+            } => self.apply_controls(channel_id, controls),
             E2eeEvent::Security(sec) => self.apply_security(sec),
             E2eeEvent::MediaPolicy(m) => self.policy_updated(*m),
         }
@@ -2473,7 +2544,10 @@ impl Engine {
                 self.cred_tx.send_replace(answer.call_credential().cloned());
                 self.self_member = answer.join.state.member_id.to_string();
                 self.joined_speak_denied = answer.join.state.speak_denied;
-                self.channel = answer.join.state.channel_id;
+                if self.channel != answer.join.state.channel_id {
+                    self.channel = answer.join.state.channel_id;
+                    self.clear_controls();
+                }
                 let rec = answer.join.recording.clone();
                 self.answer = answer;
                 if let Ok(mut m) = self.shared.policy.lock() {
@@ -3504,6 +3578,119 @@ mod tests {
     #![allow(clippy::expect_used)]
     use super::*;
 
+    fn controls(can_record: bool, can_stop: bool, rev: u64) -> RecordingControls {
+        let mut c = RecordingControls::new(can_record, can_stop);
+        c.rev = rev;
+        c
+    }
+
+    /// An older Sew: its call socket's READY has no `recording_controls` and its recordings no
+    /// `my_controls`, so the engine is never told any: the call stays without server controls
+    /// (the host works Record and Stop out itself).
+    #[test]
+    fn an_older_server_sends_no_controls() {
+        let recording = serde_json::json!({
+            "id": "77", "channel_id": "2002", "state": "recording", "started_by": "1001",
+            "started_at": "2026-11-04T10:00:00Z", "auto": false, "message_id": "88",
+            "mixed": false, "audio_keep_days": 30, "max_duration_ms": 14400000,
+            "participants": [], "my_consent": "granted", "trigger": "manual"
+        });
+        let ready = serde_json::json!({
+            "v": 1, "session_id": "gw_1", "user": {"id": "42"}, "install_id": "9001",
+            "recording": recording
+        });
+        let info = crate::gateway::parse_ready(&ready).unwrap();
+        assert_eq!(info.recording_controls, None, "no word from READY");
+        let rec = info.recording.unwrap().unwrap();
+        assert_eq!(rec.my_controls, None, "no word in the recording");
+        assert_eq!(CallRecording::from_sew(&rec).my_controls, None);
+        let s = CallSnapshot::default();
+        assert!(!s.server_controls);
+        assert_eq!(s.recording_controls, None);
+        // Its recording_updated reads the same way.
+        let ev = crate::gateway::filter_dispatch(
+            "recording_updated",
+            &serde_json::json!({ "recording": recording_json_without_controls() }),
+        );
+        match ev {
+            Some(crate::gateway::SocketEvent::RecordingUpdated(r)) => {
+                assert_eq!(r.my_controls, None);
+            }
+            other => panic!("recording_updated: {other:?}"),
+        }
+    }
+
+    fn recording_json_without_controls() -> serde_json::Value {
+        serde_json::json!({
+            "id": "77", "channel_id": "2002", "state": "recording", "started_by": "1001",
+            "started_at": "2026-11-04T10:00:00Z", "auto": false, "message_id": "88",
+            "mixed": false, "audio_keep_days": 30, "max_duration_ms": 14400000,
+            "participants": []
+        })
+    }
+
+    /// A server that computes them: READY's `null` turns server controls on with no value
+    /// (the host hears `None` once); values follow by `rev`; another room's value only says
+    /// the server sends them; a move clears the value.
+    #[test]
+    fn server_controls_keep_the_newest_for_the_call_room() {
+        let mut s = CallSnapshot::default();
+        assert_eq!(merge_controls(&mut s, true, None), Some(None));
+        assert!(s.server_controls);
+        // Nothing new: nothing to tell.
+        assert_eq!(merge_controls(&mut s, true, None), None);
+        let v = merge_controls(&mut s, true, Some(&controls(true, false, 10)))
+            .unwrap()
+            .unwrap();
+        assert_eq!((v.can_record, v.can_stop, v.rev), (true, false, 10));
+        // The same value again (a recording's `my_controls` beside the event): nothing.
+        assert_eq!(
+            merge_controls(&mut s, true, Some(&controls(true, false, 10))),
+            None
+        );
+        // An older value loses to the newer one.
+        assert_eq!(
+            merge_controls(&mut s, true, Some(&controls(false, true, 9))),
+            None
+        );
+        assert_eq!(s.recording_controls.unwrap().rev, 10);
+        // Another room's value is not this call's.
+        assert_eq!(
+            merge_controls(&mut s, false, Some(&controls(false, true, 11))),
+            None
+        );
+        assert_eq!(s.recording_controls.unwrap().rev, 10);
+        // A newer one with the hint.
+        let mut hinted = controls(true, false, 12);
+        hinted.record_unavailable =
+            Some(sew_proto::recording::RecordUnavailable::RecorderUnavailable);
+        let v = merge_controls(&mut s, true, Some(&hinted))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            v.record_unavailable,
+            Some(sew_proto::recording::RecordUnavailable::RecorderUnavailable)
+        );
+        // A move: cleared once, then the destination's first value is taken whatever its rev.
+        assert!(clear_controls_in(&mut s));
+        assert!(!clear_controls_in(&mut s));
+        assert!(s.server_controls, "the server still sends them");
+        let v = merge_controls(&mut s, true, Some(&controls(false, false, 13)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(v.rev, 13);
+        // The snapshot carries both, for a late subscriber.
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["server_controls"], serde_json::json!(true));
+        assert_eq!(json["recording_controls"]["rev"], serde_json::json!(13));
+        assert!(
+            serde_json::to_value(CallSnapshot::default())
+                .unwrap()
+                .get("server_controls")
+                .is_none()
+        );
+    }
+
     #[test]
     fn levels() {
         assert_eq!(rfc6464(0.0), 0);
@@ -3561,11 +3748,14 @@ mod tests {
         assert_eq!(m.call_id, None);
         assert_eq!(m.media_room, "r_bbbbbbbbbbbbbbbbbbbbbbbbbb");
         assert_eq!(m.room(), "48831765147549710");
-        // Into a DM call: the call's id is the room.
+        // Into a DM call: the DM is the room (`call/join` takes the DM), the call is kept.
+        v["channel_id"] = serde_json::json!("48831765147549712");
         v["call_id"] = serde_json::json!("48831765147549711");
         let u: sew_proto::voice::VoiceServerUpdated =
             serde_json::from_value(v).expect("voice_server_updated");
-        assert_eq!(CallMoved::from_update(&u).room(), "48831765147549711");
+        let m = CallMoved::from_update(&u);
+        assert_eq!(m.room(), "48831765147549712");
+        assert_eq!(m.call_id.as_deref(), Some("48831765147549711"));
     }
 
     #[test]

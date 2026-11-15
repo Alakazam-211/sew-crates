@@ -37,6 +37,12 @@
 //! in the `recording_controls` event ([`RecordingControls`]) and the `recording` event's
 //! `can_record` and `can_stop`, and updates them as the call changes.
 //!
+//! **Record and Stop from Sew (0.7.0).** A Sew server that computes each person's Record and
+//! Stop sends them to the call; the plugin then passes them on in the same events, with
+//! `source: "sew"` ([`ControlsSource`]) and Sew's `record_unavailable` hint, and the host's
+//! rights are not used. `set_recording_rights` stays for Sew servers that don't send recording
+//! controls.
+//!
 //! **Phones (0.3.0).** A CallKit or Telecom shim registers a [`VoiceListener`]
 //! (`Builder::listener`), which sees the call whether or not a webview is awake, and acts
 //! through [`VoiceControl`] (Tauri state): join, leave, mute, consent, the snapshot on wake,
@@ -88,9 +94,9 @@ pub use details::{
 };
 pub use engine::{
     AnswerError, AppScene, AudioSessionEvent, BoxFuture, CONSENT_UNSUPPORTED, CallCredential,
-    CallEvent, CallHandle, CallSnapshot, ConsentAnswer, ConsentRequired, EngineError, JoinAnswer,
-    JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED, RecordingControl,
-    RecordingRequest, RejoinReason, VideoSnapshot, VoiceEngine, app_server_answer,
+    CallEvent, CallHandle, CallSnapshot, ConsentAnswer, ConsentRequired, DmCall, EngineError,
+    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED, RecordingControl,
+    RecordingRequest, RejoinReason, ServerControls, VideoSnapshot, VoiceEngine, app_server_answer,
 };
 pub use listener::{VoiceControl, VoiceListener};
 #[cfg(feature = "tauri")]
@@ -119,9 +125,9 @@ pub use video::{
     TrackSettings, VideoFrames, VideoRecvItem,
 };
 pub use wire::{
-    CallState, ConsentArgs, ConsentPrompt, DEFAULT_DEVICE, Device, DeviceChoice, DeviceKeyInfo,
-    DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs, JoinOptions, JoinResult, MuteArgs,
-    Participant, PluginEvent, RecordingControls, RecordingInfo, RecordingParticipant,
+    CallState, ConsentArgs, ConsentPrompt, ControlsSource, DEFAULT_DEVICE, Device, DeviceChoice,
+    DeviceKeyInfo, DeviceList, ErrorInfo, ForgetServerArgs, JoinArgs, JoinOptions, JoinResult,
+    MuteArgs, Participant, PluginEvent, RecordingControls, RecordingInfo, RecordingParticipant,
     RecordingRights, SelfMute, SetDeviceArgs, Speaking, StateEvent, StateSnapshot,
 };
 pub use wire::{

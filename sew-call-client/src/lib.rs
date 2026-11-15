@@ -58,7 +58,8 @@ pub use audio::{
 pub use call::{
     Call, CallClient, CallCounters, CallError, CallErrorEvent, CallEvent, CallLeaver, CallMoved,
     CallRecording, CallSecurity, CallSnapshot, CallState, EndReason, FrameSender, FrameStream,
-    OpusFrame, Participant, RecordingConsent, RecordingMember, RecvItem, RecvOpus, Speaking,
+    OpusFrame, Participant, RecordingConsent, RecordingMember, RecvItem, RecvOpus, ServerControls,
+    Speaking,
 };
 #[cfg(feature = "testing")]
 pub use config::TestingOverrides;
@@ -71,15 +72,15 @@ pub use kessel_audio;
 pub use kessel_video;
 pub use provider::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
-    JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED, RecordingControl,
-    RecordingRequest, RejoinReason,
+    DmCall, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED,
+    RecordingControl, RecordingRequest, RejoinReason,
 };
 /// rustls, re-exported for hosts that pass their own crypto provider
 /// ([`ClientConfig::with_crypto_provider`]).
 pub use rustls;
 /// Sew's recording types the engine's recording API carries (from `sew-proto`).
 pub use sew_proto::recording::{
-    ConsentPrompt, Recording, RecordingNotice, RecordingRef, RecordingTrigger,
+    ConsentPrompt, RecordUnavailable, Recording, RecordingNotice, RecordingRef, RecordingTrigger,
 };
 pub use stats::{
     BeaconOutcome, BeforeFirstWindow, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals,

@@ -1575,3 +1575,294 @@ async fn recording_rights_are_per_room_and_may_come_first() {
         .expect_err("not a number");
     assert_eq!(e.code, "invalid_args");
 }
+
+/// Sew's value as the engine passes it on.
+fn sew_value(can_record: bool, can_stop: bool) -> tauri_plugin_sew_voice::ServerControls {
+    tauri_plugin_sew_voice::ServerControls::new(can_record, can_stop)
+}
+
+/// A Sew that sends no recording controls (older than the servers that compute them): the
+/// plugin decides from the host's rights, `source` is the host's (absent on the wire), and the
+/// engine never says otherwise.
+#[tokio::test]
+async fn an_older_server_leaves_the_controls_to_the_host_rights() {
+    use tauri_plugin_sew_voice::{CallHandle as _, ControlsSource};
+    let r = rights_fixture();
+    let w = joined().await;
+    let call = w.engine.last_call().expect("call");
+    assert!(!call.server_controls());
+    assert_eq!(call.recording_controls(), None);
+    let given: tauri_plugin_sew_voice::RecordingRights =
+        serde_json::from_value(r["args"].clone()).expect("args");
+    w.svc.set_recording_rights(given).await.expect("rights");
+    assert_eq!(
+        w.sink.of("recording_controls"),
+        vec![r["may_record"].clone()]
+    );
+    let c = w.svc.snapshot().recording_controls;
+    assert_eq!(c.source, ControlsSource::Host);
+    assert_eq!(c.record_unavailable, None);
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert_eq!(snap, r["state_snapshot"]);
+    assert!(snap["recording_controls"].get("source").is_none());
+}
+
+/// A Sew that computes Record and Stop: its value wins over contrary host rights, both are
+/// false before its first value, `set_recording_rights` still answers null (and is kept for
+/// nothing), the value is gated by the call state, follows a move and survives a reconnect,
+/// and `source` is `sew` until the call ends.
+#[tokio::test]
+async fn sews_controls_win_over_the_host_rights() {
+    use tauri_plugin_sew_voice::sew_call_client::RecordUnavailable;
+    use tauri_plugin_sew_voice::{CallHandle as _, ControlsSource};
+    let r = rights_fixture();
+    let engine = FakeEngine::new();
+    engine.set_server_controls(true);
+    let w = world_with(engine, Arc::new(FakeProvider::answering(ME)));
+    w.svc.join(args()).await.expect("join");
+    let call = w.engine.last_call().expect("call");
+    assert!(call.server_controls());
+    until("connected", || {
+        w.svc.snapshot().state == CallState::Connected
+    })
+    .await;
+
+    // Before Sew's first value: neither, and Sew's.
+    let neither_sew = json!({"can_record": false, "can_stop": false, "source": "sew"});
+    assert_eq!(w.sink.of("recording_controls"), vec![neither_sew.clone()]);
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert_eq!(snap["recording_controls"], neither_sew);
+    // The host's rights say Record: still neither, and the command answers as ever.
+    let given: tauri_plugin_sew_voice::RecordingRights =
+        serde_json::from_value(r["args"].clone()).expect("args");
+    w.svc
+        .set_recording_rights(given.clone())
+        .await
+        .expect("rights answer null");
+    assert_eq!(w.sink.of("recording_controls").len(), 1, "nothing changed");
+    // Still validated.
+    let e = w
+        .svc
+        .set_recording_rights(tauri_plugin_sew_voice::RecordingRights::new(CHANNEL, "x"))
+        .await
+        .expect_err("not a number");
+    assert_eq!(e.code, "invalid_args");
+
+    // Sew says Stop only, against the host's Record.
+    w.sink.clear();
+    call.set_server_controls(Some(sew_value(false, true)));
+    until("sew's value", || {
+        w.svc.snapshot().recording_controls.can_stop
+    })
+    .await;
+    assert_eq!(
+        w.sink.of("recording_controls"),
+        vec![json!({"can_record": false, "can_stop": true, "source": "sew"})]
+    );
+    let c = w.svc.snapshot().recording_controls;
+    assert_eq!(
+        (c.can_record, c.can_stop, c.source),
+        (false, true, ControlsSource::Sew)
+    );
+    // The recording event carries Sew's Stop.
+    let granted: tauri_plugin_sew_voice::RecordingInfo =
+        serde_json::from_value(fixture()["recording"]["granted"].clone()).expect("granted");
+    call.set_recording(Some(granted));
+    until("granted", || w.svc.snapshot().recording.is_some()).await;
+    assert_eq!(w.sink.of("recording").last(), Some(&r["granted"]));
+
+    // Record with the capacity hint: passed through.
+    call.set_recording(None);
+    let mut hinted = sew_value(true, false);
+    hinted.record_unavailable = Some(RecordUnavailable::RecordingCapacity);
+    call.set_server_controls(Some(hinted));
+    until("hinted", || w.svc.snapshot().recording_controls.can_record).await;
+    let hinted_json = json!({
+        "can_record": true, "can_stop": false, "record_unavailable": "recording_capacity",
+        "source": "sew"
+    });
+    assert_eq!(last_controls(&w), Some(hinted_json.clone()));
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert_eq!(snap["recording_controls"], hinted_json);
+
+    // Reconnecting keeps them; connecting again too.
+    w.sink.clear();
+    call.reconnecting(1);
+    until("reconnecting", || {
+        matches!(w.svc.snapshot().state, CallState::Reconnecting { .. })
+    })
+    .await;
+    assert!(w.svc.snapshot().recording_controls.can_record);
+    call.connect();
+    until("back", || w.svc.snapshot().state == CallState::Connected).await;
+    assert!(w.sink.of("recording_controls").is_empty(), "unchanged");
+
+    // A move: the source room's no longer apply until the destination's arrive (the host's
+    // rights for the new room change nothing).
+    call.move_to("48831765147549710");
+    until("moved", || !w.svc.snapshot().recording_controls.can_record).await;
+    assert_eq!(last_controls(&w), Some(neither_sew.clone()));
+    let mut moved = given;
+    moved.room = "48831765147549710".into();
+    w.svc.set_recording_rights(moved).await.expect("new room");
+    assert_eq!(last_controls(&w), Some(neither_sew.clone()));
+    call.set_server_controls(Some(sew_value(true, false)));
+    until("destination's", || {
+        w.svc.snapshot().recording_controls.can_record
+    })
+    .await;
+    assert_eq!(
+        last_controls(&w),
+        Some(json!({"can_record": true, "can_stop": false, "source": "sew"}))
+    );
+
+    // The call ends: off, and the host's again (absent from `state`).
+    w.svc.leave().await.expect("leave");
+    assert_eq!(
+        last_controls(&w),
+        Some(json!({"can_record": false, "can_stop": false}))
+    );
+    assert_eq!(
+        w.svc.snapshot().recording_controls.source,
+        ControlsSource::Host
+    );
+    let snap = serde_json::to_value(w.svc.state().await.expect("state")).expect("json");
+    assert!(snap.get("recording_controls").is_none(), "{snap}");
+}
+
+/// Sew's value is gated by the call state: a call still connecting shows neither, and a value
+/// that arrives first applies once the call connects. A call whose engine had no word at the
+/// join turns to Sew's controls at the server's first word.
+#[tokio::test]
+async fn sews_controls_wait_for_the_call_and_may_come_late() {
+    use tauri_plugin_sew_voice::ControlsSource;
+    let engine = FakeEngine::new();
+    engine.set_auto_connect(false);
+    engine.set_server_controls(true);
+    let w = world_with(engine, Arc::new(FakeProvider::answering(ME)));
+    w.svc.join(args()).await.expect("join");
+    let call = w.engine.last_call().expect("call");
+    call.set_server_controls(Some(sew_value(true, false)));
+    settle().await;
+    let c = w.svc.snapshot().recording_controls;
+    assert!(c.is_none(), "connecting: neither");
+    assert_eq!(c.source, ControlsSource::Sew);
+    call.connect();
+    until("connected", || {
+        w.svc.snapshot().recording_controls.can_record
+    })
+    .await;
+
+    // The host's rights decide until Sew's first word, then Sew's.
+    let w = joined().await;
+    let call = w.engine.last_call().expect("call");
+    let given: tauri_plugin_sew_voice::RecordingRights =
+        serde_json::from_value(rights_fixture()["args"].clone()).expect("args");
+    w.svc.set_recording_rights(given).await.expect("rights");
+    assert_eq!(
+        w.svc.snapshot().recording_controls.source,
+        ControlsSource::Host
+    );
+    assert!(w.svc.snapshot().recording_controls.can_record);
+    call.set_server_controls(None);
+    until("sew's", || {
+        w.svc.snapshot().recording_controls.source == ControlsSource::Sew
+    })
+    .await;
+    assert!(w.svc.snapshot().recording_controls.is_none());
+    assert_eq!(
+        last_controls(&w),
+        Some(json!({"can_record": false, "can_stop": false, "source": "sew"}))
+    );
+}
+
+/// A host provider for a DM call: it calls Sew's `call/join` for `room` (the DM) and hands the
+/// `CallJoinResponse` body back unchanged.
+struct DmCallJoinProvider {
+    calls: std::sync::Mutex<Vec<tauri_plugin_sew_voice::JoinRequest>>,
+}
+
+const DM: &str = "48831765147549711";
+const DM_CALL: &str = "48831765147549720";
+
+fn call_join_body(room: &str) -> Vec<u8> {
+    let v = json!({
+        "call": {
+            "id": DM_CALL, "channel_id": room, "message_id": "48831765147549721",
+            "started_by": ME, "started_at": "2026-11-02T12:00:00.000Z", "state": "active",
+            "participant_ids": [ME],
+            "rings": [{"member_id": "48831765147549700", "state": "ringing",
+                       "expires_at": "2026-11-02T12:00:45.000Z"}]
+        },
+        "created": true,
+        "voice": {
+            "url": "wss://voice.sew.invalid", "token": "fake-media-token",
+            "expires_at": "2026-11-02T12:02:00.000Z", "room": ROOM, "call_id": DM_CALL,
+            "state": {
+                "member_id": ME, "channel_id": room, "connection": "connecting",
+                "secure": false, "self_mute": false, "self_deaf": false, "server_deaf": false,
+                "server_mute": false, "speak_denied": false,
+                "joined_at": "2026-11-02T12:00:00.000Z", "call_id": DM_CALL
+            }
+        }
+    });
+    serde_json::to_vec(&v).expect("json")
+}
+
+impl JoinProvider for DmCallJoinProvider {
+    fn join(
+        &self,
+        req: tauri_plugin_sew_voice::JoinRequest,
+    ) -> tauri_plugin_sew_voice::BoxFuture<
+        '_,
+        Result<tauri_plugin_sew_voice::JoinAnswer, ProviderError>,
+    > {
+        let body = call_join_body(&req.room);
+        self.calls.lock().expect("calls").push(req);
+        Box::pin(async move {
+            let base = url::Url::parse("https://sew.invalid/")
+                .map_err(|e| ProviderError::Other(e.to_string()))?;
+            tauri_plugin_sew_voice::JoinAnswer::from_json(&body, base)
+                .map_err(|e| ProviderError::Other(e.to_string()))
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_dm_call_joins_with_the_call_join_answer_unchanged() {
+    let provider = Arc::new(DmCallJoinProvider {
+        calls: std::sync::Mutex::new(Vec::new()),
+    });
+    let w = world_with(FakeEngine::new(), provider.clone());
+    let r = w
+        .svc
+        .join(JoinArgs {
+            target: TARGET.into(),
+            room: DM.into(),
+            muted: None,
+            deafened: None,
+        })
+        .await
+        .expect("join");
+    // The call's id on the plugin is the media room of the answer's `voice`, as for a voice
+    // channel; the call is on the DM.
+    assert_eq!(r.call_id, ROOM);
+    let dm_state = |mut v: Value| {
+        v["target"] = json!(TARGET);
+        v["room"] = json!(DM);
+        v
+    };
+    assert_eq!(
+        w.sink.events(),
+        vec![
+            ("state".into(), dm_state(json!({"state": "connecting"}))),
+            ("participants".into(), json!([me(false, false)])),
+            ("state".into(), dm_state(json!({"state": "connected"}))),
+        ]
+    );
+    let calls = provider.calls.lock().expect("calls").clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].room, DM, "the provider joins the DM, not the call");
+    assert_eq!(calls[0].target, TARGET);
+    assert_eq!(w.svc.snapshot().state, CallState::Connected);
+}

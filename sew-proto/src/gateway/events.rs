@@ -37,6 +37,7 @@ use crate::voice::{MediaPolicy, VoiceServerUpdated, VoiceStateUpdated};
 unit_enum! {
     /// A dispatch event name (the frame's `t`).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
     pub enum EventName {
         /// The boot snapshot after IDENTIFY.
         Ready = "ready",
@@ -180,6 +181,9 @@ unit_enum! {
         /// A host decided on the receiver's knock, or it expired (body
         /// `MeetingAdmission`, to the knocking member).
         MeetingAdmission = "meeting_admission",
+        /// The receiver's own Record and Stop in the room they are in changed (body
+        /// `RecordingControlsUpdated`, to the member's own sessions only).
+        RecordingControlsUpdated = "recording_controls_updated",
     }
 }
 
@@ -434,6 +438,7 @@ pub struct MessagePreviewsUpdated {
 
 /// A dispatch event: one typed variant per name with a body, plus `Unknown`.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Event {
     /// `ready`.
     Ready(Box<Ready>),
@@ -569,6 +574,8 @@ pub enum Event {
     MeetingLobbyUpdated(Box<crate::api::meetings::MeetingLobbyUpdated>),
     /// `meeting_admission`.
     MeetingAdmission(Box<crate::api::meetings::MeetingAdmission>),
+    /// `recording_controls_updated`.
+    RecordingControlsUpdated(Box<crate::recording::RecordingControlsUpdated>),
     /// A name this build has no body for (unknown, or registered without a body yet).
     Unknown {
         /// The event name.
@@ -648,6 +655,7 @@ impl Event {
             Event::MeetingUpdated(_) | Event::MeetingGuestUpdated(_) => EventName::MeetingUpdated,
             Event::MeetingLobbyUpdated(_) => EventName::MeetingLobbyUpdated,
             Event::MeetingAdmission(_) => EventName::MeetingAdmission,
+            Event::RecordingControlsUpdated(_) => EventName::RecordingControlsUpdated,
             Event::Unknown { t, .. } => EventName::from_wire(t).unwrap_or(EventName::Unknown),
         }
     }
@@ -724,6 +732,7 @@ impl Event {
             Event::MeetingGuestUpdated(b) => to_value_or_panic("MeetingGuestUpdated", b),
             Event::MeetingLobbyUpdated(b) => to_value_or_panic("MeetingLobbyUpdated", b),
             Event::MeetingAdmission(b) => to_value_or_panic("MeetingAdmission", b),
+            Event::RecordingControlsUpdated(b) => to_value_or_panic("RecordingControlsUpdated", b),
             Event::Unknown { t, d } => return (t.clone(), d.clone()),
         };
         (name, d)
@@ -871,6 +880,9 @@ impl Event {
             }
             EventName::MeetingAdmission => {
                 Event::MeetingAdmission(Box::new(serde_json::from_value(d)?))
+            }
+            EventName::RecordingControlsUpdated => {
+                Event::RecordingControlsUpdated(Box::new(serde_json::from_value(d)?))
             }
             EventName::Unknown => Event::Unknown { t: t.to_owned(), d },
         })

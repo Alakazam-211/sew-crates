@@ -5,7 +5,8 @@ members = ["sew-proto", "sew-lkproto", "sew-mls-crypto", "sew-e2ee", "sew-lk-com
 
 # The eight crates depend on each other by version; inside this workspace each one is the
 # member of that name. sew-str0m, the str0m fork, is public (MIT / Apache-2.0) and comes
-# from its git repository until it is published on crates.io.
+# from its git repository: sew-str0m 0.25.2, the same release as on crates.io, taken from
+# the fork's git repository for this release.
 # A [patch] applies only from the workspace root: a consumer repeats these rows in its own
 # root Cargo.toml (see README.md).
 [patch.crates-io]
@@ -15,7 +16,7 @@ sew-mls-crypto = { path = "sew-mls-crypto" }
 sew-e2ee = { path = "sew-e2ee" }
 sew-lk-compat = { path = "sew-lk-compat" }
 sew-call-client = { path = "sew-call-client" }
-sew-str0m = { git = "https://github.com/Alakazam-211/str0m", rev = "268150e15444b0d08a1167c2a5e4306c4376e953" }
+sew-str0m = { git = "https://github.com/Alakazam-211/str0m", rev = "18977e74b1fbabee1a9096ca60a28509ef739f3c" }
 
 # sew-noise's model runs about 30 times slower unoptimized, and its tests run seconds of
 # audio through it.

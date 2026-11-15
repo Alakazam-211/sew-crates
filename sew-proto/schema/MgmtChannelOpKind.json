@@ -21,6 +21,11 @@
       "const": "unarchive",
       "description": "Unarchive.",
       "type": "string"
+    },
+    {
+      "const": "update",
+      "description": "Since 0.10.0: change settings (`members_can_leave`).",
+      "type": "string"
     }
   ],
   "title": "MgmtChannelOpKind"

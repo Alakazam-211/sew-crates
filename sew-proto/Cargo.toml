@@ -13,11 +13,12 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-proto"
-version = "0.9.3"
+version = "0.10.0"
 build = false
 include = [
     "src/**",
     "schema/**",
+    "vectors/**",
     "LICENSE-MIT",
     "LICENSE-APACHE",
     "NOTICE",

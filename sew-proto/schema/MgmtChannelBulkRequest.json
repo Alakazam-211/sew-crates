@@ -37,6 +37,10 @@
           "additionalProperties": false,
           "description": "Create: ensure, never update. A repeat of an existing slug answers the channel\n(`created: false`) and changes neither its name nor its visibility; a slug held by the\nother type fails the op with `409 conflict` `channel_type_mismatch`.",
           "properties": {
+            "members_can_leave": {
+              "description": "Since 0.10.0: `Channel.members_can_leave` (absent = `false`). Used at create only;\n`update` changes it.",
+              "type": "boolean"
+            },
             "name": {
               "description": "The name, 1–100 characters. Used at create only.",
               "type": "string"
@@ -81,6 +85,33 @@
             "slug",
             "name",
             "private"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Since 0.10.0: changes settings of a channel of the Space. An absent field is kept; at\nleast one must be present.",
+          "properties": {
+            "channel_id": {
+              "description": "The channel.",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "type": "string"
+            },
+            "members_can_leave": {
+              "description": "`Channel.members_can_leave`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "op": {
+              "const": "update",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "channel_id"
           ],
           "type": "object"
         },

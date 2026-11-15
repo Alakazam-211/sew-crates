@@ -510,6 +510,13 @@ async fn bridge(
                 KeySessionEvent::Status(_) | KeySessionEvent::Roster => {}
                 KeySessionEvent::VoiceServerUpdated(u) => out.push(E2eeEvent::ServerUpdated(*u)),
                 KeySessionEvent::Recording(r) => out.push(E2eeEvent::Recording(r)),
+                KeySessionEvent::RecordingControls {
+                    channel_id,
+                    controls,
+                } => out.push(E2eeEvent::RecordingControls {
+                    channel_id,
+                    controls,
+                }),
                 KeySessionEvent::MediaPolicy(m) => out.push(E2eeEvent::MediaPolicy(m)),
                 KeySessionEvent::VoiceStateUpdated(u) => {
                     if let Some(reason) = self_left(&u, me) {

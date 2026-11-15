@@ -35,7 +35,7 @@ the end-to-end encrypted calls (`sew-e2ee`).
 
 ```toml
 [dependencies]
-sew-mls-crypto = "0.9.3"
+sew-mls-crypto = "0.10.0"
 openmls = "=0.9.0"
 ```
 

@@ -44,6 +44,13 @@
         "unread": {
           "description": "Whether a message by someone else is past the cursor.",
           "type": "boolean"
+        },
+        "unread_count": {
+          "default": 0,
+          "description": "Since 0.10.0: how many timeline messages are past the cursor (the messages behind\n`unread`: top-level ones and replies also sent to the channel, live, that the member can\nread), capped at [`UNREAD_COUNT_CAP`]: `99` means 99 or more. `0` when `unread` is false.\nOlder servers leave it out (read as `0`; use `unread`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [

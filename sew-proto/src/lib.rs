@@ -70,8 +70,9 @@ pub const EXPORT_FORMAT: u32 = 1;
 /// messages and attachments the delete and remove kind `erased`. Minor 12 (Sew 0.9.0): space
 /// records carry the recording overrides `recording_start_level` and `recording_required`,
 /// voice channel records `recording_required`, and recording records `trigger: required` for a
-/// recording a required room started.
-pub const EXPORT_FORMAT_MINOR: u32 = 12;
+/// recording a required room started. Minor 13 (Sew 0.10.0): channel records carry
+/// `members_can_leave`.
+pub const EXPORT_FORMAT_MINOR: u32 = 13;
 
 /// The first export minor that carries BAN_MEMBERS (bit 47) itself.
 pub const EXPORT_MINOR_BAN_MEMBERS: u32 = 4;

@@ -789,6 +789,10 @@ pub struct ChannelRecord {
     /// leaves). Absent when `false`; never set on an archived channel.
     #[serde(default, skip_serializing_if = "is_false")]
     pub closing: bool,
+    /// Minor 13: the members of this channel in a governed Space may leave it. Absent when
+    /// `false` (and in older archives).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub members_can_leave: bool,
     /// Converter reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceRef>,
@@ -823,6 +827,7 @@ impl ChannelRecord {
             recording_require_consent: None,
             recording_required: None,
             closing: false,
+            members_can_leave: false,
             source: None,
         }
     }

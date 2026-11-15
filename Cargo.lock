@@ -4965,7 +4965,7 @@ dependencies = [
 
 [[package]]
 name = "sew-call-client"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -5007,7 +5007,7 @@ dependencies = [
 
 [[package]]
 name = "sew-e2ee"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "ed25519-dalek",
@@ -5032,7 +5032,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lk-compat"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "aws-lc-rs",
@@ -5052,7 +5052,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lkproto"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -5062,7 +5062,7 @@ dependencies = [
 
 [[package]]
 name = "sew-mls-crypto"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "chacha20poly1305 0.10.1",
@@ -5085,14 +5085,14 @@ dependencies = [
 
 [[package]]
 name = "sew-noise"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "nnnoiseless",
 ]
 
 [[package]]
 name = "sew-proto"
-version = "0.9.3"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5102,8 +5102,8 @@ dependencies = [
 
 [[package]]
 name = "sew-str0m"
-version = "0.25.1"
-source = "git+https://github.com/Alakazam-211/str0m?rev=268150e15444b0d08a1167c2a5e4306c4376e953#268150e15444b0d08a1167c2a5e4306c4376e953"
+version = "0.25.2"
+source = "git+https://github.com/Alakazam-211/str0m?rev=18977e74b1fbabee1a9096ca60a28509ef739f3c#18977e74b1fbabee1a9096ca60a28509ef739f3c"
 dependencies = [
  "arrayvec",
  "base64ct",
@@ -5123,7 +5123,7 @@ dependencies = [
 [[package]]
 name = "sew-str0m-is"
 version = "0.12.1"
-source = "git+https://github.com/Alakazam-211/str0m?rev=268150e15444b0d08a1167c2a5e4306c4376e953#268150e15444b0d08a1167c2a5e4306c4376e953"
+source = "git+https://github.com/Alakazam-211/str0m?rev=18977e74b1fbabee1a9096ca60a28509ef739f3c#18977e74b1fbabee1a9096ca60a28509ef739f3c"
 dependencies = [
  "crc",
  "serde",
@@ -5676,7 +5676,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-voice"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "cpal",
