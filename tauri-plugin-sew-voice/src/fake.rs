@@ -120,16 +120,55 @@ struct FakeNoise {
     sets: Vec<NoiseRemoval>,
     /// The state last sent.
     last: Option<NoiseRemovalState>,
+    /// A phone's capture ([`FakeEngine::phone_noise`]): the capture now, the switches, and
+    /// whether a switch fails (the capture stays, `switch_failed`).
+    phone: Option<FakePhoneCapture>,
+}
+
+#[derive(Debug)]
+struct FakePhoneCapture {
+    capture: crate::wire::PhoneAudioMode,
+    switches: u32,
+    fail: bool,
+    failed: bool,
 }
 
 impl FakeNoise {
     fn state(&self) -> NoiseRemovalState {
-        match self.step_down {
+        let state = match self.step_down {
             Some(r) => NoiseRemovalState::stepped_down(self.mode, r),
             None => NoiseRemovalState::running(self.mode),
+        };
+        match &self.phone {
+            Some(p) => state.with_phone_mode(
+                Some(p.capture),
+                p.failed.then_some(NoiseRemovalReason::SwitchFailed),
+                p.switches,
+                (p.switches > 0).then_some(FAKE_SWITCH_GAP_MS),
+            ),
+            None => state,
+        }
+    }
+
+    /// A phone's capture follows the mode, as the real engine switches it mid-call.
+    fn switch_phone(&mut self) {
+        let mode = self.mode;
+        let Some(p) = self.phone.as_mut() else { return };
+        let want = crate::wire::PhoneAudioMode::for_mode(mode);
+        if want == p.capture {
+            p.failed = false;
+        } else if p.fail {
+            p.failed = true;
+        } else {
+            p.capture = want;
+            p.switches += 1;
+            p.failed = false;
         }
     }
 }
+
+/// The pause the fake's phone capture reports for each switch, ms.
+pub const FAKE_SWITCH_GAP_MS: u32 = 20;
 
 #[cfg(feature = "video-core")]
 struct NativeBackend(Arc<dyn sew_call_client::kessel_video::VideoBackend>);
@@ -192,6 +231,8 @@ struct EngineState {
     auto_connect: bool,
     /// Every audio-session event, in order ([`VoiceEngine::audio_session`]).
     audio_sessions: Vec<AudioSessionEvent>,
+    /// Every [`VoiceEngine::set_android_unprocessed_supported`], in order.
+    unprocessed_supported: Vec<bool>,
     /// The device store: the keys it holds ([`FakeEngine::set_device_keys`]).
     device_keys: Vec<DeviceKeyId>,
     /// Every `forget_server` install id, in order.
@@ -225,6 +266,7 @@ impl FakeEngine {
                 next_join_error: None,
                 auto_connect: true,
                 audio_sessions: Vec::new(),
+                unprocessed_supported: Vec::new(),
                 device_keys: Vec::new(),
                 forgets: Vec::new(),
                 next_forget_error: None,
@@ -249,6 +291,23 @@ impl FakeEngine {
     pub fn step_down_noise(&self, reason: Option<NoiseRemovalReason>) {
         let mut n = lock(&self.noise);
         n.step_down = reason;
+        self.send_noise(&mut n);
+    }
+
+    /// The fake behaves as a phone in a call: the state carries the phone's capture
+    /// (`phone_mode`), and each `set_noise_removal` switches it as the real engine does
+    /// (counted, with a pause of [`FAKE_SWITCH_GAP_MS`]); with `fail`, a switch keeps the
+    /// capture it had and the state says `switch_failed`.
+    pub fn phone_noise(&self, fail: bool) {
+        let mut n = lock(&self.noise);
+        let capture = crate::wire::PhoneAudioMode::for_mode(n.mode);
+        let p = n.phone.get_or_insert(FakePhoneCapture {
+            capture,
+            switches: 0,
+            fail,
+            failed: false,
+        });
+        p.fail = fail;
         self.send_noise(&mut n);
     }
 
@@ -444,6 +503,11 @@ impl FakeEngine {
         lock(&self.state).audio_sessions.clone()
     }
 
+    /// Every `set_android_unprocessed_supported` the engine took, in order.
+    pub fn android_unprocessed_supported(&self) -> Vec<bool> {
+        lock(&self.state).unprocessed_supported.clone()
+    }
+
     /// The keys the fake device store holds (`known_device_keys`; `forget_server` removes an
     /// install's).
     pub fn set_device_keys(&self, mut keys: Vec<DeviceKeyId>) {
@@ -629,6 +693,10 @@ impl VoiceEngine for FakeEngine {
         lock(&self.state).audio_sessions.push(event);
     }
 
+    fn set_android_unprocessed_supported(&self, supported: bool) {
+        lock(&self.state).unprocessed_supported.push(supported);
+    }
+
     fn forget_server(
         &self,
         install_id: u64,
@@ -679,6 +747,7 @@ impl VoiceEngine for FakeEngine {
         let mut n = lock(&self.noise);
         n.mode = mode;
         n.sets.push(mode);
+        n.switch_phone();
         Ok(self.send_noise(&mut n))
     }
 

@@ -141,8 +141,8 @@ pub use wire::{
 /// The microphone's noise removal (`set_noise_removal`, `noise_removal`, the `noise_removal`
 /// event).
 pub use wire::{
-    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, SetNoiseRemovalArgs,
-    UNAVAILABLE_NOISE_MODES,
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode,
+    SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
 };
 
 // On phones the device key is the host's (Builder::device_key_store, or a hardware key):

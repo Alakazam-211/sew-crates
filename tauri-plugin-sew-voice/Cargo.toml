@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "tauri-plugin-sew-voice"
-version = "0.8.0"
+version = "0.8.1"
 build = "build.rs"
 links = "tauri-plugin-sew-voice"
 include = [
@@ -145,11 +145,11 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-call-client]
-version = "0.8.0"
+version = "0.8.1"
 default-features = false
 
 [dependencies.sew-proto]
-version = "0.10.2"
+version = "0.10.3"
 
 [dependencies.tauri]
 version = "2"
@@ -185,7 +185,7 @@ features = [
 default-features = false
 
 [dev-dependencies.sew-call-client]
-version = "0.8.0"
+version = "0.8.1"
 features = ["testing"]
 default-features = false
 

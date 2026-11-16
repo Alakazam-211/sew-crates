@@ -71,9 +71,6 @@ pub use kessel_audio;
 /// kessel-video, re-exported for hosts that pick or configure the video backend.
 #[cfg(feature = "video-core")]
 pub use kessel_video;
-/// What loading DeepFilterNet3's weights cost (feature `dfn3`).
-#[cfg(feature = "dfn3")]
-pub use noise::Dfn3LoadInfo;
 /// The noise removal setting of the capture path and what runs; with `audio-core`, the control
 /// that builds the capture stage ([`AudioBridge::start_with_noise`]).
 #[cfg(feature = "audio-core")]
@@ -81,7 +78,11 @@ pub use noise::NoiseRemovalControl;
 /// The device bench of the noise removal stage (feature `noise-bench`; debug builds only).
 #[cfg(feature = "noise-bench")]
 pub use noise::bench as noise_bench;
-pub use noise::{NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState};
+/// What loading DeepFilterNet3's weights cost, and how long the model stays after the last
+/// call by default (feature `dfn3`).
+#[cfg(feature = "dfn3")]
+pub use noise::{DFN3_IDLE_UNLOAD, Dfn3LoadInfo};
+pub use noise::{NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode};
 pub use provider::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
     DmCall, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED,

@@ -518,9 +518,17 @@ pub trait VoiceEngine: Send + Sync + 'static {
     fn noise_removal_events(&self) -> Option<broadcast::Receiver<NoiseRemovalState>> {
         None
     }
-    /// Loads DeepFilterNet3's weights from `path` (feature `dfn3`), after which Standard runs
-    /// it in new calls with RNNoise as its step-down. Slow (tens of milliseconds): the plugin
-    /// calls it on a thread of its own at start. The default: refused with
+    /// Android: whether the device has the unprocessed audio source (the app reads
+    /// `AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED`). With it, noise removal Off
+    /// captures from that source; without it (the default), from the voice recognition source.
+    /// It must not block. The default does nothing (an engine without a phone backend).
+    fn set_android_unprocessed_supported(&self, supported: bool) {
+        let _ = supported;
+    }
+    /// Where DeepFilterNet3's weights are (feature `dfn3`): the engine records the path and
+    /// checks the file's pinned sha256 (reading it through once), and loads the model when a
+    /// call first needs it, with RNNoise as its step-down. The check reads the whole file: the
+    /// plugin calls it on a thread of its own at start. The default: refused with
     /// `noise_mode_unavailable` (Standard stays what the engine has).
     fn set_dfn3_weights(&self, path: &std::path::Path) -> Result<(), EngineError> {
         let _ = path;
@@ -531,6 +539,11 @@ pub trait VoiceEngine: Send + Sync + 'static {
     /// DEBUG ONLY (feature `noise-bench`): the noise removal stage on this device's microphone
     /// for `duration`, with no call, as sew-call-client's `noise_bench::NoiseBenchReport` in
     /// JSON. Blocks for `duration`. The default: refused with `noise_mode_unavailable`.
+    /// How long DeepFilterNet3's model stays in memory after the last call ends (feature
+    /// `dfn3`; the next call loads it again). The default does nothing.
+    fn set_dfn3_idle_unload(&self, after: std::time::Duration) {
+        let _ = after;
+    }
     #[cfg(feature = "noise-bench")]
     fn noise_bench(&self, duration: std::time::Duration) -> Result<serde_json::Value, EngineError> {
         let _ = duration;

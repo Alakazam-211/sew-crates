@@ -15,7 +15,9 @@
 //!
 //! On phones the OS's voice processing does its own noise suppression first. Without the
 //! DeepFilterNet3 weights no stage runs there (the state says `unavailable`); with them the
-//! stage runs after the OS's processing, as on desktop.
+//! stage runs after the OS's processing, as on desktop. [`NoiseRemoval::Off`] turns the OS's
+//! processing off too: the phone's audio goes raw ([`PhoneAudioMode::Raw`]), at the start of a
+//! call and when the setting changes during one.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,14 +31,14 @@ mod hook;
 mod mem;
 
 #[cfg(feature = "dfn3")]
-pub use control::Dfn3LoadInfo;
+pub use control::{DFN3_IDLE_UNLOAD, Dfn3LoadInfo};
 #[cfg(any(feature = "dfn3", feature = "noise-bench"))]
 pub(crate) use mem::rss_kib;
 #[cfg(feature = "noise-bench")]
 pub(crate) use mem::rss_peak_kib;
 
 #[cfg(feature = "audio-core")]
-pub(crate) use control::BypassSource;
+pub(crate) use control::LiveAudio;
 #[cfg(feature = "audio-core")]
 pub use control::NoiseRemovalControl;
 
@@ -55,10 +57,16 @@ pub(crate) trait NoiseSource: Send + Sync {
 #[non_exhaustive]
 pub enum NoiseRemoval {
     /// No noise removal: the full audio, with echo cancellation and gain control kept. For
-    /// music or a studio microphone. On Android, Off turns off the OS's noise suppression for a
-    /// call that starts in Off (a change during a call takes effect from the next call). On iOS
-    /// the OS's voice processing keeps its own noise suppression for now (a later kessel-audio
-    /// release adds an unprocessed path).
+    /// music or a studio microphone.
+    ///
+    /// On iOS and Android the OS's voice processing is off as well ([`PhoneAudioMode::Raw`]):
+    /// iOS opens the plain RemoteIO unit; Android opens the microphone with its unprocessed
+    /// source where the device supports it
+    /// (`NoiseRemovalControl::set_android_unprocessed_supported`), else its voice recognition
+    /// source, with no effects attached. kessel-audio then cancels echo and controls gain
+    /// itself, with no noise suppression. A call that starts in Off opens that way; a change
+    /// during a call switches the phone's audio at once, with a short pause of the microphone
+    /// while it reopens ([`NoiseRemovalState::phone_mode_gap_ms`]).
     Off,
     /// Noise removal between echo cancellation and gain control: DeepFilterNet3 where it is
     /// built in and its weights are loaded, with RNNoise as its automatic step-down; RNNoise
@@ -95,7 +103,7 @@ impl std::fmt::Display for NoiseRemoval {
 /// Why the noise removal that runs ([`NoiseRemovalState::active`]) is less than what was asked
 /// ([`NoiseRemovalState::mode`]).
 ///
-/// Its JSON is `"budget"`, `"fault"` or `"unavailable"`.
+/// Its JSON is `"budget"`, `"fault"`, `"unavailable"`, `"switch_failed"` or `"loading"`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -111,16 +119,66 @@ pub enum NoiseRemovalReason {
     /// This platform or build can't run the mode (phones; an audio pipeline without the
     /// capture hook).
     Unavailable,
+    /// The phone's audio could not switch to the capture the setting asks for (the microphone
+    /// would not open that way): it went back to the capture it had, and kessel-audio reported
+    /// the error. In [`NoiseRemovalState::phone_mode_reason`] only.
+    SwitchFailed,
+    /// DeepFilterNet3's model is being loaded (it is loaded when a call first needs it): RNNoise
+    /// runs meanwhile (on phones, the OS's processing alone), and the call steps up to
+    /// DeepFilterNet3 once it is ready.
+    Loading,
 }
 
 impl NoiseRemovalReason {
-    /// The reason's name: `budget`, `fault` or `unavailable`.
+    /// The reason's name: `budget`, `fault`, `unavailable`, `switch_failed` or `loading`.
     pub fn as_str(self) -> &'static str {
         match self {
             NoiseRemovalReason::Budget => "budget",
             NoiseRemovalReason::Fault => "fault",
             NoiseRemovalReason::Unavailable => "unavailable",
+            NoiseRemovalReason::SwitchFailed => "switch_failed",
+            NoiseRemovalReason::Loading => "loading",
         }
+    }
+}
+
+/// How a phone's microphone is captured (iOS and Android with feature `mobile`): through the
+/// OS's voice processing, or raw, with the OS's processing off ([`NoiseRemoval::Off`]).
+///
+/// Its JSON is `"os"` or `"raw"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PhoneAudioMode {
+    /// The OS's voice processing: its echo cancellation, noise suppression and gain control
+    /// ([`NoiseRemoval::Standard`]).
+    Os,
+    /// No OS processing: the full microphone signal. kessel-audio cancels echo and controls
+    /// gain, with no noise suppression ([`NoiseRemoval::Off`]).
+    Raw,
+}
+
+impl PhoneAudioMode {
+    /// The capture a setting asks for: raw for Off, the OS's processing otherwise.
+    pub fn for_mode(mode: NoiseRemoval) -> PhoneAudioMode {
+        match mode {
+            NoiseRemoval::Off => PhoneAudioMode::Raw,
+            NoiseRemoval::Standard => PhoneAudioMode::Os,
+        }
+    }
+
+    /// The mode's name: `os` or `raw`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PhoneAudioMode::Os => "os",
+            PhoneAudioMode::Raw => "raw",
+        }
+    }
+}
+
+impl std::fmt::Display for PhoneAudioMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -154,20 +212,27 @@ impl std::fmt::Display for NoiseModel {
 }
 
 /// The noise removal setting and what runs: `{mode, active, reason?, model?, model_reason?,
-/// step_downs?}`.
+/// step_downs?, phone_mode?, phone_mode_reason?, phone_mode_switches?, phone_mode_gap_ms?}`.
 ///
 /// `mode` is what was asked, `active` what the microphone's audio goes through now, and
 /// `reason` (absent when `active` is `mode`) why they differ. With no call, `active` is what a
-/// call would start with. On phones the OS's own noise suppression is set when a call's audio
-/// starts (off for Off on Android; see [`NoiseRemoval::Off`]): a change during a call takes
-/// effect there from the next call.
+/// call would start with.
+///
+/// On phones (iOS and Android with feature `mobile`) `phone_mode` says how the microphone is
+/// captured ([`PhoneAudioMode`]: `raw` for Off, `os` otherwise; with no call, what a call
+/// would start with). A change of the setting during a call switches it: `phone_mode` follows
+/// once the microphone has reopened, `phone_mode_switches` counts the call's switches and
+/// `phone_mode_gap_ms` is how long the microphone paused for the last one. If a switch fails,
+/// the phone keeps the capture it had and `phone_mode_reason` is `switch_failed` until the
+/// setting and the capture agree again. These fields are absent elsewhere and while unset.
 ///
 /// Where DeepFilterNet3 is in play (feature `dfn3`, once the app has given the control its
-/// weights, whether they loaded or not), `model` says which model runs while `active` is
+/// weights, whether they checked out or not), `model` says which model runs while `active` is
 /// Standard, `model_reason` why it is RNNoise rather than DeepFilterNet3 (`budget`: the stage
-/// stepped down because the device could not keep up; `fault`; `unavailable`: no usable
-/// weights), and `step_downs` how many times this call's stage stepped down. They are absent
-/// otherwise, so the JSON is then `{mode, active, reason?}` as before. A UI shows, for example,
+/// stepped down because the device could not keep up; `fault`; `loading`: the model is being
+/// loaded for this call; `unavailable`: no usable weights), and `step_downs` how many times
+/// this call's stage stepped down. They are absent otherwise, so the JSON is then
+/// `{mode, active, reason?}` as before. A UI shows, for example,
 /// "DeepFilterNet3" or "RNNoise (stepped down: budget)".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -189,6 +254,19 @@ pub struct NoiseRemovalState {
     /// How many times the call's stage stepped down from DeepFilterNet3 to RNNoise.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub step_downs: u32,
+    /// Phones: how the microphone is captured (absent elsewhere).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_mode: Option<PhoneAudioMode>,
+    /// Phones: why `phone_mode` is not what `mode` asks for (`switch_failed`); absent while a
+    /// switch is under way and when they agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_mode_reason: Option<NoiseRemovalReason>,
+    /// Phones: how many times this call's microphone switched capture.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub phone_mode_switches: u32,
+    /// Phones: how long the microphone paused for the last switch that reopened it, ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_mode_gap_ms: Option<u32>,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -209,7 +287,27 @@ impl NoiseRemovalState {
             model: None,
             model_reason: None,
             step_downs: 0,
+            phone_mode: None,
+            phone_mode_reason: None,
+            phone_mode_switches: 0,
+            phone_mode_gap_ms: None,
         }
+    }
+
+    /// This state with the phone's capture, why it is not what the setting asks for
+    /// (`switch_failed`), the call's switches and the last switch's pause (ms).
+    pub fn with_phone_mode(
+        mut self,
+        phone_mode: Option<PhoneAudioMode>,
+        phone_mode_reason: Option<NoiseRemovalReason>,
+        switches: u32,
+        gap_ms: Option<u32>,
+    ) -> NoiseRemovalState {
+        self.phone_mode = phone_mode;
+        self.phone_mode_reason = phone_mode_reason;
+        self.phone_mode_switches = switches;
+        self.phone_mode_gap_ms = gap_ms;
+        self
     }
 
     /// This state with the model that runs, why it is not DeepFilterNet3 when that was wanted,
@@ -273,6 +371,8 @@ mod tests {
             (NoiseRemovalReason::Budget, "budget"),
             (NoiseRemovalReason::Fault, "fault"),
             (NoiseRemovalReason::Unavailable, "unavailable"),
+            (NoiseRemovalReason::SwitchFailed, "switch_failed"),
+            (NoiseRemovalReason::Loading, "loading"),
         ] {
             assert_eq!(r.as_str(), n);
             assert_eq!(serde_json::to_value(r).unwrap(), serde_json::json!(n));
@@ -314,5 +414,49 @@ mod tests {
             assert_eq!(m.as_str(), n);
             assert_eq!(serde_json::to_value(m).unwrap(), serde_json::json!(n));
         }
+    }
+
+    /// The phone fields: absent when unset (the JSON is as before), present when set, and
+    /// read back.
+    #[test]
+    fn phone_fields_json() {
+        let s = NoiseRemovalState::running(NoiseRemoval::Off).with_phone_mode(
+            Some(PhoneAudioMode::Raw),
+            None,
+            0,
+            None,
+        );
+        assert_eq!(
+            serde_json::to_value(s).unwrap(),
+            serde_json::json!({"mode": "off", "active": "off", "phone_mode": "raw"})
+        );
+        let s = NoiseRemovalState::running(NoiseRemoval::Off).with_phone_mode(
+            Some(PhoneAudioMode::Os),
+            Some(NoiseRemovalReason::SwitchFailed),
+            3,
+            Some(42),
+        );
+        let v = serde_json::to_value(s).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"mode": "off", "active": "off", "phone_mode": "os",
+                "phone_mode_reason": "switch_failed", "phone_mode_switches": 3,
+                "phone_mode_gap_ms": 42})
+        );
+        let back: NoiseRemovalState = serde_json::from_value(v).unwrap();
+        assert_eq!(back, s);
+        for (m, n) in [(PhoneAudioMode::Os, "os"), (PhoneAudioMode::Raw, "raw")] {
+            assert_eq!(m.as_str(), n);
+            assert_eq!(m.to_string(), n);
+            assert_eq!(serde_json::to_value(m).unwrap(), serde_json::json!(n));
+        }
+        assert_eq!(
+            PhoneAudioMode::for_mode(NoiseRemoval::Off),
+            PhoneAudioMode::Raw
+        );
+        assert_eq!(
+            PhoneAudioMode::for_mode(NoiseRemoval::Standard),
+            PhoneAudioMode::Os
+        );
     }
 }

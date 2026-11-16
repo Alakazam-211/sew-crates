@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.8.1 (2026-11-16, Sew 0.10.3)
+
+### Changed
+
+- `NoiseRemoval::Off` on iOS and Android means the full audio with no noise filtering: the
+  OS's voice processing is off and the microphone is captured raw (iOS: the plain RemoteIO
+  unit; Android: the unprocessed source where the device has it, else the voice recognition
+  source, with no effects attached). kessel-audio keeps echo cancellation and gain control on,
+  with no noise suppression; our stage passes the audio through. A call that starts in Off
+  opens raw from the start (on iOS before the session opens the device, so it opens once).
+  A change of the setting during a call switches the live call's capture at once, both ways,
+  with a short pause of the microphone while it reopens. This replaces the earlier Android-only
+  change that turned off the OS's noise suppression for a call that started in Off.
+- kessel-audio 0.2.1 is required (its phone backend's raw capture, `PhoneMode`).
+- DeepFilterNet3's model is loaded when it is first needed, not when the weights are given.
+  `NoiseRemovalControl::set_dfn3_weights` now records the path and checks the file's pinned
+  sha256 (reading it through, keeping nothing in memory). A call whose audio starts in
+  Standard, or the first switch to Standard during a call, loads the model on a thread of its
+  own; the call starts on RNNoise (on phones, the OS's processing alone) with
+  `model_reason: loading` and steps up to DeepFilterNet3 through the stage's own warm-up and
+  fade once it is ready. The call's start never waits for it, and the audio thread never
+  allocates for it. After the last call ends the model is released once the idle time passes
+  with no call, and the next call loads it again. A failed load leaves Standard on RNNoise
+  with `model_reason: unavailable`. `dfn3_loaded` says whether the model is in memory now.
+
+### Added
+
+- `PhoneAudioMode` (`os`, `raw`) and, in `NoiseRemovalState`, the phone fields
+  `phone_mode`, `phone_mode_reason`, `phone_mode_switches` and `phone_mode_gap_ms` (serialised
+  only when set, so the JSON elsewhere is unchanged), with `NoiseRemovalState::with_phone_mode`,
+  `PhoneAudioMode::for_mode` and `PhoneAudioMode::as_str`.
+  The call's stats windows carry them through `StatsWindow::noise_removal`.
+- `NoiseRemovalReason::SwitchFailed` (`switch_failed`): the phone's capture could not switch
+  (kessel-audio went back to the capture it had and reported an error); in
+  `phone_mode_reason` until the setting and the capture agree again.
+- `NoiseRemovalControl::set_android_unprocessed_supported` and
+  `android_unprocessed_supported`: whether the Android device has the unprocessed audio source,
+  as the app reads it from `AudioManager`; without it, raw capture uses the voice recognition
+  source.
+- `NoiseRemovalReason::Loading` (`loading`).
+- `NoiseRemovalControl::set_dfn3_idle_unload` and `dfn3_idle_unload` (default
+  `DFN3_IDLE_UNLOAD`), and `NoiseRemovalControl::preload_dfn3` for an app that wants the
+  model loaded before a call.
+- `AudioBridge::events`: kessel-audio's events, drained through the bridge, which notes a failed
+  switch of the phone's capture on the way. Read events here rather than from
+  `engine().events()`.
+
 ## 0.8.0 (2026-11-16, Sew 0.10.2)
 
 ### Breaking

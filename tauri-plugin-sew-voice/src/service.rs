@@ -747,6 +747,15 @@ impl VoiceService {
         self.inner.engine.audio_session(event);
     }
 
+    /// Android: whether the device has the unprocessed audio source (through
+    /// [`crate::VoiceControl`] or [`crate::Builder::android_unprocessed_supported`]): passed to
+    /// the engine, for noise removal Off from the next time the microphone opens raw.
+    pub fn set_android_unprocessed_supported(&self, supported: bool) {
+        self.inner
+            .engine
+            .set_android_unprocessed_supported(supported);
+    }
+
     /// The host's sign-out from one Sew install (also the `forget_server {install_id}`
     /// command, behind its own permission): the engine deletes every device of `install_id`
     /// its device store holds (a hardware key through `HardwareDeviceKey::delete`) and the

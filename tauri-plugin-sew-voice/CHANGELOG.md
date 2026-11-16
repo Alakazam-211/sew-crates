@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.8.1 (2026-11-16, Sew 0.10.3)
+
+### Changed
+
+- Noise removal Off on iOS and Android means the full audio with no noise filtering: the OS's
+  voice processing is off and the microphone is captured raw, with echo cancellation and gain
+  control kept (sew-call-client's change). `set_noise_removal` during a call switches the live
+  call's capture at once, both ways, with a short pause of the microphone while it reopens.
+- The engine reads kessel-audio's events through sew-call-client's `AudioBridge::events`.
+- DeepFilterNet3 (feature `dfn3`) is loaded when a call first needs it, not at start: at start
+  the plugin only checks the weights file's pinned sha256 on its thread. The first call in
+  Standard (or the first switch to Standard in a call) starts on RNNoise (on phones, the OS's
+  processing alone) with `model_reason: loading` and steps up once the model is ready; the model is released after an
+  idle time with no call and loaded again by the next call.
+
+### Added
+
+- The `noise_removal` state and event carry the phone fields `phone_mode` (`os`, `raw`),
+  `phone_mode_reason` (`switch_failed`), `phone_mode_switches` and `phone_mode_gap_ms` on iOS
+  and Android (absent elsewhere). `PhoneAudioMode` is re-exported.
+- Android's unprocessed audio source: `Builder::android_unprocessed_supported(bool)`,
+  `VoiceControl::set_android_unprocessed_supported(bool)` and
+  `VoiceService::set_android_unprocessed_supported`, for the app's Android side to pass what
+  `AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED` says (the plugin has no Android code
+  of its own to read it). Without it, raw capture uses the voice recognition source. The engine
+  seam gains the provided `VoiceEngine::set_android_unprocessed_supported` (a no-op by default).
+- `Builder::dfn3_idle_unload(duration)` (feature `dfn3`): how long the model stays after the
+  last call; the provided `VoiceEngine::set_dfn3_idle_unload` (a no-op by default). The noise
+  removal state's `model_reason` can be `loading`.
+- The fake engine: `FakeEngine::phone_noise` (a phone's capture switching with the setting, or
+  failing to, with the pause `FAKE_SWITCH_GAP_MS`) and
+  `FakeEngine::android_unprocessed_supported`.
+
 ## 0.8.0 (2026-11-16, Sew 0.10.2)
 
 ### Breaking

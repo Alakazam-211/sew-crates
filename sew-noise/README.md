@@ -29,9 +29,9 @@ of voice calls on the sender's device.
 
 ```toml
 [dependencies]
-sew-noise = "0.10.2"
+sew-noise = "0.10.3"
 # or, with DeepFilterNet3 and the capture-hook trait:
-# sew-noise = { version = "0.10.2", features = ["dfn3", "capture-stage"] }
+# sew-noise = { version = "0.10.3", features = ["dfn3", "capture-stage"] }
 ```
 
 No feature is on by default: `dfn3` and `capture-stage` are opt-in.
@@ -125,8 +125,8 @@ repeated switches it stays on `Standard`. `StageStats` reports where `Strong` is
 (`strong_state`), the switches (`step_downs`, `last_step_down`) and the blocks the model ran.
 Both models delay the audio by the same amount. A block allocates nothing and takes no lock.
 
-The weights are not in this package. They are the asset `sew-dfn3-0.10.2.tar.gz` of the Sew
-0.10.2 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.10.2`; sha256
+The weights are not in this package. They are the asset `sew-dfn3-0.10.3.tar.gz` of the Sew
+0.10.3 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.10.3`; sha256
 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). It holds a `dfn3/` folder
 with the weights (`dfn3_ll.nnef.tar`), their NOTICE and the MIT and Apache-2.0 texts. The
 loader checks the weights file against `dfn3::WEIGHTS_SHA256`

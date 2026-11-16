@@ -37,8 +37,11 @@ pub struct Builder {
     device: DeviceOptions,
     crypto_provider: Option<Arc<CryptoProvider>>,
     noise_removal: Option<crate::wire::NoiseRemoval>,
+    android_unprocessed: Option<bool>,
     #[cfg(feature = "dfn3")]
     dfn3_weights: Option<PathBuf>,
+    #[cfg(feature = "dfn3")]
+    dfn3_idle_unload: Option<std::time::Duration>,
 }
 
 /// Row 11: the device key in hardware and the enrolment platform; and the video backend.
@@ -64,6 +67,7 @@ impl std::fmt::Debug for Builder {
             .field("device_platform", &self.device.platform)
             .field("crypto_provider", &self.crypto_provider.is_some())
             .field("noise_removal", &self.noise_removal)
+            .field("android_unprocessed_supported", &self.android_unprocessed)
             .finish_non_exhaustive()
     }
 }
@@ -86,21 +90,39 @@ impl Builder {
             device: DeviceOptions::default(),
             crypto_provider: None,
             noise_removal: None,
+            android_unprocessed: None,
             #[cfg(feature = "dfn3")]
             dfn3_weights: None,
+            #[cfg(feature = "dfn3")]
+            dfn3_idle_unload: None,
         }
     }
 
     /// Where DeepFilterNet3's weights are (feature `dfn3`): the file the app bundles,
     /// `sew_call_client::DFN3_WEIGHTS_FILE`. Default: `dfn3/dfn3_ll.nnef.tar` in the app's
     /// resource directory (bundle `dfn3_ll.nnef.tar`, `NOTICE`, `LICENSE-MIT` and
-    /// `LICENSE-APACHE` under `dfn3/`). The plugin loads them on a thread of its own at start
-    /// (the file is checked against its pinned sha256 first); until then, and if they are
-    /// missing or not the pinned file, Standard is RNNoise and the noise removal state says
-    /// `model_reason: unavailable`.
+    /// `LICENSE-APACHE` under `dfn3/`). At start the plugin only records the path and checks
+    /// the file against its pinned sha256 (on a thread of its own; nothing stays in memory).
+    /// The model is loaded when a call first needs it (a call starting in Standard, or the
+    /// first switch to Standard in a call): that call starts on RNNoise (on phones, the OS's
+    /// voice processing alone) with `model_reason: loading` and steps up to DeepFilterNet3
+    /// when it is ready, without a click. After the
+    /// last call the model is released once [`Builder::dfn3_idle_unload`]'s time passes. If
+    /// the file is missing or not the pinned one, Standard is RNNoise and the noise removal
+    /// state says `model_reason: unavailable`.
     #[cfg(feature = "dfn3")]
     pub fn dfn3_weights(mut self, path: impl Into<PathBuf>) -> Builder {
         self.dfn3_weights = Some(path.into());
+        self
+    }
+
+    /// How long DeepFilterNet3's model stays in memory after the last call ends (feature
+    /// `dfn3`): `sew_call_client::DFN3_IDLE_UNLOAD` by default, so a call back or the next
+    /// meeting soon after finds it loaded, and the memory is back once calls stop. The next
+    /// call after it loads the model again. `Duration::MAX` keeps it for the app's life.
+    #[cfg(feature = "dfn3")]
+    pub fn dfn3_idle_unload(mut self, after: std::time::Duration) -> Builder {
+        self.dfn3_idle_unload = Some(after);
         self
     }
 
@@ -109,6 +131,18 @@ impl Builder {
     /// it later. An engine that can't run the mode keeps its own and logs a warning.
     pub fn noise_removal(mut self, mode: crate::wire::NoiseRemoval) -> Builder {
         self.noise_removal = Some(mode);
+        self
+    }
+
+    /// Android: whether this device has the unprocessed audio source, as the app's Android
+    /// side reads it (`AudioManager.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED)`
+    /// is `"true"`). Noise removal Off captures the microphone raw: from that source when the
+    /// device has it, else from the voice recognition source (the default when this is never
+    /// called; the plugin has no Android code of its own to read it).
+    /// [`crate::VoiceControl::set_android_unprocessed_supported`] sets it later. iOS and desktop
+    /// ignore it.
+    pub fn android_unprocessed_supported(mut self, supported: bool) -> Builder {
+        self.android_unprocessed = Some(supported);
         self
     }
 
@@ -217,8 +251,11 @@ impl Builder {
             device,
             crypto_provider,
             noise_removal,
+            android_unprocessed,
             #[cfg(feature = "dfn3")]
             dfn3_weights,
+            #[cfg(feature = "dfn3")]
+            dfn3_idle_unload,
         } = self;
         PluginBuilder::new(crate::PLUGIN_NAME)
             .invoke_handler(tauri::generate_handler![
@@ -267,6 +304,13 @@ impl Builder {
                 {
                     tracing::warn!(mode = mode.as_str(), error = %e, "sew-voice: noise removal not set");
                 }
+                if let Some(supported) = android_unprocessed {
+                    engine.set_android_unprocessed_supported(supported);
+                }
+                #[cfg(feature = "dfn3")]
+                if let Some(after) = dfn3_idle_unload {
+                    engine.set_dfn3_idle_unload(after);
+                }
                 #[cfg(feature = "dfn3")]
                 load_dfn3(app, &engine, dfn3_weights);
                 let sink = Arc::new(TauriSink { app: app.clone() });
@@ -287,8 +331,9 @@ impl Builder {
     }
 }
 
-/// Loads DeepFilterNet3's weights into `engine` on a thread of its own (a load takes tens of
-/// milliseconds and about 40 MB): `path`, or `dfn3/<weights file>` in the app's resources.
+/// Gives `engine` DeepFilterNet3's weights on a thread of its own (the pinned sha256 is checked
+/// by reading the file through; the model is loaded when a call first needs it): `path`, or
+/// `dfn3/<weights file>` in the app's resources.
 #[cfg(feature = "dfn3")]
 fn load_dfn3<R: Runtime>(app: &AppHandle<R>, engine: &Arc<dyn VoiceEngine>, path: Option<PathBuf>) {
     let path = match path {
@@ -305,11 +350,11 @@ fn load_dfn3<R: Runtime>(app: &AppHandle<R>, engine: &Arc<dyn VoiceEngine>, path
     let spawned = std::thread::Builder::new()
         .name("sew-voice-dfn3".into())
         .spawn(move || match engine.set_dfn3_weights(&path) {
-            Ok(()) => tracing::info!(path = %path.display(), "sew-voice: DeepFilterNet3 loaded"),
+            Ok(()) => tracing::info!(path = %path.display(), "sew-voice: DeepFilterNet3 weights found; loaded when a call needs them"),
             Err(e) => tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "sew-voice: DeepFilterNet3 not loaded; noise removal stays RNNoise"
+                "sew-voice: DeepFilterNet3 weights refused; noise removal stays RNNoise"
             ),
         });
     if let Err(e) = spawned {

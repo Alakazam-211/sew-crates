@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.10.3 (2026-11-16)
+
+### Added
+
+- `dfn3::Dfn3Model::verify(path)`: checks a weights file against the pinned sha256 without
+  loading it (read in chunks, nothing kept).
+- `Dfn3Layer` and `StageControl::attach_dfn3(layer)` (feature `dfn3`): a running stage built
+  without the model is given it later. The layer is built and warmed up off the audio thread;
+  the stage takes it at its next block with a try-lock that never waits and no allocation,
+  and Strong then warms up and fades in as in a stage built with the model.
+
+### Changed
+
+- The DeepFilterNet3 model's feature maps are laid out bin-major (an internal change to how
+  the model's data is laid out). The output is identical, sample for sample.
+
 ## 0.10.2 (2026-11-16)
 
 - The first release on crates.io (0.9.3 and 0.10.0 were in the sew-crates mirror only). The

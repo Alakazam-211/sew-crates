@@ -2,9 +2,12 @@
 //! the ERB-gain decoder and the deep-filter decoder, one 10 ms frame at a time. Every buffer is
 //! made when a [`NetState`] is built; a frame allocates nothing.
 //!
-//! Layout: a feature map of `C` channels over `F` frequency bins is `C * F` floats, channel
-//! major (`[c * F + f]`). "Causal" convolutions read the previous frames from the state; the
-//! first frames see zeros, as the authors' padded export does.
+//! Layout: a feature map of `C` channels over `F` frequency bins is `F * C` floats, bin major
+//! (`[f * C + c]`): a bin's 64 channels sit side by side, so every convolution works on runs
+//! of 64 floats whatever the number of bins, and the GRUs' 512 inputs and outputs (8 bins of
+//! 64 channels, as the model reshapes them) need no reordering. The convolutions' weights are
+//! reordered once, at load, to match. "Causal" convolutions read the previous frames from the
+//! state; the first frames see zeros, as the authors' padded export does.
 
 // The kernels index several arrays with one bin or channel number.
 #![allow(clippy::needless_range_loop)]
@@ -30,9 +33,22 @@ const CONVP_T: usize = 5;
 /// A separable convolution: depthwise (no bias), then 1x1 with bias.
 #[derive(Debug)]
 struct Sep {
+    /// `[kt][kf][c]`.
     dw: Vec<f32>,
+    /// `[ci][co]`.
     pw: Vec<f32>,
     b: Vec<f32>,
+}
+
+/// A matrix `[rows][cols]` (row major) as `[cols][rows]`.
+fn transposed(w: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0; w.len()];
+    for (r, row) in w.chunks_exact(cols).take(rows).enumerate() {
+        for (c, v) in row.iter().enumerate() {
+            out[c * rows + r] = *v;
+        }
+    }
+    out
 }
 
 /// A GRU layer (gates z, r, n; the reset gate applied after the recurrent product).
@@ -46,6 +62,7 @@ struct Gru {
 /// Every weight, as the archive holds it.
 #[derive(Debug)]
 pub(crate) struct Weights {
+    /// `[kt][kf][c]`.
     e_conv0_w: Vec<f32>,
     e_conv0_b: Vec<f32>,
     e_conv1: Sep,
@@ -75,7 +92,9 @@ pub(crate) struct Weights {
     f_gru_in: Vec<f32>,
     f_gru: [Gru; 3],
     f_skip: Vec<f32>,
+    /// `[ci][kt][co]`.
     f_convp_dw: Vec<f32>,
+    /// `[ci][co]`.
     f_convp_pw: Vec<f32>,
     f_convp_b: Vec<f32>,
     f_out: Vec<f32>,
@@ -99,8 +118,8 @@ impl Take {
     }
     fn sep(&mut self, p: &str, kt: usize, kf: usize) -> Result<Sep, LoadError> {
         Ok(Sep {
-            dw: self.get(&format!("{p}/dw"), &[C, 1, kt, kf])?,
-            pw: self.get(&format!("{p}/pw"), &[C, C])?,
+            dw: transposed(&self.get(&format!("{p}/dw"), &[C, 1, kt, kf])?, C, kt * kf),
+            pw: transposed(&self.get(&format!("{p}/pw"), &[C, C])?, C, C),
             b: self.get(&format!("{p}/b"), &[C])?,
         })
     }
@@ -123,7 +142,7 @@ impl Weights {
     pub(crate) fn from_tensors(t: HashMap<String, Tensor>) -> Result<Self, LoadError> {
         let mut t = Take(t);
         let w = Self {
-            e_conv0_w: t.get("enc/erb_conv0/w", &[C, 1, 3, 3])?,
+            e_conv0_w: transposed(&t.get("enc/erb_conv0/w", &[C, 1, 3, 3])?, C, 9),
             e_conv0_b: t.get("enc/erb_conv0/b", &[C])?,
             e_conv1: t.sep("enc/erb_conv1", 2, 3)?,
             e_conv2: t.sep("enc/erb_conv2", 2, 3)?,
@@ -152,8 +171,8 @@ impl Weights {
             f_gru_in: t.get("df/gru_in/w", &[8, 64, 64])?,
             f_gru: [t.gru("df/gru0")?, t.gru("df/gru1")?, t.gru("df/gru2")?],
             f_skip: t.get("df/skip/w", &[16, 32, 32])?,
-            f_convp_dw: t.get("df/convp/dw", &[10, 32, CONVP_T])?,
-            f_convp_pw: t.get("df/convp/pw", &[10, 10])?,
+            f_convp_dw: transposed(&t.get("df/convp/dw", &[10, 32, CONVP_T])?, 10, 32 * CONVP_T),
+            f_convp_pw: transposed(&t.get("df/convp/pw", &[10, 10])?, 10, 10),
             f_convp_b: t.get("df/convp/b", &[10])?,
             f_out: t.get("df/out/w", &[16, 32, 60])?,
         };
@@ -378,70 +397,129 @@ fn gru(l: &Gru, x: &[f32], h: &mut [f32], gates: &mut [f32], rec: &mut [f32]) {
     }
 }
 
-/// A causal depthwise convolution over time (`kt` frames: `frames[0]` the oldest, the last the
-/// current) and frequency (3 taps, one bin of zero padding each side, stride `stride`).
-/// `frames` each hold `C * fi` floats; `out` gets `C * fo`.
-fn depthwise(dw: &[f32], kt: usize, frames: &[&[f32]], fi: usize, stride: usize, out: &mut [f32]) {
+/// `acc[c] += w[c] * x[c]`.
+#[inline]
+fn mul_add(acc: &mut [f32], w: &[f32], x: &[f32]) {
+    for ((a, w), x) in acc.iter_mut().zip(w).zip(x) {
+        *a += w * x;
+    }
+}
+
+/// One output bin of a 3x3 convolution whose output channels each read one input channel:
+/// `frames` (the oldest first) hold `x.len() / n` input channels of `n` bins, and the output
+/// channels are split evenly among them. Adds bin `f`'s 64 sums to `acc`; `k` is
+/// `[kt][kf][c]`.
+#[inline]
+fn input_conv_at(k: &[f32], frames: &[&[f32]; 3], n: usize, f: usize, acc: &mut [f32; C]) {
+    for (t, x) in frames.iter().enumerate() {
+        let k = &k[t * 3 * C..(t + 1) * 3 * C];
+        let per = C * n / x.len();
+        for (part, x) in x.chunks_exact(n).enumerate() {
+            for c in part * per..(part + 1) * per {
+                let mut a = k[C + c] * x[f];
+                if f > 0 {
+                    a += k[c] * x[f - 1];
+                }
+                if f + 1 < n {
+                    a += k[2 * C + c] * x[f + 1];
+                }
+                acc[c] += a;
+            }
+        }
+    }
+}
+
+/// One output bin of a causal depthwise convolution over time (`frames[0]` the oldest, the
+/// last the current; each `fi` bins of `C` channels) and frequency (3 taps, one bin of zero
+/// padding each side): the 64 channels' sums around input bin `centre`. `dw` is `[kt][kf][c]`.
+#[inline]
+fn depthwise_at(dw: &[f32], frames: &[&[f32]], fi: usize, centre: usize, acc: &mut [f32; C]) {
+    acc.fill(0.0);
+    for (t, frame) in frames.iter().enumerate() {
+        let w = &dw[t * 3 * C..(t + 1) * 3 * C];
+        let mut a = [0.0f32; C];
+        for ((a, w), x) in a
+            .iter_mut()
+            .zip(&w[C..2 * C])
+            .zip(&frame[centre * C..(centre + 1) * C])
+        {
+            *a = w * x;
+        }
+        if centre > 0 {
+            mul_add(&mut a, &w[..C], &frame[(centre - 1) * C..centre * C]);
+        }
+        if centre + 1 < fi {
+            mul_add(
+                &mut a,
+                &w[2 * C..],
+                &frame[(centre + 1) * C..(centre + 2) * C],
+            );
+        }
+        for (acc, a) in acc.iter_mut().zip(&a) {
+            *acc += a;
+        }
+    }
+}
+
+/// 1x1 convolution `N -> N` at one bin, with bias, then ReLU. `pw` is `[ci][co]`.
+#[inline]
+fn pointwise_at<const N: usize>(pw: &[f32], b: &[f32], x: &[f32; N], out: &mut [f32]) {
+    let mut o = [0.0f32; N];
+    o.copy_from_slice(b);
+    for (row, &v) in pw.as_chunks::<N>().0.iter().zip(x) {
+        axpy(&mut o, v, row);
+    }
+    relu(&mut o);
+    out.copy_from_slice(&o);
+}
+
+/// A separable convolution, causal over `frames` (the oldest first, each `fi` bins), stride
+/// `stride` over frequency, then ReLU: `out` gets `((fi - 1) / stride + 1) * C` floats.
+fn separable(l: &Sep, frames: &[&[f32]], fi: usize, stride: usize, out: &mut [f32]) {
     let fo = (fi - 1) / stride + 1;
-    for c in 0..C {
-        let o = &mut out[c * fo..(c + 1) * fo];
-        o.fill(0.0);
-        for (t, frame) in frames.iter().enumerate().take(kt) {
-            let x = &frame[c * fi..(c + 1) * fi];
-            let w = &dw[(c * kt + t) * 3..(c * kt + t) * 3 + 3];
-            for (f, of) in o.iter_mut().enumerate() {
-                let centre = f * stride;
-                let mut acc = w[1] * x[centre];
-                if centre > 0 {
-                    acc += w[0] * x[centre - 1];
-                }
-                if centre + 1 < fi {
-                    acc += w[2] * x[centre + 1];
-                }
-                *of += acc;
+    let mut acc = [0.0f32; C];
+    for (f, o) in out[..fo * C].as_chunks_mut::<C>().0.iter_mut().enumerate() {
+        depthwise_at(&l.dw, frames, fi, f * stride, &mut acc);
+        pointwise_at(&l.pw, &l.b, &acc, o);
+    }
+}
+
+/// A transposed separable convolution over frequency (3 taps, stride 2, padding 1, one bin of
+/// output padding), then ReLU: `fi` bins in, `2 * fi` out. Input bin `i`'s tap `k` lands on
+/// output bin `2i + k - 1`.
+fn separable_up(l: &Sep, x: &[f32], fi: usize, out: &mut [f32]) {
+    let mut acc = [0.0f32; C];
+    for (p, o) in out[..2 * fi * C]
+        .as_chunks_mut::<C>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        let i = p / 2;
+        acc.fill(0.0);
+        if p % 2 == 0 {
+            mul_add(&mut acc, &x[i * C..(i + 1) * C], &l.dw[C..2 * C]);
+        } else {
+            mul_add(&mut acc, &x[i * C..(i + 1) * C], &l.dw[2 * C..]);
+            if i + 1 < fi {
+                mul_add(&mut acc, &x[(i + 1) * C..(i + 2) * C], &l.dw[..C]);
             }
         }
+        pointwise_at(&l.pw, &l.b, &acc, o);
     }
 }
 
-/// 1x1 convolution `C -> C` over `f` bins, with bias, then ReLU.
-fn pointwise(pw: &[f32], b: &[f32], x: &[f32], f: usize, out: &mut [f32]) {
-    for co in 0..C {
-        let o = &mut out[co * f..(co + 1) * f];
-        o.fill(b[co]);
-        for ci in 0..C {
-            axpy(o, pw[co * C + ci], &x[ci * f..(ci + 1) * f]);
-        }
-    }
-    relu(&mut out[..C * f]);
-}
-
-/// A transposed depthwise convolution over frequency (3 taps, stride 2, padding 1, one bin of
-/// output padding): `fi` bins in, `2 * fi` out.
-fn depthwise_up(dw: &[f32], x: &[f32], fi: usize, out: &mut [f32]) {
-    let fo = 2 * fi;
-    for c in 0..C {
-        let o = &mut out[c * fo..(c + 1) * fo];
-        o.fill(0.0);
-        let w = &dw[c * 3..c * 3 + 3];
-        for (i, &v) in x[c * fi..(c + 1) * fi].iter().enumerate() {
-            // Output bin 2i + k - 1 for tap k.
-            for (k, wk) in w.iter().enumerate() {
-                let ob = 2 * i + k;
-                if ob >= 1 && ob - 1 < fo {
-                    o[ob - 1] += v * wk;
-                }
-            }
-        }
-    }
-}
-
-/// `out[c][f] = relu(w[c] * x[c][f] + b[c]) + add[c][f]`.
-fn skip_add(p: &(Vec<f32>, Vec<f32>), x: &[f32], add: &[f32], f: usize, out: &mut [f32]) {
-    for c in 0..C {
-        for k in 0..f {
-            let i = c * f + k;
-            out[i] = (p.0[c] * x[i] + p.1[c]).max(0.0) + add[i];
+/// `out[f][c] = relu(w[c] * x[f][c] + b[c]) + add[f][c]`.
+fn skip_add(p: &(Vec<f32>, Vec<f32>), x: &[f32], add: &[f32], out: &mut [f32]) {
+    for ((o, x), add) in out
+        .as_chunks_mut::<C>()
+        .0
+        .iter_mut()
+        .zip(x.as_chunks::<C>().0)
+        .zip(add.as_chunks::<C>().0)
+    {
+        for c in 0..C {
+            o[c] = (p.0[c] * x[c] + p.1[c]).max(0.0) + add[c];
         }
     }
 }
@@ -457,121 +535,55 @@ pub(crate) fn encode(
     erb: &[f32; NB_ERB],
     spec: &[f32; 2 * NB_DF],
 ) -> f32 {
+    let mut acc = [0.0f32; C];
     // erb_conv0: 1 -> 64 channels, 3x3, causal over 3 frames, bias, ReLU.
     {
         let frames: [&[f32]; 3] = [&s.erb_hist[0], &s.erb_hist[1], erb];
-        for c in 0..C {
-            let o = &mut s.e0[c * 32..(c + 1) * 32];
-            o.fill(w.e_conv0_b[c]);
-            for (t, x) in frames.iter().enumerate() {
-                let k = &w.e_conv0_w[(c * 3 + t) * 3..(c * 3 + t) * 3 + 3];
-                for (f, of) in o.iter_mut().enumerate() {
-                    let mut acc = k[1] * x[f];
-                    if f > 0 {
-                        acc += k[0] * x[f - 1];
-                    }
-                    if f + 1 < 32 {
-                        acc += k[2] * x[f + 1];
-                    }
-                    *of += acc;
-                }
-            }
+        for (f, o) in s.e0.as_chunks_mut::<C>().0.iter_mut().enumerate() {
+            acc.copy_from_slice(&w.e_conv0_b);
+            input_conv_at(&w.e_conv0_w, &frames, NB_ERB, f, &mut acc);
+            relu(&mut acc);
+            o.copy_from_slice(&acc);
         }
-        relu(&mut s.e0);
         s.erb_hist[0] = s.erb_hist[1];
         s.erb_hist[1] = *erb;
     }
     // erb_conv1..3: separable, causal over 2 frames.
-    depthwise(
-        &w.e_conv1.dw,
-        2,
-        &[&s.e0_prev[..], &s.e0[..]],
-        32,
-        2,
-        &mut s.s_a,
-    );
-    pointwise(&w.e_conv1.pw, &w.e_conv1.b, &s.s_a, 16, &mut s.e1);
+    separable(&w.e_conv1, &[&s.e0_prev[..], &s.e0[..]], 32, 2, &mut s.e1);
     s.e0_prev.copy_from_slice(&s.e0);
-    depthwise(
-        &w.e_conv2.dw,
-        2,
-        &[&s.e1_prev[..], &s.e1[..]],
-        16,
-        2,
-        &mut s.s_a,
-    );
-    pointwise(&w.e_conv2.pw, &w.e_conv2.b, &s.s_a, 8, &mut s.e2);
+    separable(&w.e_conv2, &[&s.e1_prev[..], &s.e1[..]], 16, 2, &mut s.e2);
     s.e1_prev.copy_from_slice(&s.e1);
-    depthwise(
-        &w.e_conv3.dw,
-        2,
-        &[&s.e2_prev[..], &s.e2[..]],
-        8,
-        1,
-        &mut s.s_a,
-    );
-    pointwise(&w.e_conv3.pw, &w.e_conv3.b, &s.s_a, 8, &mut s.e3);
+    separable(&w.e_conv3, &[&s.e2_prev[..], &s.e2[..]], 8, 1, &mut s.e3);
     s.e2_prev.copy_from_slice(&s.e2);
 
     // df_conv0: 2 -> 64 channels in two groups (real -> 0..32, imaginary -> 32..64), 3x3,
     // causal over 3 frames; then 1x1, bias, ReLU.
     {
         let frames: [&[f32]; 3] = [&s.spec_hist[0], &s.spec_hist[1], spec];
-        for c in 0..C {
-            let part = c / 32;
-            let o = &mut s.s_a[c * NB_DF..(c + 1) * NB_DF];
-            o.fill(0.0);
-            for (t, fr) in frames.iter().enumerate() {
-                let x = &fr[part * NB_DF..(part + 1) * NB_DF];
-                let k = &w.e_df0.dw[(c * 3 + t) * 3..(c * 3 + t) * 3 + 3];
-                for (f, of) in o.iter_mut().enumerate() {
-                    let mut acc = k[1] * x[f];
-                    if f > 0 {
-                        acc += k[0] * x[f - 1];
-                    }
-                    if f + 1 < NB_DF {
-                        acc += k[2] * x[f + 1];
-                    }
-                    *of += acc;
-                }
-            }
+        for (f, o) in s.c0.as_chunks_mut::<C>().0.iter_mut().enumerate() {
+            acc.fill(0.0);
+            input_conv_at(&w.e_df0.dw, &frames, NB_DF, f, &mut acc);
+            pointwise_at(&w.e_df0.pw, &w.e_df0.b, &acc, o);
         }
-        pointwise(&w.e_df0.pw, &w.e_df0.b, &s.s_a, NB_DF, &mut s.c0);
         s.spec_hist[0] = s.spec_hist[1];
         s.spec_hist[1] = *spec;
     }
     // df_conv1: separable, stride 2 -> 48 bins.
-    depthwise(
-        &w.e_df1.dw,
-        2,
-        &[&s.c0_prev[..], &s.c0[..]],
-        NB_DF,
-        2,
-        &mut s.s_a,
-    );
-    pointwise(&w.e_df1.pw, &w.e_df1.b, &s.s_a, 48, &mut s.s_b);
+    separable(&w.e_df1, &[&s.c0_prev[..], &s.c0[..]], NB_DF, 2, &mut s.s_b);
     s.c0_prev.copy_from_slice(&s.c0);
 
-    // Flatten bin-major (f * 64 + c): df_conv1's 48 x 64 = 3072, e3's 8 x 64 = 512.
-    for f in 0..48 {
-        for c in 0..C {
-            s.s_c[f * C + c] = s.s_b[c * 48 + f];
-        }
-    }
-    // df_fc_emb (grouped 3072 -> 512, ReLU), plus e3 flattened.
+    // df_fc_emb (grouped 48 x 64 = 3072 -> 512, ReLU), plus e3 (8 x 64 = 512).
     grouped(
         &w.e_df_fc_emb,
         16,
         192,
         32,
-        &s.s_c[..48 * C],
+        &s.s_b[..48 * C],
         &mut s.s_a[..H],
     );
     relu(&mut s.s_a[..H]);
-    for f in 0..8 {
-        for c in 0..C {
-            s.s_a[f * C + c] += s.e3[c * 8 + f];
-        }
+    for (a, e) in s.s_a[..H].iter_mut().zip(&s.e3) {
+        *a += e;
     }
     // The embedding GRU: grouped in (ReLU), GRU, grouped out (ReLU).
     grouped(&w.e_gru_in, 16, 32, 32, &s.s_a[..H], &mut s.s_b[..H]);
@@ -606,55 +618,40 @@ pub(crate) fn decode_erb(w: &Weights, s: &mut NetState, gains: &mut [f32; NB_ERB
         &mut s.s_gates,
         &mut s.s_rec,
     );
+    // The embedding as 8 bins of 64 channels.
     grouped(&w.d_gru_out, 16, 32, 32, &s.d_h1, &mut s.s_b[..H]);
     relu(&mut s.s_b[..H]);
-    // To channel-major 64 x 8.
-    for f in 0..8 {
-        for c in 0..C {
-            s.s_a[c * 8 + f] = s.s_b[f * C + c];
-        }
-    }
     // a3 = conv3p(e3) + embedding, into s_c[..512].
-    skip_add(&w.d_p3, &s.e3, &s.s_a[..C * 8], 8, &mut s.s_c[..C * 8]);
+    skip_add(&w.d_p3, &s.e3, &s.s_b[..C * 8], &mut s.s_c[..C * 8]);
     // convt3: separable, causal over 2 frames, 8 bins -> s_b[..512].
-    depthwise(
-        &w.d_t3.dw,
-        2,
+    separable(
+        &w.d_t3,
         &[&s.t3_prev[..], &s.s_c[..C * 8]],
         8,
         1,
-        &mut s.s_a,
+        &mut s.s_b,
     );
-    pointwise(&w.d_t3.pw, &w.d_t3.b, &s.s_a, 8, &mut s.s_b);
     s.t3_prev.copy_from_slice(&s.s_c[..C * 8]);
     // a2 = conv2p(e2) + that.
-    skip_add(&w.d_p2, &s.e2, &s.s_b[..C * 8], 8, &mut s.s_c[..C * 8]);
+    skip_add(&w.d_p2, &s.e2, &s.s_b[..C * 8], &mut s.s_c[..C * 8]);
     // convt2: 8 -> 16 bins.
-    depthwise_up(&w.d_t2.dw, &s.s_c, 8, &mut s.s_a);
-    pointwise(&w.d_t2.pw, &w.d_t2.b, &s.s_a, 16, &mut s.s_b);
-    skip_add(&w.d_p1, &s.e1, &s.s_b[..C * 16], 16, &mut s.s_c[..C * 16]);
+    separable_up(&w.d_t2, &s.s_c, 8, &mut s.s_b);
+    skip_add(&w.d_p1, &s.e1, &s.s_b[..C * 16], &mut s.s_c[..C * 16]);
     // convt1: 16 -> 32 bins.
-    depthwise_up(&w.d_t1.dw, &s.s_c, 16, &mut s.s_a);
-    pointwise(&w.d_t1.pw, &w.d_t1.b, &s.s_a, 32, &mut s.s_b);
-    skip_add(&w.d_p0, &s.e0, &s.s_b[..C * 32], 32, &mut s.s_c[..C * 32]);
+    separable_up(&w.d_t1, &s.s_c, 16, &mut s.s_b);
+    skip_add(&w.d_p0, &s.e0, &s.s_b[..C * 32], &mut s.s_c[..C * 32]);
     // conv0_out: 64 -> 1 channel, 2 x 3, causal over 2 frames, bias, sigmoid.
     for (f, g) in gains.iter_mut().enumerate() {
         let mut acc = w.d_out_b;
         for c in 0..C {
-            for (t, x) in [
-                &s.out_prev[c * 32..(c + 1) * 32],
-                &s.s_c[c * 32..(c + 1) * 32],
-            ]
-            .iter()
-            .enumerate()
-            {
+            for (t, x) in [&s.out_prev, &s.s_c].iter().enumerate() {
                 let k = &w.d_out_w[(c * 2 + t) * 3..(c * 2 + t) * 3 + 3];
-                acc += k[1] * x[f];
+                acc += k[1] * x[f * C + c];
                 if f > 0 {
-                    acc += k[0] * x[f - 1];
+                    acc += k[0] * x[(f - 1) * C + c];
                 }
                 if f + 1 < 32 {
-                    acc += k[2] * x[f + 1];
+                    acc += k[2] * x[(f + 1) * C + c];
                 }
             }
         }
@@ -663,39 +660,54 @@ pub(crate) fn decode_erb(w: &Weights, s: &mut NetState, gains: &mut [f32; NB_ERB
     s.out_prev.copy_from_slice(&s.s_c[..C * 32]);
 }
 
+/// Bins of the deep-filter pathway worked on side by side.
+const CONVP_BINS: usize = 8;
+
 /// The deep-filter decoder: the filter's complex taps, `coefs[f * 10 + 2 * o + {0: re, 1: im}]`
 /// for bin `f` and tap `o` (the oldest frame first).
 pub(crate) fn decode_df(w: &Weights, s: &mut NetState, coefs: &mut [f32; NB_DF * DF_ORDER * 2]) {
     // The pathway: c0 over the last 5 runs.
     s.c0_hist[s.c0_head].copy_from_slice(&s.c0);
     s.c0_head = (s.c0_head + 1) % CONVP_T;
-    // 10 channels from c0's two halves (5 each), (5, 1) kernel over time.
-    let p = &mut s.s_a[..10 * NB_DF];
-    p.fill(0.0);
-    for k in 0..10 {
-        let part = k / 5;
-        let o = &mut p[k * NB_DF..(k + 1) * NB_DF];
+    // 10 channels from c0's two halves (5 each), (5, 1) kernel over time; then 1x1, bias,
+    // ReLU, into s_b as `[f][k]`. Eight bins at a time: each sum runs over the 32 channels
+    // and 5 frames in order, and eight of them run side by side.
+    for f0 in (0..NB_DF).step_by(CONVP_BINS) {
+        let mut acc = [[0.0f32; CONVP_BINS]; 10];
         for ci in 0..32 {
             for t in 0..CONVP_T {
                 // t = 0 is the oldest frame.
                 let frame = &s.c0_hist[(s.c0_head + t) % CONVP_T];
-                let x = &frame[(part * 32 + ci) * NB_DF..(part * 32 + ci + 1) * NB_DF];
-                axpy(o, w.f_convp_dw[(k * 32 + ci) * CONVP_T + t], x);
+                let mut re = [0.0f32; CONVP_BINS];
+                let mut im = [0.0f32; CONVP_BINS];
+                for (b, bin) in frame[f0 * C..(f0 + CONVP_BINS) * C]
+                    .as_chunks::<C>()
+                    .0
+                    .iter()
+                    .enumerate()
+                {
+                    re[b] = bin[ci];
+                    im[b] = bin[32 + ci];
+                }
+                let k = &w.f_convp_dw[(ci * CONVP_T + t) * 10..(ci * CONVP_T + t + 1) * 10];
+                for (o, acc) in acc.iter_mut().enumerate() {
+                    axpy(acc, k[o], if o < 5 { &re } else { &im });
+                }
             }
         }
-    }
-    let q = &mut s.s_b[..10 * NB_DF];
-    for k in 0..10 {
-        let o = &mut q[k * NB_DF..(k + 1) * NB_DF];
-        o.fill(w.f_convp_b[k]);
-        for ci in 0..10 {
-            axpy(
-                o,
-                w.f_convp_pw[k * 10 + ci],
-                &s.s_a[ci * NB_DF..(ci + 1) * NB_DF],
+        for b in 0..CONVP_BINS {
+            let mut p = [0.0f32; 10];
+            for (p, acc) in p.iter_mut().zip(&acc) {
+                *p = acc[b];
+            }
+            let f = f0 + b;
+            pointwise_at(
+                &w.f_convp_pw,
+                &w.f_convp_b,
+                &p,
+                &mut s.s_b[f * 10..(f + 1) * 10],
             );
         }
-        relu(o);
     }
     // The GRU path.
     grouped(&w.f_gru_in, 8, 64, 64, &s.emb, &mut s.s_c[..H]);
@@ -709,11 +721,13 @@ pub(crate) fn decode_df(w: &Weights, s: &mut NetState, coefs: &mut [f32; NB_DF *
     for (a, b) in s.s_a[..H].iter_mut().zip(h2.iter()) {
         *a += b;
     }
-    // Out: grouped 512 -> 960, tanh, plus the pathway (transposed to bin-major).
+    // Out: grouped 512 -> 960, tanh, plus the pathway.
     grouped(&w.f_out, 16, 32, 60, &s.s_a[..H], &mut s.s_c[..NB_DF * 10]);
-    for f in 0..NB_DF {
-        for k in 0..10 {
-            coefs[f * 10 + k] = s.s_c[f * 10 + k].tanh() + s.s_b[k * NB_DF + f];
-        }
+    for ((c, g), p) in coefs
+        .iter_mut()
+        .zip(&s.s_c[..NB_DF * 10])
+        .zip(&s.s_b[..NB_DF * 10])
+    {
+        *c = g.tanh() + p;
     }
 }

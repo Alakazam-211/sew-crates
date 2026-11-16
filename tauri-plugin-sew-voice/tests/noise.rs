@@ -305,3 +305,46 @@ async fn the_fixture_replays() {
         assert_eq!(&get(&w).await, want);
     }
 }
+
+/// A phone: Off switches the call's capture to raw and Standard back, each answer and event
+/// carrying the capture, the switches and the last pause; a switch that fails keeps the
+/// capture and says `switch_failed`, until the setting agrees with it again.
+#[tokio::test]
+async fn a_phone_capture_switch_reaches_the_answer_and_the_event() {
+    let w = world();
+    w.engine.phone_noise(false);
+    let gap = tauri_plugin_sew_voice::fake::FAKE_SWITCH_GAP_MS;
+    assert_eq!(
+        get(&w).await,
+        json!({"mode": "standard", "active": "standard", "phone_mode": "os"})
+    );
+    let off = json!({"mode": "off", "active": "off", "phone_mode": "raw",
+        "phone_mode_switches": 1, "phone_mode_gap_ms": gap});
+    assert_eq!(set(&w, "off").await, Ok(off.clone()));
+    until("the event", || events(&w.sink).last() == Some(&off)).await;
+    let back = json!({"mode": "standard", "active": "standard", "phone_mode": "os",
+        "phone_mode_switches": 2, "phone_mode_gap_ms": gap});
+    assert_eq!(set(&w, "standard").await, Ok(back.clone()));
+    until("the event", || events(&w.sink).last() == Some(&back)).await;
+
+    w.engine.phone_noise(true);
+    let failed = json!({"mode": "off", "active": "off", "phone_mode": "os",
+        "phone_mode_reason": "switch_failed", "phone_mode_switches": 2,
+        "phone_mode_gap_ms": gap});
+    assert_eq!(set(&w, "off").await, Ok(failed.clone()));
+    until("the event", || events(&w.sink).last() == Some(&failed)).await;
+    assert_eq!(set(&w, "standard").await, Ok(back));
+}
+
+/// Android's unprocessed-source flag goes from the native shim to the engine; an engine without
+/// a phone backend takes it and does nothing.
+#[tokio::test]
+async fn the_android_unprocessed_flag_reaches_the_engine() {
+    let w = world();
+    let control = tauri_plugin_sew_voice::VoiceControl::new(w.svc.clone());
+    assert!(w.engine.android_unprocessed_supported().is_empty());
+    control.set_android_unprocessed_supported(true);
+    w.svc.set_android_unprocessed_supported(false);
+    assert_eq!(w.engine.android_unprocessed_supported(), vec![true, false]);
+    Bare.set_android_unprocessed_supported(true);
+}

@@ -46,6 +46,18 @@ what was asked: `budget` or `fault` (the audio pipeline stopped the stage) or `u
 `sew-voice:noise-removal` permission set. The plugin stores nothing: keep the person's choice
 with the app's settings and set it again at start.
 
+On iOS and Android, `off` also turns the OS's voice processing off: the microphone is captured
+raw, with echo cancellation and gain control kept and no noise suppression, from the call's
+start or, set during a call, at once (the microphone pauses briefly while it reopens). The
+state then carries `phone_mode` (`os` or `raw`), `phone_mode_switches`, `phone_mode_gap_ms`
+and, if a switch failed and the phone kept its capture, `phone_mode_reason: "switch_failed"`.
+On Android, raw capture uses the unprocessed audio source where the device has it, else the
+voice recognition source. The plugin has no Android code to ask, so the app's Android side
+reads `AudioManager.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED)` and
+passes `"true"` as `Builder::android_unprocessed_supported(true)` or
+`VoiceControl::set_android_unprocessed_supported(true)`;
+without it the voice recognition source is used.
+
 With feature `dfn3`, `standard` runs DeepFilterNet3's low-latency model (by Hendrik Schröter
 and the DeepFilterNet authors; MIT OR Apache-2.0), with RNNoise kept beside it as its automatic
 step-down, on desktop and, after the OS's voice processing, on phones; see "Shipping
@@ -119,7 +131,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.8.0"
+tauri-plugin-sew-voice = "0.8.1"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -261,9 +273,16 @@ Put them in a `dfn3/` folder of your app's resources; the plugin looks for
 
 For another location, give the path to `Builder::dfn3_weights(path)`.
 
-The plugin loads the file on its own thread at start, and checks its sha256 against the one
-this version pins before it reads a weight. When the file is missing or is not the pinned one,
-`standard` stays on RNNoise and the noise removal state says why (`model: "rnnoise"`,
+At start the plugin only checks the file, on its own thread: its sha256 against the one this
+version pins, read through in chunks, with nothing kept in memory. The model is loaded when a
+call first needs it (a call starting in `standard`, or the first switch to `standard` during
+one), off the audio thread: that call starts on RNNoise (on phones, the OS's voice processing
+alone) with `model_reason: "loading"` and steps up to DeepFilterNet3 without a click once it is
+ready. After the last call the model is
+released when no call has started for `Builder::dfn3_idle_unload` (five minutes by default),
+and the next call loads it again. When the file is missing or is not the pinned one,
+`standard` stays on RNNoise (on phones, the OS's voice processing alone) and the noise
+removal state says why (`model: "rnnoise"`,
 `model_reason: "unavailable"`); nothing else changes.
 
 Carry `dfn3/NOTICE` (and the two licence texts) in your app's third-party notices.

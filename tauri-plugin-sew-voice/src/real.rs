@@ -31,7 +31,8 @@
 //! - **The phone's audio session.** The engine keeps one `AudioSession` for the app: every
 //!   [`AudioSessionEvent`] goes to it, with or without a call, and each call's kessel-audio
 //!   starts from what it says (on iOS, deferred until the session is active). On phones the
-//!   audio is kessel-audio's OS voice processing (`sew_call_client::platform_audio_config`).
+//!   audio is kessel-audio's OS voice processing (`sew_call_client::platform_audio_config`),
+//!   or raw capture while noise removal is Off (switched during a call by `set_noise_removal`).
 //! - **Device keys.** `forget_server` and `known_device_keys` are `CallClient`'s, over the
 //!   device store of the engine's `ClientConfig`.
 
@@ -390,7 +391,8 @@ impl EngineInner {
 
 /// The audio for a call on this platform (`sew_call_client::platform_audio_config`): the
 /// system's devices through cpal on desktop; on iOS and Android (sew-call-client's `mobile`)
-/// the OS's voice processing, with its echo cancellation and noise suppression on.
+/// the OS's voice processing, with its echo cancellation and noise suppression on (a call
+/// whose noise removal is Off captures raw instead: the engine's `NoiseRemovalControl`).
 #[cfg(feature = "audio")]
 pub fn system_audio() -> AudioConfig {
     Arc::new(sew_call_client::platform_audio_config)
@@ -739,6 +741,14 @@ impl VoiceEngine for CallClientEngine {
         Some(self.inner.noise.subscribe())
     }
 
+    /// To the engine's [`sew_call_client::NoiseRemovalControl`]: Off's raw capture on Android
+    /// uses the unprocessed source when the device has it.
+    fn set_android_unprocessed_supported(&self, supported: bool) {
+        self.inner
+            .noise
+            .set_android_unprocessed_supported(supported);
+    }
+
     #[cfg(feature = "dfn3")]
     fn set_dfn3_weights(&self, path: &std::path::Path) -> Result<(), EngineError> {
         self.inner.noise.set_dfn3_weights(path).map_err(|e| {
@@ -747,6 +757,11 @@ impl VoiceEngine for CallClientEngine {
                 e.to_string(),
             ))
         })
+    }
+
+    #[cfg(feature = "dfn3")]
+    fn set_dfn3_idle_unload(&self, after: std::time::Duration) {
+        self.inner.noise.set_dfn3_idle_unload(after);
     }
 
     #[cfg(feature = "noise-bench")]
@@ -1735,14 +1750,8 @@ async fn audio(shared: Weak<CallShared>) {
     loop {
         tick.tick().await;
         let Some(sh) = shared.upgrade() else { return };
-        let Some((levels, events)) = sh.with_bridge(|b| {
-            let rx = b.engine().events();
-            let mut events = Vec::new();
-            while let Some(e) = rx.try_recv() {
-                events.push(e);
-            }
-            (b.levels(), events)
-        }) else {
+        // Through the bridge, which notes a failed switch of a phone's capture on the way.
+        let Some((levels, events)) = sh.with_bridge(|b| (b.levels(), b.events())) else {
             // A held join has no audio yet; once started, no bridge means the call is over.
             if sh.audio_started.load(Ordering::Acquire) {
                 return;

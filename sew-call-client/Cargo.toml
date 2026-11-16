@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-call-client"
-version = "0.8.0"
+version = "0.8.1"
 build = "build.rs"
 include = [
     "src/**",
@@ -127,7 +127,7 @@ version = "0.12"
 version = "1"
 
 [dependencies.kessel-audio]
-version = "0.2"
+version = "0.2.1"
 optional = true
 default-features = false
 
@@ -181,20 +181,20 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-e2ee]
-version = "0.10.2"
+version = "0.10.3"
 
 [dependencies.sew-lk-compat]
-version = "0.10.2"
+version = "0.10.3"
 
 [dependencies.sew-lkproto]
-version = "0.10.2"
+version = "0.10.3"
 
 [dependencies.sew-noise]
-version = "0.10.2"
+version = "0.10.3"
 optional = true
 
 [dependencies.sew-proto]
-version = "0.10.2"
+version = "0.10.3"
 
 [dependencies.sha1]
 version = "0.10"

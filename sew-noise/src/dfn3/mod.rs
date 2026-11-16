@@ -100,6 +100,17 @@ impl Dfn3Model {
         }))
     }
 
+    /// Checks that the file at `path` is the pinned weights archive (its sha256 is
+    /// [`WEIGHTS_SHA256`]) without loading it: the file is hashed in 64 KiB chunks and nothing
+    /// of it is kept. For an app that records where the weights are and loads them later.
+    pub fn verify(path: impl AsRef<Path>) -> Result<(), LoadError> {
+        let sha = weights::sha256_file(path.as_ref())?;
+        if sha != WEIGHTS_SHA256 {
+            return Err(LoadError::Mismatch { sha256: sha });
+        }
+        Ok(())
+    }
+
     /// Bytes of weights held in memory.
     pub fn weight_bytes(&self) -> usize {
         self.weights.bytes()

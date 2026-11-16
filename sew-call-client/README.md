@@ -52,13 +52,28 @@ Not affiliated with or endorsed by LiveKit.
   mid-call without a click; `state` and `subscribe` give `{mode, active, reason}`, where
   `reason` is `budget` or `fault` when kessel-audio stopped the stage, or `unavailable` where no
   stage runs (phones). `platform_audio_config` sets Standard on desktop.
+- Noise removal Off on phones (`mobile`): the OS's voice processing is off too and the
+  microphone is captured raw (iOS: the plain RemoteIO unit; Android: the unprocessed source
+  where the device has it, else the voice recognition source), with kessel-audio's echo
+  cancellation and gain control and no noise suppression. A call that starts in Off opens raw;
+  `set` during a call switches the live call's capture both ways, with a short pause of the
+  microphone. The state's `phone_mode` (`os`, `raw`), `phone_mode_switches`,
+  `phone_mode_gap_ms` and `phone_mode_reason` (`switch_failed`) follow it. On Android, pass
+  `AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED` to
+  `NoiseRemovalControl::set_android_unprocessed_supported`, and read kessel-audio's events
+  through `AudioBridge::events` so a failed switch shows at once.
 - `dfn3` (off by default): Standard runs DeepFilterNet3's low-latency model (by Hendrik
   Schröter and the DeepFilterNet authors; MIT OR Apache-2.0), with RNNoise beside it as its
   automatic step-down, on desktop and, after the OS's voice processing, on phones. The app
   ships the weights as a resource (`DFN3_WEIGHTS_FILE`, with their NOTICE and licence texts)
-  and gives their path to `NoiseRemovalControl::set_dfn3_weights`; without usable weights
-  Standard stays RNNoise. The state then also says which `model` runs, why it is RNNoise
-  (`model_reason`) and how often the call's stage stepped down (`step_downs`). Which files
+  and gives their path to `NoiseRemovalControl::set_dfn3_weights`, which only checks the
+  file's pinned sha256; the model is loaded off the audio thread when a call first needs it
+  (that call starts on RNNoise, on phones the OS's voice processing alone, with
+  `model_reason: loading`, and steps up without a click), and released after
+  `set_dfn3_idle_unload`'s time with no call (`DFN3_IDLE_UNLOAD` by default; `preload_dfn3`
+  loads it at once). Without usable weights Standard stays RNNoise. The state then also says
+  which `model` runs, why it is RNNoise (`model_reason`) and how often the call's stage stepped
+  down (`step_downs`). Which files
   to ship and where: tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app".
 - `noise-bench` (debug builds only, never in `default`): `noise_bench::run`, the stage on the
   device's microphone for a while, reported as JSON.
@@ -106,7 +121,7 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.8.0"
+sew-call-client = "0.8.1"
 ```
 
 The engine's WebRTC stack is `sew-str0m`, Alakazam Labs' fork of `str0m` 0.25 (library name

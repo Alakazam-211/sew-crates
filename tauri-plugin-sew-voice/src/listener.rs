@@ -266,6 +266,17 @@ impl VoiceControl {
         self.service.audio_session(AudioSessionEvent::RouteChanged);
     }
 
+    /// Android: whether this device has the unprocessed audio source, as the app's Android
+    /// side reads it: `AudioManager.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED)`
+    /// is `"true"`. Noise removal Off turns the OS's voice processing off and captures the
+    /// microphone raw: from the unprocessed source when the device has it, else (the default,
+    /// until this is called) from the voice recognition source. It applies from the next time
+    /// the microphone opens raw (a call that starts in Off, or a switch to Off). The plugin has
+    /// no Android code of its own to read it. iOS and desktop ignore it. Sync and cheap.
+    pub fn set_android_unprocessed_supported(&self, supported: bool) {
+        self.service.set_android_unprocessed_supported(supported);
+    }
+
     /// The app went to the background (iOS `sceneDidEnterBackground` /
     /// `applicationDidEnterBackground`, Android `onPause`/`onStop`) or came back
     /// (`sceneWillEnterForeground`, `onResume`). Not an audio interruption: `suspend` and

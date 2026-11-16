@@ -1,15 +1,19 @@
 //! [`NoiseRemovalControl`]: the setting, the stage it builds for each call's audio, and the
 //! state and its changes.
 
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 use kessel_audio::{AudioEngine, EngineConfig};
 use sew_noise::{Mode, Stage, StageControl, warm_up_thread};
 use tokio::sync::broadcast;
 
 use super::hook::{self, Bypass, CaptureStage};
-use super::{NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseSource};
+use super::{
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseSource, PhoneAudioMode,
+};
+use crate::audio::{PhoneOs, PhoneStart};
 
 /// A stage can be handed to this build's audio pipeline without DeepFilterNet3: its
 /// kessel-audio has the hook, and the capture path is not a phone's OS voice processing (which
@@ -29,10 +33,50 @@ enum Dfn3Slot {
     /// None given: RNNoise, and the state carries no model fields.
     #[default]
     NotGiven,
-    /// Loaded: Standard runs DeepFilterNet3.
-    Loaded(Arc<sew_noise::dfn3::Dfn3Model>),
+    /// Given and checked: the path, and the model while it is in memory (loaded on first
+    /// need, released after the idle time).
+    Given {
+        path: std::path::PathBuf,
+        model: Option<Arc<sew_noise::dfn3::Dfn3Model>>,
+    },
     /// Given but refused (missing, unreadable, not the pinned file): RNNoise.
     Failed,
+}
+
+/// How long the model stays in memory after the last call's audio ends, by default
+/// ([`NoiseRemovalControl::set_dfn3_idle_unload`]). Five minutes: calls come in clusters (a
+/// call back, a rejoin after a drop, the next meeting), and a reload costs a file read and
+/// tens of milliseconds of one core, so the model stays for those, and the memory is back soon
+/// after a session of calls ends.
+#[cfg(feature = "dfn3")]
+pub const DFN3_IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
+
+/// DeepFilterNet3's weights and model (feature `dfn3`).
+#[cfg(feature = "dfn3")]
+struct Dfn3State {
+    slot: Dfn3Slot,
+    info: Option<Dfn3LoadInfo>,
+    /// A loader thread runs (a load, or handing the model to the live call's stage).
+    busy: bool,
+    /// The last load failed (the file changed or went away since it was given).
+    load_failed: bool,
+    /// Bumped when a call's audio starts or ends: an idle release acts only on its own.
+    idle_gen: u64,
+    idle_unload: Duration,
+}
+
+#[cfg(feature = "dfn3")]
+impl Default for Dfn3State {
+    fn default() -> Dfn3State {
+        Dfn3State {
+            slot: Dfn3Slot::NotGiven,
+            info: None,
+            busy: false,
+            load_failed: false,
+            idle_gen: 0,
+            idle_unload: DFN3_IDLE_UNLOAD,
+        }
+    }
 }
 
 /// What loading the DeepFilterNet3 weights cost (feature `dfn3`): resident memory before and
@@ -86,12 +130,14 @@ impl CaptureStage for NoiseStage {
     }
 }
 
-/// The stage's mode for a setting: Standard is Strong when the stage was built with
-/// DeepFilterNet3, Standard (RNNoise) otherwise.
+/// The stage's mode for a setting: Standard is Strong when the stage has DeepFilterNet3,
+/// Standard (RNNoise) otherwise; on phones a stage without the model passes the audio through
+/// (the OS's processing does the suppression until DeepFilterNet3 is there).
 fn stage_mode(mode: NoiseRemoval, strong: bool) -> Mode {
     match mode {
         NoiseRemoval::Off => Mode::Off,
         NoiseRemoval::Standard if strong => Mode::Strong,
+        NoiseRemoval::Standard if crate::audio::PHONE_AUDIO => Mode::Off,
         NoiseRemoval::Standard => Mode::Standard,
     }
 }
@@ -111,34 +157,93 @@ fn from_code(v: u8) -> NoiseRemoval {
     }
 }
 
-/// Where the pipeline's bypass flag is read: kessel-audio's engine, or a test's.
-pub(crate) trait BypassSource: Send + Sync {
-    fn bypass(&self) -> Option<Bypass>;
-}
+/// How long a switch of the phone's capture may take before it counts as failed when no error
+/// was seen (kessel-audio reopens the device in milliseconds; its error event may have been
+/// read by someone else).
+#[cfg(not(test))]
+const SWITCH_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const SWITCH_TIMEOUT: Duration = Duration::from_millis(300);
 
-impl BypassSource for AudioEngine {
-    fn bypass(&self) -> Option<Bypass> {
-        hook::bypass(self)
+/// A call's running audio as the control sees it: the pipeline's bypass flag and, on a phone,
+/// its capture mode. kessel-audio's engine, or a test's.
+pub(crate) trait LiveAudio: Send + Sync {
+    fn bypass(&self) -> Option<Bypass>;
+    /// The phone's capture now (`None`: not a phone backend).
+    fn capture_mode(&self) -> Option<PhoneAudioMode> {
+        None
+    }
+    /// Asks the phone backend to switch its capture (never blocks).
+    fn switch_capture(&self, start: PhoneStart) {
+        let _ = start;
+    }
+    /// The switches so far, and how long the device paused for the last one that reopened it.
+    fn capture_switches(&self) -> (u64, Option<Duration>) {
+        (0, None)
     }
 }
 
-/// One call's audio: the stage handed over (`None`: none could be) and the pipeline's bypass
-/// flag.
+impl LiveAudio for AudioEngine {
+    fn bypass(&self) -> Option<Bypass> {
+        hook::bypass(self)
+    }
+
+    #[cfg(all(feature = "mobile", any(target_os = "ios", target_os = "android")))]
+    fn capture_mode(&self) -> Option<PhoneAudioMode> {
+        Some(crate::audio::phone_audio_mode(self.phone_mode()))
+    }
+
+    #[cfg(all(feature = "mobile", any(target_os = "ios", target_os = "android")))]
+    fn switch_capture(&self, start: PhoneStart) {
+        self.set_phone_mode(crate::audio::kessel_phone_mode(start));
+    }
+
+    fn capture_switches(&self) -> (u64, Option<Duration>) {
+        let st = self.stats();
+        (st.phone_mode_switches, st.last_phone_mode_gap)
+    }
+}
+
+/// A phone call's capture, as the control asked for it.
+struct PhoneLive {
+    /// The phone's OS.
+    os: PhoneOs,
+    /// The capture last asked of the backend (at the start, or by a switch).
+    asked: PhoneAudioMode,
+    /// A switch under way since then.
+    pending: Option<Instant>,
+    /// kessel-audio reported an error while it was under way.
+    error_seen: bool,
+    /// The last switch failed: the backend went back to the capture it had.
+    failed: bool,
+}
+
+/// One call's audio: the stage handed over (`None`: none could be), the running audio (its
+/// bypass flag, and on a phone its capture) and, on a phone, the capture asked for.
 struct Live {
     id: u64,
     stage: Option<StageControl>,
-    bypass: Option<Weak<dyn BypassSource>>,
+    audio: Option<Weak<dyn LiveAudio>>,
+    phone: Option<PhoneLive>,
+}
+
+impl Live {
+    fn audio(&self) -> Option<Arc<dyn LiveAudio>> {
+        self.audio.as_ref().and_then(Weak::upgrade)
+    }
 }
 
 struct Inner {
     mode: AtomicU8,
+    /// Android: the device has the unprocessed audio source (the app says).
+    unprocessed: AtomicBool,
     next_id: AtomicU64,
     live: Mutex<Option<Live>>,
     /// The state last published.
     last: Mutex<Option<NoiseRemovalState>>,
     events: broadcast::Sender<NoiseRemovalState>,
     #[cfg(feature = "dfn3")]
-    dfn3: Mutex<(Dfn3Slot, Option<Dfn3LoadInfo>)>,
+    dfn3: Mutex<Dfn3State>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -157,6 +262,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// - [`crate::AudioBridge::start_with_noise`] builds a call's stage in the current mode,
 ///   hands it to kessel-audio (whose own noise suppression is then off) and keeps the state
 ///   current while the call's audio runs.
+/// - On iOS and Android (feature `mobile`) the setting also picks how the microphone is
+///   captured ([`PhoneAudioMode`]): a call starts raw in Off and through the OS's voice
+///   processing in Standard, and [`NoiseRemovalControl::set`] during a call switches the live
+///   call's capture at once (the microphone pauses briefly while it reopens). On Android, tell
+///   the control whether the device has the unprocessed audio source
+///   ([`NoiseRemovalControl::set_android_unprocessed_supported`]).
 ///
 /// Nothing is stored on disk: the host keeps the person's choice and sets it at start.
 #[derive(Clone)]
@@ -185,49 +296,53 @@ impl NoiseRemovalControl {
         NoiseRemovalControl {
             inner: Arc::new(Inner {
                 mode: AtomicU8::new(code(mode)),
+                unprocessed: AtomicBool::new(false),
                 next_id: AtomicU64::new(0),
                 live: Mutex::new(None),
                 last: Mutex::new(None),
                 events,
                 #[cfg(feature = "dfn3")]
-                dfn3: Mutex::new((Dfn3Slot::NotGiven, None)),
+                dfn3: Mutex::new(Dfn3State::default()),
             }),
         }
     }
 
-    /// Loads DeepFilterNet3's weights from `path` (feature `dfn3`): the file the app ships as
-    /// a resource (`sew_noise::dfn3::WEIGHTS_FILE`), checked against its pinned sha256 before
-    /// anything is read. From then on [`NoiseRemoval::Standard`] runs DeepFilterNet3 in each
-    /// new call, with RNNoise beside it as the step-down (a live call keeps the stage it
-    /// started with).
+    /// Where DeepFilterNet3's weights are (feature `dfn3`): the file the app ships as a
+    /// resource (`sew_noise::dfn3::WEIGHTS_FILE`). The control records the path and checks the
+    /// file against its pinned sha256 (read in chunks; nothing of it stays in memory); it does
+    /// not load the model. The model is loaded on a thread of its own when it is first needed:
+    /// when a call's audio starts in [`NoiseRemoval::Standard`], or at the first switch to
+    /// Standard during a call. Until it is ready the call runs RNNoise (on phones, the OS's
+    /// processing alone) and the state says `model_reason: loading`; then the call's stage
+    /// steps up to DeepFilterNet3 without a click. After the last call's audio ends the model
+    /// is released once [`Self::set_dfn3_idle_unload`]'s time passes with no call; the next
+    /// call loads it again.
     ///
-    /// Slow (tens of milliseconds, about 40 MB): call it once at start, off the UI and audio
-    /// threads. On an error (a missing or unreadable file, or not the pinned weights) Standard
-    /// stays RNNoise and the state says `model_reason: unavailable`; a later call may try
+    /// The check reads the whole file (about 40 MB): call it off the UI and audio threads. On
+    /// an error (a missing or unreadable file, or not the pinned weights) Standard stays
+    /// RNNoise and the state says `model_reason: unavailable`; a later call of this may try
     /// again.
     #[cfg(feature = "dfn3")]
     pub fn set_dfn3_weights(
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<(), sew_noise::dfn3::LoadError> {
-        let before = super::rss_kib();
-        let started = std::time::Instant::now();
-        let loaded = sew_noise::dfn3::Dfn3Model::load(path);
-        let info = Dfn3LoadInfo {
-            rss_before_kib: before,
-            rss_after_kib: super::rss_kib(),
-            load_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        };
+        let path = path.as_ref();
+        let checked = sew_noise::dfn3::Dfn3Model::verify(path);
         let out = {
-            let mut slot = lock(&self.inner.dfn3);
-            match loaded {
-                Ok(model) => {
-                    *slot = (Dfn3Slot::Loaded(model), Some(info));
+            let mut st = lock(&self.inner.dfn3);
+            st.load_failed = false;
+            match checked {
+                Ok(()) => {
+                    st.slot = Dfn3Slot::Given {
+                        path: path.to_path_buf(),
+                        model: None,
+                    };
                     Ok(())
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "noise removal: DeepFilterNet3 not loaded; Standard stays RNNoise");
-                    *slot = (Dfn3Slot::Failed, Some(info));
+                    tracing::warn!(error = %e, "noise removal: DeepFilterNet3 weights refused; Standard stays RNNoise");
+                    st.slot = Dfn3Slot::Failed;
                     Err(e)
                 }
             }
@@ -236,33 +351,261 @@ impl NoiseRemovalControl {
         out
     }
 
-    /// Whether DeepFilterNet3's weights are loaded ([`Self::set_dfn3_weights`]).
+    /// Loads DeepFilterNet3's model now, on the calling thread (feature `dfn3`), for an app
+    /// that wants it ready before a call (most don't: a call loads it). Blocks for the load
+    /// (tens of milliseconds, about 40 MB resident); a live call's stage gets it too. `Ok`
+    /// when it is loaded (or already was); the load's error otherwise, and Standard stays
+    /// RNNoise with `model_reason: unavailable`. Without weights given:
+    /// [`sew_noise::dfn3::LoadError::Io`].
+    #[cfg(feature = "dfn3")]
+    pub fn preload_dfn3(&self) -> Result<(), sew_noise::dfn3::LoadError> {
+        let path = {
+            let st = lock(&self.inner.dfn3);
+            match &st.slot {
+                Dfn3Slot::Given { model: Some(_), .. } => None,
+                Dfn3Slot::Given { path, .. } => Some(path.clone()),
+                _ => {
+                    return Err(sew_noise::dfn3::LoadError::Io(
+                        "no DeepFilterNet3 weights given".into(),
+                    ));
+                }
+            }
+        };
+        if let Some(path) = path {
+            self.load_now(&path)?;
+        }
+        if let Some(model) = self.model() {
+            self.attach_live(model);
+        }
+        self.publish();
+        Ok(())
+    }
+
+    /// How long DeepFilterNet3's model stays in memory after the last call's audio ends
+    /// (feature `dfn3`; [`DFN3_IDLE_UNLOAD`] by default). A call that starts in that time
+    /// keeps it; after it, the memory is released and the next call loads the model again.
+    /// `Duration::MAX` keeps it for the process's life; `Duration::ZERO` releases it as the
+    /// call ends. Applies from the next call's end.
+    #[cfg(feature = "dfn3")]
+    pub fn set_dfn3_idle_unload(&self, after: Duration) {
+        lock(&self.inner.dfn3).idle_unload = after;
+    }
+
+    /// [`Self::set_dfn3_idle_unload`]'s time.
+    #[cfg(feature = "dfn3")]
+    pub fn dfn3_idle_unload(&self) -> Duration {
+        lock(&self.inner.dfn3).idle_unload
+    }
+
+    /// Whether DeepFilterNet3's model is in memory now.
     #[cfg(feature = "dfn3")]
     pub fn dfn3_loaded(&self) -> bool {
-        matches!(lock(&self.inner.dfn3).0, Dfn3Slot::Loaded(_))
+        matches!(
+            lock(&self.inner.dfn3).slot,
+            Dfn3Slot::Given { model: Some(_), .. }
+        )
     }
 
-    /// What the last [`Self::set_dfn3_weights`] cost, if it was called.
+    /// What the last load of the model cost, once one ran.
     #[cfg(feature = "dfn3")]
     pub fn dfn3_load_info(&self) -> Option<Dfn3LoadInfo> {
-        lock(&self.inner.dfn3).1
+        lock(&self.inner.dfn3).info
     }
 
-    /// The loaded model, if any.
+    /// The model in memory, if any.
     #[cfg(feature = "dfn3")]
     fn model(&self) -> Option<Arc<sew_noise::dfn3::Dfn3Model>> {
-        match &lock(&self.inner.dfn3).0 {
-            Dfn3Slot::Loaded(m) => Some(Arc::clone(m)),
+        match &lock(&self.inner.dfn3).slot {
+            Dfn3Slot::Given { model: Some(m), .. } => Some(Arc::clone(m)),
             _ => None,
         }
     }
 
-    /// The device bench's view of the weights: loaded, and (RSS before, RSS after, ms) of the
-    /// last load.
+    /// Loads the model from `path` on this thread and keeps it, with the load's figures.
+    #[cfg(feature = "dfn3")]
+    fn load_now(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<Arc<sew_noise::dfn3::Dfn3Model>, sew_noise::dfn3::LoadError> {
+        let before = super::rss_kib();
+        let started = Instant::now();
+        let loaded = sew_noise::dfn3::Dfn3Model::load(path);
+        let info = Dfn3LoadInfo {
+            rss_before_kib: before,
+            rss_after_kib: super::rss_kib(),
+            load_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        };
+        let mut st = lock(&self.inner.dfn3);
+        st.info = Some(info);
+        match loaded {
+            Ok(m) => {
+                st.load_failed = false;
+                if let Dfn3Slot::Given { path: p, model } = &mut st.slot
+                    && p.as_path() == path
+                {
+                    *model = Some(Arc::clone(&m));
+                }
+                Ok(m)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "noise removal: DeepFilterNet3 not loaded; Standard stays RNNoise");
+                st.load_failed = true;
+                Err(e)
+            }
+        }
+    }
+
+    /// Standard is wanted in a live call whose stage lacks the model: loads it (if it is not
+    /// in memory) and hands it to the stage, on a thread of its own. Never blocks the caller.
+    /// Nothing to do without usable weights, or while a loader runs (it hands the model to
+    /// whichever call is live when it is done).
+    #[cfg(feature = "dfn3")]
+    fn ensure_dfn3(&self) {
+        let path = {
+            let mut st = lock(&self.inner.dfn3);
+            if st.busy || st.load_failed {
+                return;
+            }
+            let Dfn3Slot::Given { path, .. } = &st.slot else {
+                return;
+            };
+            let path = path.clone();
+            st.busy = true;
+            path
+        };
+        let ctl = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sew-dfn3-load".into())
+            .spawn(move || {
+                let model = match ctl.model() {
+                    Some(m) => Some(m),
+                    None => ctl.load_now(&path).ok(),
+                };
+                if let Some(model) = model {
+                    ctl.attach_live(model);
+                }
+                lock(&ctl.inner.dfn3).busy = false;
+                ctl.publish();
+            });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "noise removal: no DeepFilterNet3 loader thread; Standard stays RNNoise");
+            let mut st = lock(&self.inner.dfn3);
+            st.busy = false;
+            st.load_failed = true;
+        }
+    }
+
+    /// Hands `model` to the live call's stage if it lacks one: the layer is built here (slow,
+    /// off the audio thread) and taken by the stage at its next block, which then steps up to
+    /// DeepFilterNet3 as a stage built with it starts.
+    #[cfg(feature = "dfn3")]
+    fn attach_live(&self, model: Arc<sew_noise::dfn3::Dfn3Model>) {
+        let wanted = lock(&self.inner.live)
+            .as_ref()
+            .and_then(|l| l.stage.as_ref())
+            .is_some_and(|s| !s.strong_available());
+        if !wanted {
+            return;
+        }
+        let layer = sew_noise::Dfn3Layer::new(model);
+        let live = lock(&self.inner.live);
+        if let Some(stage) = live
+            .as_ref()
+            .and_then(|l| l.stage.as_ref())
+            .filter(|s| !s.strong_available())
+            && stage.attach_dfn3(layer).is_ok()
+        {
+            // Under the live lock, as `set` changes the mode.
+            let _ = stage.set_mode(stage_mode(self.mode(), true));
+        }
+    }
+
+    /// A call's audio starts: a pending idle release is off.
+    #[cfg(feature = "dfn3")]
+    fn dfn3_call_starts(&self) {
+        lock(&self.inner.dfn3).idle_gen += 1;
+    }
+
+    /// The last call's audio ended: the model is released after the idle time unless a call
+    /// starts first.
+    #[cfg(feature = "dfn3")]
+    fn dfn3_call_ends(&self) {
+        let (generation, after) = {
+            let mut st = lock(&self.inner.dfn3);
+            st.idle_gen += 1;
+            if !matches!(st.slot, Dfn3Slot::Given { model: Some(_), .. }) {
+                return;
+            }
+            (st.idle_gen, st.idle_unload)
+        };
+        if after == Duration::MAX {
+            return;
+        }
+        if after.is_zero() {
+            self.release_if_idle(generation);
+            return;
+        }
+        let inner = Arc::downgrade(&self.inner);
+        let spawned = std::thread::Builder::new()
+            .name("sew-dfn3-idle".into())
+            .spawn(move || {
+                std::thread::sleep(after);
+                if let Some(inner) = inner.upgrade() {
+                    NoiseRemovalControl { inner }.release_if_idle(generation);
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "noise removal: no idle timer; DeepFilterNet3 stays in memory");
+        }
+    }
+
+    /// Releases the model if no call's audio started since the release was set up.
+    #[cfg(feature = "dfn3")]
+    fn release_if_idle(&self, generation: u64) {
+        let released = {
+            let live = lock(&self.inner.live);
+            let mut st = lock(&self.inner.dfn3);
+            if live.is_some() || st.idle_gen != generation {
+                return;
+            }
+            match &mut st.slot {
+                Dfn3Slot::Given { model, .. } => model.take(),
+                _ => None,
+            }
+        };
+        if released.is_some() {
+            // The last reference (calls' stages were dropped with their audio): the memory
+            // goes back here, outside the locks.
+            drop(released);
+            tracing::info!("noise removal: DeepFilterNet3 released after the idle time");
+            self.publish();
+        }
+    }
+
+    /// Why the live call has no DeepFilterNet3 yet: `loading` while it can still come,
+    /// `unavailable` when it can't.
+    fn dfn3_missing_reason(&self) -> NoiseRemovalReason {
+        #[cfg(feature = "dfn3")]
+        {
+            let st = lock(&self.inner.dfn3);
+            match st.slot {
+                Dfn3Slot::Given { .. } if !st.load_failed => NoiseRemovalReason::Loading,
+                _ => NoiseRemovalReason::Unavailable,
+            }
+        }
+        #[cfg(not(feature = "dfn3"))]
+        {
+            NoiseRemovalReason::Unavailable
+        }
+    }
+
+    /// The device bench's view of the weights, after loading them now if they were given:
+    /// loaded, and (RSS before, RSS after, ms) of the last load.
     #[cfg(feature = "noise-bench")]
     pub(crate) fn dfn3_info(&self) -> (bool, Option<LoadFigures>) {
         #[cfg(feature = "dfn3")]
         {
+            let _ = self.preload_dfn3();
             (
                 self.dfn3_loaded(),
                 self.dfn3_load_info()
@@ -275,11 +618,11 @@ impl NoiseRemovalControl {
         }
     }
 
-    /// The app gave weights (loaded or not): the state carries the model fields.
+    /// The app gave weights (usable or not): the state carries the model fields.
     fn dfn3_given(&self) -> bool {
         #[cfg(feature = "dfn3")]
         {
-            !matches!(lock(&self.inner.dfn3).0, Dfn3Slot::NotGiven)
+            !matches!(lock(&self.inner.dfn3).slot, Dfn3Slot::NotGiven)
         }
         #[cfg(not(feature = "dfn3"))]
         {
@@ -287,10 +630,13 @@ impl NoiseRemovalControl {
         }
     }
 
-    fn has_model(&self) -> bool {
+    /// The app gave weights that checked out and the last load (if any) worked: a call can
+    /// have DeepFilterNet3.
+    fn dfn3_usable(&self) -> bool {
         #[cfg(feature = "dfn3")]
         {
-            self.dfn3_loaded()
+            let st = lock(&self.inner.dfn3);
+            matches!(st.slot, Dfn3Slot::Given { .. }) && !st.load_failed
         }
         #[cfg(not(feature = "dfn3"))]
         {
@@ -299,14 +645,15 @@ impl NoiseRemovalControl {
     }
 
     /// A stage can be handed to this build's pipeline: kessel-audio has the hook and either
-    /// the capture path is not a phone's OS voice processing, or DeepFilterNet3 is loaded (it
-    /// runs after the OS's processing there).
+    /// the capture path is not a phone's OS voice processing, or DeepFilterNet3 can come (it
+    /// runs after the OS's processing there; until it is loaded the stage passes the audio
+    /// through).
     pub(crate) fn stage_runs(&self) -> bool {
-        hook::HOOKED && (!crate::audio::PHONE_AUDIO || self.has_model())
+        hook::HOOKED && (!crate::audio::PHONE_AUDIO || self.dfn3_usable())
     }
 
     /// The stage a call's audio starts with, in the current mode: over DeepFilterNet3 when its
-    /// weights are loaded, RNNoise otherwise.
+    /// model is in memory, RNNoise otherwise (DeepFilterNet3 is handed over once loaded).
     pub(crate) fn build_stage(&self) -> Stage {
         #[cfg(feature = "dfn3")]
         if let Some(model) = self.model() {
@@ -329,8 +676,8 @@ impl NoiseRemovalControl {
             return state;
         }
         let Some(stage) = stage else {
-            // No call yet (or one without a stage): what a call would start with.
-            return if self.has_model() {
+            // No call yet (or one without a stage): what a call would get.
+            return if self.dfn3_usable() {
                 state.with_model(Some(NoiseModel::Dfn3), None, 0)
             } else {
                 state.with_model(
@@ -345,7 +692,7 @@ impl NoiseRemovalControl {
         if !stage.strong_available() {
             return state.with_model(
                 Some(NoiseModel::Rnnoise),
-                Some(NoiseRemovalReason::Unavailable),
+                Some(self.dfn3_missing_reason()),
                 step_downs,
             );
         }
@@ -355,7 +702,12 @@ impl NoiseRemovalControl {
         let why = match st.last_step_down {
             Some(sew_noise::StepDownReason::Fault) => Some(NoiseRemovalReason::Fault),
             Some(_) => Some(NoiseRemovalReason::Budget),
-            // Warming up (the call's first blocks): no step-down.
+            // Handed over during the call, and warming up before it fades in.
+            None if st.strong_state == sew_noise::StrongState::Warming
+                || st.strong_state == sew_noise::StrongState::Idle =>
+            {
+                Some(NoiseRemovalReason::Loading)
+            }
             None => None,
         };
         state.with_model(Some(NoiseModel::Rnnoise), why, step_downs)
@@ -366,44 +718,183 @@ impl NoiseRemovalControl {
         from_code(self.inner.mode.load(Ordering::Acquire))
     }
 
-    /// Asks for `mode`, for the live call (from its next block) and later ones; answers the
-    /// state now. A change of state is also sent to [`NoiseRemovalControl::subscribe`]'s
-    /// receivers.
+    /// Android: whether this device has the unprocessed audio source, as the app reads it
+    /// (`AudioManager.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED)` is
+    /// `"true"`). With it, [`NoiseRemoval::Off`] captures from that source; without it (the
+    /// default) from the voice recognition source, which Android keeps free of noise
+    /// reduction. It applies from the next time the phone's capture opens raw (a call's start,
+    /// or a switch to Off). Other platforms ignore it.
+    pub fn set_android_unprocessed_supported(&self, supported: bool) {
+        self.inner.unprocessed.store(supported, Ordering::Release);
+    }
+
+    /// What [`Self::set_android_unprocessed_supported`] last said (`false` until then).
+    pub fn android_unprocessed_supported(&self) -> bool {
+        self.inner.unprocessed.load(Ordering::Acquire)
+    }
+
+    /// Asks for `mode`, for the live call (from its next block; on a phone its capture switches
+    /// at once) and later ones; answers the state now. A change of state is also sent to
+    /// [`NoiseRemovalControl::subscribe`]'s receivers.
     pub fn set(&self, mode: NoiseRemoval) -> NoiseRemovalState {
         {
             // Under the live lock, so a call's audio starting now builds its stage in this
             // mode or gets it here.
-            let live = lock(&self.inner.live);
+            let mut live = lock(&self.inner.live);
             self.inner.mode.store(code(mode), Ordering::Release);
             if let Some(stage) = live.as_ref().and_then(|l| l.stage.as_ref()) {
                 // Off and Standard are always available; Strong when the stage has the model.
+                // Off is the stage passing the audio through.
                 let _ = stage.set_mode(stage_mode(mode, stage.strong_available()));
+                // Standard in a call whose stage lacks DeepFilterNet3: load it and hand it
+                // over (on a thread of its own).
+                #[cfg(feature = "dfn3")]
+                if mode == NoiseRemoval::Standard && !stage.strong_available() {
+                    self.ensure_dfn3();
+                }
             }
+            self.switch_phone(&mut live);
         }
         self.publish()
+    }
+
+    /// On a phone call whose audio runs: its capture follows the setting (a no-op when it
+    /// already was asked for, or before the audio is attached: [`Self::attach`] does it then).
+    fn switch_phone(&self, live: &mut Option<Live>) {
+        let Some(l) = live.as_mut() else { return };
+        let Some(audio) = l.audio() else { return };
+        let Some(p) = l.phone.as_mut() else { return };
+        let mode = self.mode();
+        let want = PhoneAudioMode::for_mode(mode);
+        // With no switch under way, what runs (a switch that timed out may have landed late).
+        let current = match p.pending {
+            Some(_) => p.asked,
+            None => audio.capture_mode().unwrap_or(p.asked),
+        };
+        if want == current {
+            return;
+        }
+        audio.switch_capture(crate::audio::phone_start(
+            p.os,
+            mode,
+            self.android_unprocessed_supported(),
+        ));
+        p.asked = want;
+        p.pending = Some(Instant::now());
+        p.error_seen = false;
+        p.failed = false;
+    }
+
+    /// The phone fields of the state: the capture now, why it is not what `mode` asks, the
+    /// switches and the last pause. Settles a switch under way: done once the backend runs
+    /// the capture asked; failed after an error, or when [`SWITCH_TIMEOUT`] passes without it.
+    fn phone_fields(
+        mode: NoiseRemoval,
+        p: &mut PhoneLive,
+        audio: Option<&Arc<dyn LiveAudio>>,
+    ) -> (
+        Option<PhoneAudioMode>,
+        Option<NoiseRemovalReason>,
+        u32,
+        Option<u32>,
+    ) {
+        let now = audio.and_then(|a| a.capture_mode()).unwrap_or(p.asked);
+        if let Some(since) = p.pending {
+            if now == p.asked {
+                p.pending = None;
+            } else if p.error_seen || since.elapsed() >= SWITCH_TIMEOUT {
+                tracing::warn!(
+                    asked = p.asked.as_str(),
+                    kept = now.as_str(),
+                    "noise removal: the phone's capture did not switch; it kept the one it had"
+                );
+                p.pending = None;
+                p.failed = true;
+            }
+        }
+        if p.pending.is_none() {
+            // A later switch starts from what runs.
+            p.asked = now;
+        }
+        if p.failed && now == PhoneAudioMode::for_mode(mode) {
+            p.failed = false;
+        }
+        let (switches, gap) = audio.map_or((0, None), |a| a.capture_switches());
+        (
+            Some(now),
+            p.failed.then_some(NoiseRemovalReason::SwitchFailed),
+            u32::try_from(switches).unwrap_or(u32::MAX),
+            gap.map(|g| u32::try_from(g.as_millis()).unwrap_or(u32::MAX)),
+        )
+    }
+
+    /// kessel-audio reported an error during the call `id` ([`crate::AudioBridge::events`]):
+    /// a switch of the phone's capture under way failed.
+    pub(crate) fn audio_error(&self, id: u64) {
+        let changed = {
+            let mut live = lock(&self.inner.live);
+            match live
+                .as_mut()
+                .filter(|l| l.id == id)
+                .and_then(|l| l.phone.as_mut())
+            {
+                Some(p) if p.pending.is_some() => {
+                    p.error_seen = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.publish();
+        }
     }
 
     /// The setting and what runs now.
     pub fn state(&self) -> NoiseRemovalState {
         let mode = self.mode();
-        let live = lock(&self.inner.live);
-        let Some(live) = live.as_ref() else {
+        let mut live = lock(&self.inner.live);
+        let Some(live) = live.as_mut() else {
             // No call: what a call would start with.
-            return if self.stage_runs() {
+            let state = if self.stage_runs() {
                 self.with_model(NoiseRemovalState::running(mode), None)
             } else {
                 NoiseRemovalState::stepped_down(mode, NoiseRemovalReason::Unavailable)
             };
+            return match crate::audio::PHONE_OS {
+                Some(_) => {
+                    state.with_phone_mode(Some(PhoneAudioMode::for_mode(mode)), None, 0, None)
+                }
+                None => state,
+            };
         };
+        let audio = live.audio();
+        let state = self.live_state(mode, live, audio.as_ref());
+        match live.phone.as_mut() {
+            Some(p) => {
+                let (now, why, switches, gap) = Self::phone_fields(mode, p, audio.as_ref());
+                state.with_phone_mode(now, why, switches, gap)
+            }
+            None => state,
+        }
+    }
+
+    /// What a live call's stage does now.
+    fn live_state(
+        &self,
+        mode: NoiseRemoval,
+        live: &Live,
+        audio: Option<&Arc<dyn LiveAudio>>,
+    ) -> NoiseRemovalState {
         let Some(stage) = &live.stage else {
             return NoiseRemovalState::stepped_down(mode, NoiseRemovalReason::Unavailable);
         };
-        if let Some(b) = live
-            .bypass
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .and_then(|s| s.bypass())
+        if crate::audio::PHONE_AUDIO && mode == NoiseRemoval::Standard && !stage.strong_available()
         {
+            // A phone's stage passes the audio through until DeepFilterNet3 is there.
+            return NoiseRemovalState::stepped_down(mode, self.dfn3_missing_reason());
+        }
+        if let Some(b) = audio.and_then(|s| s.bypass()) {
             let reason = match b {
                 Bypass::Budget => NoiseRemovalReason::Budget,
                 Bypass::Fault => NoiseRemovalReason::Fault,
@@ -461,29 +952,65 @@ impl NoiseRemovalControl {
         } else {
             None
         };
-        let id = self.go_live(&mut live, stage);
+        // Phones: the call's capture starts as the setting asks (raw for Off), so it opens
+        // once, in that mode.
+        let phone = crate::audio::apply_phone_mode(
+            &mut cfg,
+            self.mode(),
+            self.android_unprocessed_supported(),
+        )
+        .zip(crate::audio::PHONE_OS)
+        .map(|(asked, os)| PhoneLive {
+            os,
+            asked,
+            pending: None,
+            error_seen: false,
+            failed: false,
+        });
+        #[cfg(feature = "dfn3")]
+        let lacks_model = stage.as_ref().is_some_and(|s| !s.strong_available());
+        let id = self.go_live(&mut live, stage, phone);
         drop(live);
-        // Phones: the OS's own noise suppression follows the mode the call starts in.
-        crate::audio::apply_phone_mode(&mut cfg, self.mode());
+        #[cfg(feature = "dfn3")]
+        {
+            self.dfn3_call_starts();
+            // A call starting in Standard without the model in memory: it starts on RNNoise
+            // (on phones the stage passes the audio through and the OS's processing runs
+            // alone) and DeepFilterNet3 follows once loaded, never holding the start up.
+            if lacks_model && self.mode() == NoiseRemoval::Standard {
+                self.ensure_dfn3();
+            }
+        }
         self.publish();
         (cfg, id)
     }
 
-    fn go_live(&self, live: &mut Option<Live>, stage: Option<StageControl>) -> u64 {
+    fn go_live(
+        &self,
+        live: &mut Option<Live>,
+        stage: Option<StageControl>,
+        phone: Option<PhoneLive>,
+    ) -> u64 {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         *live = Some(Live {
             id,
             stage,
-            bypass: None,
+            audio: None,
+            phone,
         });
         id
     }
 
-    /// The call `id`'s pipeline is running: its bypass flag is read from `source`.
-    pub(crate) fn attach(&self, id: u64, source: Weak<dyn BypassSource>) {
-        if let Some(l) = lock(&self.inner.live).as_mut().filter(|l| l.id == id) {
-            l.bypass = Some(source);
-        }
+    /// The call `id`'s pipeline is running: its bypass flag (and on a phone its capture) is
+    /// read from `source`. A change of the setting since [`Self::configure`] reaches the
+    /// phone's capture now.
+    pub(crate) fn attach(&self, id: u64, source: Weak<dyn LiveAudio>) {
+        let mut live = lock(&self.inner.live);
+        let Some(l) = live.as_mut().filter(|l| l.id == id) else {
+            return;
+        };
+        l.audio = Some(source);
+        self.switch_phone(&mut live);
     }
 
     /// The call `id`'s audio ended (or never started).
@@ -492,6 +1019,8 @@ impl NoiseRemovalControl {
         if live.as_ref().is_some_and(|l| l.id == id) {
             *live = None;
             drop(live);
+            #[cfg(feature = "dfn3")]
+            self.dfn3_call_ends();
             self.publish();
         }
     }
@@ -508,10 +1037,34 @@ impl NoiseRemovalControl {
     #[cfg(test)]
     fn live_with(&self, stage: Option<StageControl>) -> u64 {
         let mut live = lock(&self.inner.live);
-        let id = self.go_live(&mut live, stage);
+        let id = self.go_live(&mut live, stage, None);
         drop(live);
         self.publish();
         id
+    }
+
+    /// Test only: a phone call's audio on `os`, its capture started as `configure` would
+    /// start it, with `stage` handed over (or `None`), without kessel-audio. Answers the id
+    /// and the starting capture.
+    #[cfg(test)]
+    fn phone_live_with(&self, os: PhoneOs, stage: Option<StageControl>) -> (u64, PhoneStart) {
+        let start =
+            crate::audio::phone_start(os, self.mode(), self.android_unprocessed_supported());
+        let mut live = lock(&self.inner.live);
+        let id = self.go_live(
+            &mut live,
+            stage,
+            Some(PhoneLive {
+                os,
+                asked: start.mode,
+                pending: None,
+                error_seen: false,
+                failed: false,
+            }),
+        );
+        drop(live);
+        self.publish();
+        (id, start)
     }
 }
 
@@ -549,7 +1102,7 @@ mod tests {
     #[derive(Default)]
     struct FakeBypass(Flag);
 
-    impl BypassSource for FakeBypass {
+    impl LiveAudio for FakeBypass {
         fn bypass(&self) -> Option<Bypass> {
             match self.0.load(Ordering::Relaxed) {
                 1 => Some(Bypass::Budget),
@@ -805,6 +1358,336 @@ mod tests {
         drop(flag);
     }
 
+    // ── a phone's capture (a fake phone backend) ──
+
+    #[derive(Debug)]
+    struct FakePhoneState {
+        mode: PhoneAudioMode,
+        switches: u64,
+        gap: Option<Duration>,
+        /// A switch won't open: the backend keeps its mode.
+        fail: bool,
+        /// Switches wait for `apply` (the control thread hasn't run yet).
+        defer: bool,
+        waiting: Vec<PhoneStart>,
+        calls: Vec<PhoneStart>,
+    }
+
+    /// kessel-audio's phone backend as the control sees it.
+    struct FakePhone(Mutex<FakePhoneState>);
+
+    impl FakePhone {
+        fn new(mode: PhoneAudioMode) -> Arc<FakePhone> {
+            Arc::new(FakePhone(Mutex::new(FakePhoneState {
+                mode,
+                switches: 0,
+                gap: None,
+                fail: false,
+                defer: false,
+                waiting: Vec::new(),
+                calls: Vec::new(),
+            })))
+        }
+
+        fn st(&self) -> MutexGuard<'_, FakePhoneState> {
+            lock(&self.0)
+        }
+
+        fn apply(st: &mut FakePhoneState, start: PhoneStart) {
+            if st.fail || start.mode == st.mode {
+                return;
+            }
+            st.mode = start.mode;
+            st.switches += 1;
+            st.gap = Some(Duration::from_millis(25 + st.switches));
+        }
+
+        fn run_waiting(&self) {
+            let mut st = self.st();
+            for s in std::mem::take(&mut st.waiting) {
+                FakePhone::apply(&mut st, s);
+            }
+        }
+    }
+
+    impl LiveAudio for FakePhone {
+        fn bypass(&self) -> Option<Bypass> {
+            None
+        }
+        fn capture_mode(&self) -> Option<PhoneAudioMode> {
+            Some(self.st().mode)
+        }
+        fn switch_capture(&self, start: PhoneStart) {
+            let mut st = self.st();
+            st.calls.push(start);
+            if st.defer {
+                st.waiting.push(start);
+            } else {
+                FakePhone::apply(&mut st, start);
+            }
+        }
+        fn capture_switches(&self) -> (u64, Option<Duration>) {
+            let st = self.st();
+            (st.switches, st.gap)
+        }
+    }
+
+    fn phone_fields(
+        s: NoiseRemovalState,
+    ) -> (
+        Option<PhoneAudioMode>,
+        Option<NoiseRemovalReason>,
+        u32,
+        Option<u32>,
+    ) {
+        (
+            s.phone_mode,
+            s.phone_mode_reason,
+            s.phone_mode_switches,
+            s.phone_mode_gap_ms,
+        )
+    }
+
+    /// A phone call starts in the capture its mode asks for (raw for Off, with Android's
+    /// unprocessed source only when the app said so), and the state says so; a desktop call
+    /// has no phone fields.
+    #[test]
+    fn a_phone_call_starts_in_the_capture_its_mode_asks() {
+        for os in [PhoneOs::Ios, PhoneOs::Android] {
+            for mode in NoiseRemoval::ALL {
+                for supported in [false, true] {
+                    let control = NoiseRemovalControl::new(mode);
+                    control.set_android_unprocessed_supported(supported);
+                    assert_eq!(control.android_unprocessed_supported(), supported);
+                    let (id, start) = control.phone_live_with(os, None);
+                    assert_eq!(start, crate::audio::phone_start(os, mode, supported));
+                    let raw = mode == NoiseRemoval::Off;
+                    assert_eq!(start.mode == PhoneAudioMode::Raw, raw);
+                    assert_eq!(
+                        start.unprocessed,
+                        raw && supported && os == PhoneOs::Android,
+                        "{os:?} {mode:?} {supported}"
+                    );
+                    let phone = FakePhone::new(start.mode);
+                    let weak: Weak<FakePhone> = Arc::downgrade(&phone);
+                    control.attach(id, weak);
+                    assert!(phone.st().calls.is_empty(), "no restart at the start");
+                    assert_eq!(
+                        phone_fields(control.state()),
+                        (Some(start.mode), None, 0, None)
+                    );
+                    control.detach(id);
+                }
+            }
+        }
+        let control = NoiseRemovalControl::new(NoiseRemoval::Off);
+        let id = control.live_with(None);
+        assert_eq!(phone_fields(control.state()), (None, None, 0, None));
+        control.detach(id);
+        // No call: on desktop no phone fields either.
+        assert_eq!(control.state().phone_mode, None);
+    }
+
+    /// Mid-call, Off switches the live phone call to raw at once, and Standard back to the
+    /// OS's processing; the stage goes to pass-through in Off; the state and its events carry
+    /// the capture, the switches and the last pause.
+    #[test]
+    fn a_mid_call_change_switches_the_phone_capture_both_ways() {
+        for os in [PhoneOs::Android, PhoneOs::Ios] {
+            let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+            control.set_android_unprocessed_supported(true);
+            let (mut stage, ctl) = stage_for(&control);
+            let (id, start) = control.phone_live_with(os, Some(ctl.clone()));
+            assert_eq!(start.mode, PhoneAudioMode::Os);
+            let phone = FakePhone::new(PhoneAudioMode::Os);
+            let weak: Weak<FakePhone> = Arc::downgrade(&phone);
+            control.attach(id, weak);
+            let mut rx = control.subscribe();
+
+            let s = control.set(NoiseRemoval::Off);
+            assert_eq!(ctl.mode(), Mode::Off, "the stage passes the audio through");
+            assert_eq!(
+                phone.st().calls,
+                vec![PhoneStart {
+                    mode: PhoneAudioMode::Raw,
+                    unprocessed: os == PhoneOs::Android,
+                }]
+            );
+            assert_eq!(
+                phone_fields(s),
+                (Some(PhoneAudioMode::Raw), None, 1, Some(26))
+            );
+            stage.process(&mut [0.0; 480]);
+            assert_eq!(control.state().active, NoiseRemoval::Off);
+
+            // The same mode again: no second switch.
+            control.set(NoiseRemoval::Off);
+            assert_eq!(phone.st().calls.len(), 1);
+
+            let s = control.set(NoiseRemoval::Standard);
+            assert_eq!(ctl.mode(), Mode::Standard);
+            assert_eq!(
+                phone.st().calls.last().copied(),
+                Some(PhoneStart {
+                    mode: PhoneAudioMode::Os,
+                    unprocessed: false,
+                })
+            );
+            assert_eq!(
+                phone_fields(s),
+                (Some(PhoneAudioMode::Os), None, 2, Some(27))
+            );
+
+            let mut got = Vec::new();
+            while let Ok(s) = rx.try_recv() {
+                got.push(s.phone_mode);
+            }
+            assert!(
+                got.contains(&Some(PhoneAudioMode::Raw))
+                    && got.last() == Some(&Some(PhoneAudioMode::Os)),
+                "{got:?}"
+            );
+            control.detach(id);
+        }
+    }
+
+    /// A switch the backend hasn't run yet: the state keeps the capture that runs, with no
+    /// reason, until it does.
+    #[test]
+    fn a_switch_under_way_shows_the_capture_that_runs() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        let (id, _) = control.phone_live_with(PhoneOs::Android, None);
+        let phone = FakePhone::new(PhoneAudioMode::Os);
+        phone.st().defer = true;
+        let weak: Weak<FakePhone> = Arc::downgrade(&phone);
+        control.attach(id, weak);
+        let s = control.set(NoiseRemoval::Off);
+        assert_eq!(phone_fields(s), (Some(PhoneAudioMode::Os), None, 0, None));
+        phone.run_waiting();
+        assert_eq!(
+            phone_fields(control.publish()),
+            (Some(PhoneAudioMode::Raw), None, 1, Some(26))
+        );
+
+        // A switch that lands after the timeout: failed meanwhile, then the state follows what
+        // runs, and the next change switches from there.
+        let s = control.set(NoiseRemoval::Standard);
+        assert_eq!(
+            phone_fields(s),
+            (Some(PhoneAudioMode::Raw), None, 1, Some(26))
+        );
+        std::thread::sleep(SWITCH_TIMEOUT + Duration::from_millis(50));
+        assert_eq!(
+            control.publish().phone_mode_reason,
+            Some(NoiseRemovalReason::SwitchFailed)
+        );
+        phone.run_waiting();
+        assert_eq!(
+            phone_fields(control.publish()),
+            (Some(PhoneAudioMode::Os), None, 2, Some(27))
+        );
+        control.set(NoiseRemoval::Off);
+        assert_eq!(
+            phone.st().calls.last().map(|s| s.mode),
+            Some(PhoneAudioMode::Raw)
+        );
+        assert_eq!(phone.st().calls.len(), 3);
+        control.detach(id);
+    }
+
+    /// A change of the setting between the call's config and its audio running reaches the
+    /// phone when the audio is attached (before the session opens the device).
+    #[test]
+    fn a_change_before_the_audio_runs_switches_on_attach() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        let (id, start) = control.phone_live_with(PhoneOs::Ios, None);
+        assert_eq!(start.mode, PhoneAudioMode::Os);
+        control.set(NoiseRemoval::Off);
+        let phone = FakePhone::new(PhoneAudioMode::Os);
+        let weak: Weak<FakePhone> = Arc::downgrade(&phone);
+        control.attach(id, weak);
+        assert_eq!(
+            phone.st().calls,
+            vec![PhoneStart {
+                mode: PhoneAudioMode::Raw,
+                unprocessed: false,
+            }]
+        );
+        assert_eq!(control.state().phone_mode, Some(PhoneAudioMode::Raw));
+        control.detach(id);
+    }
+
+    /// A switch that fails (kessel-audio goes back to the capture it had and reports an
+    /// error): the state says `switch_failed` with the capture that runs, until the setting
+    /// agrees with it or a later switch works. Without the error event, the switch counts as
+    /// failed after the timeout.
+    #[test]
+    fn a_failed_switch_says_switch_failed() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        let (id, _) = control.phone_live_with(PhoneOs::Android, None);
+        let phone = FakePhone::new(PhoneAudioMode::Os);
+        phone.st().fail = true;
+        let weak: Weak<FakePhone> = Arc::downgrade(&phone);
+        control.attach(id, weak);
+        let mut rx = control.subscribe();
+
+        // The error event (AudioBridge::events): failed at once.
+        let s = control.set(NoiseRemoval::Off);
+        assert_eq!(phone_fields(s), (Some(PhoneAudioMode::Os), None, 0, None));
+        control.audio_error(id);
+        let failed = control.state();
+        assert_eq!(
+            phone_fields(failed),
+            (
+                Some(PhoneAudioMode::Os),
+                Some(NoiseRemovalReason::SwitchFailed),
+                0,
+                None
+            )
+        );
+        let mut events = Vec::new();
+        while let Ok(s) = rx.try_recv() {
+            events.push(s);
+        }
+        assert_eq!(events.last(), Some(&failed), "the failure is an event");
+
+        // Back to Standard: the capture that runs agrees; no switch is asked.
+        let s = control.set(NoiseRemoval::Standard);
+        assert_eq!(phone_fields(s), (Some(PhoneAudioMode::Os), None, 0, None));
+        assert_eq!(phone.st().calls.len(), 1);
+
+        // Off again, and this time it opens.
+        phone.st().fail = false;
+        let s = control.set(NoiseRemoval::Off);
+        assert_eq!(
+            phone_fields(s),
+            (Some(PhoneAudioMode::Raw), None, 1, Some(26))
+        );
+
+        // No error event (someone else read it): failed after the timeout.
+        phone.st().fail = true;
+        let s = control.set(NoiseRemoval::Standard);
+        assert_eq!(s.phone_mode_reason, None, "under way");
+        std::thread::sleep(SWITCH_TIMEOUT + Duration::from_millis(50));
+        assert_eq!(
+            phone_fields(control.publish()),
+            (
+                Some(PhoneAudioMode::Raw),
+                Some(NoiseRemovalReason::SwitchFailed),
+                1,
+                Some(26)
+            )
+        );
+        // An error for another call, or with nothing under way, changes nothing.
+        control.audio_error(id + 1);
+        control.audio_error(id);
+        assert_eq!(
+            control.state().phone_mode_reason,
+            Some(NoiseRemovalReason::SwitchFailed)
+        );
+        control.detach(id);
+    }
+
     // ── against kessel-audio's engine (the null device, faster than real time) ──
 
     use kessel_audio::{CaptureSource, NullDevice};
@@ -821,7 +1704,7 @@ mod tests {
         })
     }
 
-    fn null_cfg() -> EngineConfig {
+    pub(super) fn null_cfg() -> EngineConfig {
         EngineConfig::null(NullDevice {
             block_period: Duration::from_millis(2),
             input: Some(tone()),
@@ -829,7 +1712,7 @@ mod tests {
         })
     }
 
-    fn wait_for(what: &str, mut pred: impl FnMut() -> bool) {
+    pub(super) fn wait_for(what: &str, mut pred: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             if pred() {
@@ -1008,6 +1891,9 @@ mod dfn3_tests {
         let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
         assert_eq!(control.state().model, None, "no weights given: as before");
         control.set_dfn3_weights(&weights).unwrap();
+        assert!(!control.dfn3_loaded(), "given, not loaded");
+        assert!(control.dfn3_load_info().is_none());
+        control.preload_dfn3().unwrap();
         assert!(control.dfn3_loaded());
         assert!(control.dfn3_load_info().is_some());
         assert!(
@@ -1109,8 +1995,156 @@ mod dfn3_tests {
             )
         );
         control.detach(id);
-        // A later good path loads.
+        // A later good path is taken (and loads when asked).
         control.set_dfn3_weights(&weights).unwrap();
+        assert!(!control.dfn3_loaded());
+        control.preload_dfn3().unwrap();
         assert!(control.dfn3_loaded());
+    }
+
+    // ── loaded on first need, released when idle (kessel-audio's null device) ──
+
+    use super::tests::{null_cfg, wait_for};
+    use std::time::Duration;
+
+    /// A call's audio on kessel-audio's null device with the control's stage: (engine, id).
+    fn call(control: &NoiseRemovalControl) -> (Arc<AudioEngine>, u64) {
+        let (cfg, id) = control.configure(null_cfg());
+        let engine = Arc::new(AudioEngine::start(cfg).unwrap());
+        let weak: Weak<AudioEngine> = Arc::downgrade(&engine);
+        control.attach(id, weak);
+        (engine, id)
+    }
+
+    fn end(control: &NoiseRemovalControl, engine: &AudioEngine, id: u64) {
+        engine.shutdown();
+        control.detach(id);
+    }
+
+    fn model_of(s: NoiseRemovalState) -> (Option<NoiseModel>, Option<NoiseRemovalReason>) {
+        (s.model, s.model_reason)
+    }
+
+    /// The call's stage has DeepFilterNet3 and ran it: it runs, or it stepped down for time on
+    /// a busy test machine (the step-down is the stage's own rule, not the handover's).
+    fn stepped_up(s: NoiseRemovalState) -> bool {
+        s.model == Some(NoiseModel::Dfn3) || s.step_downs > 0
+    }
+
+    /// Giving the weights loads nothing; the first call in Standard starts on RNNoise with
+    /// `loading`, steps up to DeepFilterNet3 once the model is in, and the pipeline never
+    /// bypasses the stage for it. After the idle time with no call the model is released, and
+    /// the next call loads it again.
+    #[test]
+    fn the_model_loads_on_the_first_call_and_goes_when_idle() {
+        let Some(weights) = weights() else { return };
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        control.set_dfn3_idle_unload(Duration::from_millis(200));
+        control.set_dfn3_weights(&weights).unwrap();
+        assert!(!control.dfn3_loaded(), "no load when the weights are given");
+        assert_eq!(control.dfn3_load_info(), None);
+        assert_eq!(
+            model_of(control.state()),
+            (Some(NoiseModel::Dfn3), None),
+            "what a call would get"
+        );
+
+        let (engine, id) = call(&control);
+        let first = control.state();
+        assert_eq!(
+            first.active,
+            NoiseRemoval::Standard,
+            "RNNoise from the start"
+        );
+        assert_eq!(
+            model_of(first),
+            (Some(NoiseModel::Rnnoise), Some(NoiseRemovalReason::Loading))
+        );
+        wait_for("DeepFilterNet3 runs", || {
+            stepped_up(control.publish())
+                && engine
+                    .stats()
+                    .capture_stage
+                    .is_some_and(|s| s.blocks_processed > 0)
+        });
+        assert!(control.dfn3_loaded());
+        let info = control.dfn3_load_info().expect("a load ran");
+        eprintln!(
+            "noise-dfn3-lazy: load {} ms, RSS {:?} -> {:?} KiB",
+            info.load_ms, info.rss_before_kib, info.rss_after_kib
+        );
+        // A little more audio through the stepped-up stage: no fault.
+        std::thread::sleep(Duration::from_millis(300));
+        let st = engine.stats().capture_stage.unwrap();
+        assert!(!st.permanent, "{st:?}");
+        assert_eq!(control.state().mode, NoiseRemoval::Standard);
+        end(&control, &engine, id);
+        drop(engine);
+
+        assert!(control.dfn3_loaded(), "kept for the idle time");
+        wait_for("released when idle", || !control.dfn3_loaded());
+
+        let (engine, id) = call(&control);
+        wait_for("loaded again for the next call", || {
+            control.dfn3_loaded() && stepped_up(control.publish())
+        });
+        end(&control, &engine, id);
+    }
+
+    /// A call that starts in Off loads nothing; its first switch to Standard loads the model
+    /// and hands it to the live call. A call starting within the idle time keeps the model.
+    #[test]
+    fn the_first_switch_to_standard_loads_it() {
+        let Some(weights) = weights() else { return };
+        let control = NoiseRemovalControl::new(NoiseRemoval::Off);
+        control.set_dfn3_idle_unload(Duration::from_secs(60));
+        control.set_dfn3_weights(&weights).unwrap();
+        let (engine, id) = call(&control);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!control.dfn3_loaded(), "Off needs no model");
+        control.set(NoiseRemoval::Standard);
+        wait_for("DeepFilterNet3 runs after the switch", || {
+            stepped_up(control.publish())
+        });
+        end(&control, &engine, id);
+        let (engine, id) = call(&control);
+        assert!(control.dfn3_loaded(), "within the idle time: kept");
+        assert_eq!(
+            control.state().model,
+            Some(NoiseModel::Dfn3),
+            "the call's stage is built with the model"
+        );
+        end(&control, &engine, id);
+    }
+
+    /// The weights checked out when given, but the load fails (the file changed since): the
+    /// call stays on RNNoise, and the state says `unavailable`.
+    #[test]
+    fn a_failed_load_stays_on_rnnoise() {
+        let Some(weights) = weights() else { return };
+        let copy = scratch("lazy-weights.tar");
+        std::fs::copy(&weights, &copy).unwrap();
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        control.set_dfn3_weights(&copy).unwrap();
+        let mut bytes = std::fs::read(&copy).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x10;
+        std::fs::write(&copy, &bytes).unwrap();
+        let (engine, id) = call(&control);
+        wait_for("the load fails", || {
+            model_of(control.publish())
+                == (
+                    Some(NoiseModel::Rnnoise),
+                    Some(NoiseRemovalReason::Unavailable),
+                )
+        });
+        assert!(!control.dfn3_loaded());
+        let s = control.state();
+        assert_eq!(
+            (s.mode, s.active, s.reason),
+            (NoiseRemoval::Standard, NoiseRemoval::Standard, None)
+        );
+        end(&control, &engine, id);
+        let _ = std::fs::remove_file(&copy);
     }
 }

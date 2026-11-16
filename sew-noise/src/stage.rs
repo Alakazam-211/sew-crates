@@ -115,7 +115,8 @@ const WINDOW_P99_BLOCKS: u32 = WINDOW_BLOCKS / 100;
 /// The default block budget.
 const DEFAULT_BUDGET: Duration = Duration::from_millis(6);
 
-/// What the stage and its [`StageControl`]s share. Atomics only: no lock anywhere.
+/// What the stage and its [`StageControl`]s share: atomics, and (feature `dfn3`) the slot a
+/// model handed over later waits in, which the stage only ever try-locks.
 #[derive(Debug)]
 struct Shared {
     mode: AtomicU8,
@@ -143,6 +144,28 @@ struct Shared {
     step_down_rules: AtomicBool,
     /// Measurement: step down at the next model block.
     force_step_down: AtomicBool,
+    /// A model layer handed over by [`StageControl::attach_dfn3`], until the stage takes it.
+    #[cfg(feature = "dfn3")]
+    handover: std::sync::Mutex<Option<Dfn3Layer>>,
+    /// `handover` holds a layer.
+    #[cfg(feature = "dfn3")]
+    handover_ready: AtomicBool,
+}
+
+/// DeepFilterNet3's layer for a running stage (cargo feature `dfn3`): built and warmed up off
+/// the audio thread ([`Dfn3Layer::new`]), then handed to a stage built without the model with
+/// [`StageControl::attach_dfn3`].
+#[cfg(feature = "dfn3")]
+#[derive(Debug)]
+pub struct Dfn3Layer(Box<crate::strong::Strong>);
+
+#[cfg(feature = "dfn3")]
+impl Dfn3Layer {
+    /// The layer over `model`, warmed up as [`Stage::with_dfn3`] warms it. Slow (a few
+    /// milliseconds) and allocates: call it off the audio thread.
+    pub fn new(model: Arc<crate::dfn3::Dfn3Model>) -> Self {
+        Self(Box::new(crate::strong::Strong::new(model)))
+    }
 }
 
 /// A snapshot of a stage's timing counters ([`StageControl::stats`]).
@@ -217,9 +240,36 @@ impl StageControl {
         Ok(())
     }
 
-    /// Whether this stage can run [`Mode::Strong`] (it was built with the model).
+    /// Whether this stage can run [`Mode::Strong`] (it was built with the model, or was given
+    /// it with `StageControl::attach_dfn3`, feature `dfn3`).
     pub fn strong_available(&self) -> bool {
         self.shared.strong_available.load(Ordering::Relaxed)
+    }
+
+    /// Gives a running stage built without the model its DeepFilterNet3 layer (cargo feature
+    /// `dfn3`). Quick: the stage takes the layer at its next block, without allocating or
+    /// waiting (it only try-locks the slot the layer waits in), and from then on
+    /// [`Mode::Strong`] is available. Strong then starts as a stage built with the model
+    /// starts it: the model runs one block unused, then fades in over one block, with no
+    /// click. Answers the layer back when the stage already has a model or one is waiting.
+    #[cfg(feature = "dfn3")]
+    pub fn attach_dfn3(&self, layer: Dfn3Layer) -> Result<(), Dfn3Layer> {
+        if self.shared.strong_available.load(Ordering::Acquire) {
+            return Err(layer);
+        }
+        let mut slot = self
+            .shared
+            .handover
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_some() {
+            return Err(layer);
+        }
+        *slot = Some(layer);
+        drop(slot);
+        self.shared.handover_ready.store(true, Ordering::Release);
+        self.shared.strong_available.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Steps down from Strong at the next block the model runs in, as a slow block would
@@ -312,8 +362,10 @@ enum Run {
 ///   and why it stepped down.
 /// - A mode change is taken at a block boundary and cross-faded over one block. Turning
 ///   removal on spends one more block first, feeding the model without using its output.
-/// - [`Self::process`] does not allocate, lock or panic. Non-finite input is read as silence;
-///   the output is always finite, and in Standard and Strong always within `[-1, 1]`.
+/// - [`Self::process`] does not allocate, block or panic (a model layer handed over by
+///   `StageControl::attach_dfn3` is taken with a try-lock that never waits). Non-finite input
+///   is read as silence; the output is always finite, and in Standard and Strong always within
+///   `[-1, 1]`.
 ///
 /// The mode is atomic: [`Self::control`] gives a handle that any thread can use while the
 /// audio thread runs the stage.
@@ -399,6 +451,10 @@ impl Stage {
                 retry_at_block: AtomicU64::new(0),
                 step_down_rules: AtomicBool::new(true),
                 force_step_down: AtomicBool::new(false),
+                #[cfg(feature = "dfn3")]
+                handover: std::sync::Mutex::new(None),
+                #[cfg(feature = "dfn3")]
+                handover_ready: AtomicBool::new(false),
             }),
             window_blocks: 0,
             window_over: 0,
@@ -507,6 +563,8 @@ impl Stage {
             }
         }
         #[cfg(feature = "dfn3")]
+        self.take_handover();
+        #[cfg(feature = "dfn3")]
         let input = *block;
         let want_wet = self.mode() != Mode::Off;
         let mut active = Mode::Off;
@@ -575,6 +633,24 @@ impl Stage {
         #[cfg(feature = "dfn3")]
         self.judge_strong(ran, ns);
         self.count(ns);
+    }
+
+    /// Takes a layer handed over by [`StageControl::attach_dfn3`], if one waits: a try-lock
+    /// that never waits (a busy slot is tried again next block) and a move, no allocation.
+    #[cfg(feature = "dfn3")]
+    fn take_handover(&mut self) {
+        if self.strong.is_some() || !self.shared.handover_ready.load(Ordering::Acquire) {
+            return;
+        }
+        let taken = match self.shared.handover.try_lock() {
+            Ok(mut slot) => slot.take(),
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().take(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(layer) = taken {
+            self.strong = Some(layer.0);
+            self.shared.handover_ready.store(false, Ordering::Release);
+        }
     }
 
     /// Runs the model on `input`; its output (for the block before) lands in `self.wet`.

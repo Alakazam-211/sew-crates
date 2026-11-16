@@ -23,8 +23,8 @@ use tauri_plugin_sew_voice::{
     VideoPaused, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoSource, VideoTrack,
 };
 use tauri_plugin_sew_voice::{
-    NOISE_COMMANDS, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, SetNoiseRemovalArgs,
-    UNAVAILABLE_NOISE_MODES,
+    NOISE_COMMANDS, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode,
+    SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
 };
 
 /// `v` serializes to exactly `want` and `want` parses back to `v`.
@@ -1238,9 +1238,33 @@ fn noise_removal_shapes() {
     exact(&NoiseRemovalReason::Budget, json!("budget"));
     exact(&NoiseRemovalReason::Fault, json!("fault"));
     exact(&NoiseRemovalReason::Unavailable, json!("unavailable"));
+    exact(&NoiseRemovalReason::SwitchFailed, json!("switch_failed"));
+    exact(&NoiseRemovalReason::Loading, json!("loading"));
+    exact(&PhoneAudioMode::Os, json!("os"));
+    exact(&PhoneAudioMode::Raw, json!("raw"));
     exact(
         &NoiseRemovalState::running(NoiseRemoval::Standard),
         json!({"mode": "standard", "active": "standard"}),
+    );
+    exact(
+        &NoiseRemovalState::running(NoiseRemoval::Off).with_phone_mode(
+            Some(PhoneAudioMode::Raw),
+            None,
+            1,
+            Some(31),
+        ),
+        json!({"mode": "off", "active": "off", "phone_mode": "raw",
+            "phone_mode_switches": 1, "phone_mode_gap_ms": 31}),
+    );
+    exact(
+        &NoiseRemovalState::running(NoiseRemoval::Off).with_phone_mode(
+            Some(PhoneAudioMode::Os),
+            Some(NoiseRemovalReason::SwitchFailed),
+            0,
+            None,
+        ),
+        json!({"mode": "off", "active": "off", "phone_mode": "os",
+            "phone_mode_reason": "switch_failed"}),
     );
     exact(
         &NoiseRemovalState::stepped_down(NoiseRemoval::Standard, NoiseRemovalReason::Budget),

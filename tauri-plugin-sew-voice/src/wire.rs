@@ -1049,8 +1049,12 @@ pub use sew_call_client::{CodecPreferenceReason, VideoCodecPreference};
 // ───────────────────────────── noise removal ─────────────────────────────
 
 /// The microphone's noise removal: the setting (`"off"`, `"standard"`), why what runs is less
-/// (`"budget"`, `"fault"`, `"unavailable"`) and `{mode, active, reason?}` (sew-call-client's).
-pub use sew_call_client::{NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState};
+/// (`"budget"`, `"fault"`, `"unavailable"`, `"loading"`; `"switch_failed"` for a phone's
+/// capture), the phone's capture (`"os"`, `"raw"`) and `{mode, active, reason?, …}`
+/// (sew-call-client's).
+pub use sew_call_client::{
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode,
+};
 
 /// `set_noise_removal`'s arguments: `{mode}`, `"off"` or `"standard"`. `"strong"` is a mode
 /// this version can't run ([`code::NOISE_MODE_UNAVAILABLE`]); any other is `invalid_args`.

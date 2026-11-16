@@ -2799,9 +2799,9 @@ dependencies = [
 
 [[package]]
 name = "kessel-audio"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af1da1a3e1e91c1383b89fca9fd59696bb73d290c03a356005d5028b756571a7"
+checksum = "a5ba77f16e4ff11d62b74ef4d1047a6a1d48afe60aad3a422e3ca57301765cf2"
 dependencies = [
  "block2",
  "bytes",
@@ -4971,7 +4971,7 @@ dependencies = [
 
 [[package]]
 name = "sew-call-client"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -5015,7 +5015,7 @@ dependencies = [
 
 [[package]]
 name = "sew-e2ee"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "ed25519-dalek",
@@ -5040,7 +5040,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lk-compat"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "aws-lc-rs",
@@ -5060,7 +5060,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lkproto"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -5070,7 +5070,7 @@ dependencies = [
 
 [[package]]
 name = "sew-mls-crypto"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "chacha20poly1305 0.10.1",
@@ -5093,7 +5093,7 @@ dependencies = [
 
 [[package]]
 name = "sew-noise"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "nnnoiseless",
  "realfft",
@@ -5102,7 +5102,7 @@ dependencies = [
 
 [[package]]
 name = "sew-proto"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5688,7 +5688,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-voice"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "cpal",
