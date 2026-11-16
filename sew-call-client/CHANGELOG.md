@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.8.0 (2026-11-16, Sew 0.10.2)
+
+### Breaking
+
+- 0.8.0 follows kessel-audio 0.2, which it re-exports.
+- kessel-audio 0.2 (re-exported as `kessel_audio`), for its capture hook: `EngineConfig` and
+  `ProcessingConfig` are `#[non_exhaustive]` (build them from `default()` or `null(..)` and the
+  `with_*` methods), `ProcessingConfig` is no longer `Clone`, and `Stats` has `capture_stage`.
+  An `EncodedFrame`'s `ts48k` does not include the stage's 10 ms: its audio is that much older.
+- `AudioBridge` is no longer `UnwindSafe` or `RefUnwindSafe` (it now holds the call's
+  `NoiseRemovalControl`).
+
+### Changed
+
+- On Android, Off turns off the OS's noise suppression for a call that starts in Off (a change
+  during a call takes effect from the next call). On iOS the OS's voice processing keeps its
+  own noise suppression for now (a later kessel-audio release adds an unprocessed path). Echo
+  cancellation and gain control stay on.
+
+### Added
+
+- Feature `dfn3`: Standard noise removal runs DeepFilterNet3's low-latency model (by Hendrik
+  Schröter and the DeepFilterNet authors, MIT OR Apache-2.0; run by `sew-noise`'s own inference
+  code), with RNNoise kept warm beside it as its automatic step-down when the device can't keep
+  up. `NoiseRemoval` keeps its two modes; Standard runs DeepFilterNet3 when it can, RNNoise
+  otherwise.
+  `NoiseRemovalControl::set_dfn3_weights(path)` loads the weights the app ships as a resource
+  (checked against their pinned sha256 first; `DFN3_WEIGHTS_FILE`, `Dfn3LoadError`), with
+  `dfn3_loaded` and `dfn3_load_info` (`Dfn3LoadInfo`: resident memory before and after, time).
+  Without usable weights Standard stays RNNoise. With the weights loaded a stage also runs on
+  phones, after the OS's voice processing.
+- `NoiseRemovalState` gains `model` (`NoiseModel`: `dfn3`, `rnnoise`), `model_reason` (why it
+  is RNNoise when DeepFilterNet3 was wanted: `budget`, `fault`, `unavailable`) and
+  `step_downs`, and `with_model`. They are present only once an app has given the control
+  DeepFilterNet3's weights, so the JSON is unchanged otherwise.
+- Feature `noise-bench` (debug builds only; never in `default`): `noise_bench::run`, the noise
+  removal stage on the device's microphone for a while with no call, reported as
+  `NoiseBenchReport` (block p50/p99/max, resident memory, the model, each step-down with its
+  time and reason, kessel-audio's view, device model and thermal state where readable).
+- Noise removal on the desktop capture path, over `sew-noise` (a new dependency with
+  `audio-core`): `NoiseRemoval` (`Off`, `Standard`; `#[non_exhaustive]`, default `Standard`),
+  `NoiseRemovalState {mode, active, reason}` and `NoiseRemovalReason` (`budget`, `fault`,
+  `unavailable`). `NoiseRemovalControl` (`new`, `set`, `mode`, `state`, `subscribe`) holds an
+  app's setting; `AudioBridge::start_with_noise` builds the call's stage in its mode and hands
+  it to kessel-audio's capture hook, between echo cancellation and gain control, with
+  kessel-audio's own noise suppression off. `set` changes the mode mid-call from the next
+  10 ms block, cross-faded, with no change of delay. kessel-audio bypassing the stage (over its
+  time budget, or a fault) reads as `active: off` with that reason. `AudioBridge::noise_removal`,
+  `Call::noise_removal` and `StatsWindow::noise_removal` carry the state.
+- `platform_audio_config` sets noise removal to Standard on desktop (a stage in the capture
+  hook, kessel-audio's own noise suppression off). Phones are unchanged: the OS's voice
+  processing does its own, and the state says `unavailable`.
+
+### Dependencies
+
+- **Updates the WebRTC dependencies (str0m fork updates); recommended for everyone.**
+  `sew-str0m` 0.25.3 and `sew-str0m-is` 0.12.2, now from crates.io (until now from the fork's
+  git repository), with upstream str0m fixes for TWCC feedback runs (PR #1150), video-layers-allocation
+  resolutions of 65536 (PR #1153), ICE candidates and STUN messages from port 0 or an
+  unspecified address (PR #1148), and conflicting payload types in a remote SDP description
+  (PR #1154), now rejected with an error; and a fork fix so that RTX this
+  side declined for a codec stays declined after negotiation, while a later remote RTX that
+  conflicts with a locked mapping is rejected.
+  An app no longer needs a `[patch.crates-io]` row for `sew-str0m`; remove it if it has one.
+- sew-proto, sew-lkproto, sew-lk-compat, sew-e2ee and sew-noise 0.10.2.
+
 ## 0.7.0 (2026-11-15, Sew 0.10.0)
 
 ### Breaking

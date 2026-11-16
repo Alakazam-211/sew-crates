@@ -316,6 +316,9 @@ pub mod code {
     /// A hardware key that can't be deleted stops `forget_server` with this, and a retry finds
     /// that device again.
     pub const DEVICE_STORE: &str = "device_store";
+    /// `set_noise_removal` (or `Builder::noise_removal`) with a mode this build or platform
+    /// can't run (`strong` in this version); nothing changed.
+    pub const NOISE_MODE_UNAVAILABLE: &str = "noise_mode_unavailable";
 }
 
 /// One device key the plugin's device store holds (`known_device_keys`, `forget_server`):
@@ -953,6 +956,8 @@ pub enum PluginEvent {
     Policy(Value),
     /// `recording_controls`: [`RecordingControls`], when either changed (plugin 0.6.1).
     RecordingControls(RecordingControls),
+    /// `noise_removal`: [`NoiseRemovalState`] (`{mode, active, reason?}`), whenever it changed.
+    NoiseRemoval(NoiseRemovalState),
 }
 
 /// The prefix of every event name the plugin emits: `sew-voice://state` and so on.
@@ -975,6 +980,10 @@ pub const EVENT_NAMES: [&str; 10] = [
 /// The recording controls' event (plugin 0.6.1), beside [`EVENT_NAMES`].
 pub const RECORDING_EVENTS: [&str; 1] = ["recording_controls"];
 
+/// The noise removal event, beside [`EVENT_NAMES`]: `noise_removal` with
+/// [`NoiseRemovalState`] whenever the mode, what runs or the reason changed.
+pub const NOISE_EVENTS: [&str; 1] = ["noise_removal"];
+
 impl PluginEvent {
     /// The event's frozen name: `state`, `participants`, `speaking`, `errors`, `devices`,
     /// `recording`, `video`, `local_video`, `video_devices` or `policy` (and
@@ -996,6 +1005,7 @@ impl PluginEvent {
             PluginEvent::VideoDevices(_) => "video_devices",
             PluginEvent::Policy(_) => "policy",
             PluginEvent::RecordingControls(_) => "recording_controls",
+            PluginEvent::NoiseRemoval(_) => "noise_removal",
         }
     }
 
@@ -1022,6 +1032,7 @@ impl PluginEvent {
             PluginEvent::VideoDevices(d) => serde_json::to_value(d),
             PluginEvent::Policy(p) => Ok(p.clone()),
             PluginEvent::RecordingControls(c) => serde_json::to_value(c),
+            PluginEvent::NoiseRemoval(n) => serde_json::to_value(n),
         };
         // These types are plain structs of strings, bools and numbers; serde_json cannot fail
         // on them (a NaN level is written as null).
@@ -1034,6 +1045,49 @@ impl PluginEvent {
 pub use crate::video::{Tile, VideoCodec};
 /// The per-device video codec setting and why "Prefer H.264" can't apply (sew-call-client's).
 pub use sew_call_client::{CodecPreferenceReason, VideoCodecPreference};
+
+// ───────────────────────────── noise removal ─────────────────────────────
+
+/// The microphone's noise removal: the setting (`"off"`, `"standard"`), why what runs is less
+/// (`"budget"`, `"fault"`, `"unavailable"`) and `{mode, active, reason?}` (sew-call-client's).
+pub use sew_call_client::{NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState};
+
+/// `set_noise_removal`'s arguments: `{mode}`, `"off"` or `"standard"`. `"strong"` is a mode
+/// this version can't run ([`code::NOISE_MODE_UNAVAILABLE`]); any other is `invalid_args`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SetNoiseRemovalArgs {
+    /// The mode's name.
+    pub mode: String,
+}
+
+impl SetNoiseRemovalArgs {
+    /// `{mode}`.
+    pub fn new(mode: impl Into<String>) -> SetNoiseRemovalArgs {
+        SetNoiseRemovalArgs { mode: mode.into() }
+    }
+
+    /// The mode asked for, or the refusal: `noise_mode_unavailable` for a mode this version
+    /// names but can't run (`strong`), `invalid_args` for any other name.
+    pub fn mode(&self) -> Result<NoiseRemoval, ErrorInfo> {
+        if let Some(m) = NoiseRemoval::from_name(&self.mode) {
+            return Ok(m);
+        }
+        if UNAVAILABLE_NOISE_MODES.contains(&self.mode.as_str()) {
+            return Err(ErrorInfo::with_detail(
+                code::NOISE_MODE_UNAVAILABLE,
+                self.mode.clone(),
+            ));
+        }
+        Err(ErrorInfo::with_detail(
+            code::INVALID_ARGS,
+            format!("unknown noise removal mode `{}`", self.mode),
+        ))
+    }
+}
+
+/// The noise removal modes the setting names that this version can't run.
+pub const UNAVAILABLE_NOISE_MODES: [&str; 1] = ["strong"];
 
 /// The `video_caps` answer: what this device's video can do.
 ///

@@ -200,6 +200,10 @@ pub struct StatsWindow {
     pub relay_protocol: Option<String>,
     /// The selected pair's round-trip time, ms, when known.
     pub rtt_ms: Option<u32>,
+    /// The microphone's noise removal at the window's end: `{mode, active, reason}` (the
+    /// host's view only, not sent to Sew; `None` when the call's audio reports none:
+    /// [`crate::AudioBridge::start_with_noise`]).
+    pub noise_removal: Option<crate::NoiseRemovalState>,
     /// The body sent to Sew (absent when nothing was sent).
     pub sample: Option<CallStatsSample>,
     /// What became of it.
@@ -543,6 +547,7 @@ impl Meter {
                         .min(u64::from(CALL_STATS_RTT_MAX_MS)),
                 )
             }),
+            noise_removal: None,
             sample: None,
             beacon: BeaconOutcome::Off,
         };

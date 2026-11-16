@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "tauri-plugin-sew-voice"
-version = "0.7.0"
+version = "0.8.0"
 build = "build.rs"
 links = "tauri-plugin-sew-voice"
 include = [
@@ -51,11 +51,16 @@ default = [
     "audio",
     "builtin-ring-provider",
 ]
+dfn3 = ["sew-call-client/dfn3"]
 ios-screen-ring = ["dep:kessel-frame-ring"]
 keyring-store = ["sew-call-client/keyring-store"]
 mobile = [
     "sew-call-client/mobile",
     "ios-screen-ring",
+]
+noise-bench = [
+    "audio",
+    "sew-call-client/noise-bench",
 ]
 sim-software-key = ["sew-call-client/sim-software-key"]
 tauri = [
@@ -100,6 +105,10 @@ name = "native_sink"
 path = "tests/native_sink.rs"
 
 [[test]]
+name = "noise"
+path = "tests/noise.rs"
+
+[[test]]
 name = "phones"
 path = "tests/phones.rs"
 
@@ -136,11 +145,11 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-call-client]
-version = "0.7.0"
+version = "0.8.0"
 default-features = false
 
 [dependencies.sew-proto]
-version = "0.10.0"
+version = "0.10.2"
 
 [dependencies.tauri]
 version = "2"
@@ -176,7 +185,7 @@ features = [
 default-features = false
 
 [dev-dependencies.sew-call-client]
-version = "0.7.0"
+version = "0.8.0"
 features = ["testing"]
 default-features = false
 
@@ -225,7 +234,22 @@ unsafe_code = "deny"
 level = "warn"
 priority = -1
 
+[profile.dev.package.easyfft]
+opt-level = 3
+
 [profile.dev.package.kessel-video]
+opt-level = 3
+
+[profile.dev.package.nnnoiseless]
+opt-level = 3
+
+[profile.dev.package.realfft]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.sew-noise]
 opt-level = 3
 
 [profile.dev.package.vp8-decoder]

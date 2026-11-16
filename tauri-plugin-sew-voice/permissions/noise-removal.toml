@@ -1,0 +1,11 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "noise-removal"
+description = """
+The microphone's noise removal, for an app's settings: `set_noise_removal {mode}` (`off`,
+`standard`) and `noise_removal` (`{mode, active, reason?}`); the `noise_removal` event needs no
+permission. Not in `sew-voice:default`: grant it to the settings window, or
+`sew-voice:allow-set-noise-removal` and `sew-voice:allow-noise-removal` one by one.
+"""
+permissions = ["allow-set-noise-removal", "allow-noise-removal"]

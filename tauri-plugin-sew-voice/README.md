@@ -36,6 +36,22 @@ webview or the OS decoders do, never on Linux). `set_video_codec_preference {pre
 can't apply. H.264 is only ever the OS's hardware encoder, found at run time. The plugin keeps
 the setting until the app quits: store it with the app's settings and set it again at start.
 
+Noise removal (desktop): the microphone's audio goes through RNNoise (`sew-noise`) between echo
+cancellation and gain control, `standard` by default (`Builder::noise_removal` sets the app's
+own). `set_noise_removal {mode}` (`off`, `standard`) works before or during a call, with no
+click, and answers `{mode, active, reason?}`, as `noise_removal` does; the
+`sew-voice://noise_removal` event carries each change. `reason` says why what runs is less than
+what was asked: `budget` or `fault` (the audio pipeline stopped the stage) or `unavailable`.
+`strong` is refused with `noise_mode_unavailable`. Both commands are behind the
+`sew-voice:noise-removal` permission set. The plugin stores nothing: keep the person's choice
+with the app's settings and set it again at start.
+
+With feature `dfn3`, `standard` runs DeepFilterNet3's low-latency model (by Hendrik Schröter
+and the DeepFilterNet authors; MIT OR Apache-2.0), with RNNoise kept beside it as its automatic
+step-down, on desktop and, after the OS's voice processing, on phones; see "Shipping
+DeepFilterNet3 in your app" below. Without the weights `standard` is RNNoise. The state then
+also carries `model` (`dfn3`, `rnnoise`), `model_reason` (why it is RNNoise) and `step_downs`.
+
 Not affiliated with or endorsed by LiveKit.
 
 ## Features
@@ -91,9 +107,8 @@ Not affiliated with or endorsed by LiveKit.
 
 The crate is not published on crates.io yet, because the voice engine it runs,
 `sew-call-client`, is not. Its WebRTC stack is Alakazam Labs' fork of `str0m`, here
-`sew-str0m` 0.25.2: that release is on crates.io, and for this release the engine still takes
-it from the fork's git repository; `sew-e2ee`, `kessel-audio` and `kessel-video` come from
-crates.io. Until then,
+`sew-str0m` 0.25.3, from crates.io like `sew-e2ee`, `kessel-audio` and `kessel-video`. Until
+the engine is on crates.io,
 get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository,
 which holds it with the Sew crates it depends on: clone it into your project (for example as
 `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists into your
@@ -104,7 +119,7 @@ app's workspace root. It needs a Sew server to join calls on (see the same READM
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.7.0"
+tauri-plugin-sew-voice = "0.8.0"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
@@ -206,6 +221,52 @@ recording controls.
 
 On macOS the app needs `NSMicrophoneUsageDescription` in its `Info.plist`, and the
 `com.apple.security.device.audio-input` entitlement for a hardened-runtime build.
+
+### Shipping DeepFilterNet3 in your app
+
+With the plugin's `dfn3` cargo feature, `standard` noise removal runs DeepFilterNet3's
+low-latency model, by Hendrik Schröter and the DeepFilterNet authors
+(<https://github.com/Rikorose/DeepFilterNet>, MIT OR Apache-2.0), with sew-noise's own Rust
+inference. Its weights are not in any crate: your app ships them.
+
+```toml
+tauri-plugin-sew-voice = { version = "…", features = ["dfn3"] }
+```
+
+The four files come in the asset `sew-dfn3-<version>.tar.gz` of the Sew release the plugin
+belongs to, on <https://github.com/Alakazam-211/sew-releases> (a `dfn3/` folder holding them;
+the asset's sha256 is in the release's `SHA256SUMS` and `release.json`):
+
+| File | What |
+|---|---|
+| `dfn3_ll.nnef.tar` | the weights: 39,034,880 bytes, sha256 `b6e52c0bc66b82e42e3403d22cdd3b847143026d6a41cc4380a97b044f7766af` (also `sew_noise::dfn3::WEIGHTS_SHA256`) |
+| `NOTICE` | the model's notice: its copyright, the conversion by Alakazam Labs, the citation |
+| `LICENSE-MIT`, `LICENSE-APACHE` | the model's licence texts |
+
+Put them in a `dfn3/` folder of your app's resources; the plugin looks for
+`<app resource dir>/dfn3/dfn3_ll.nnef.tar` at start. With Tauri's bundler:
+
+```json
+{
+  "bundle": {
+    "resources": {
+      "dfn3/dfn3_ll.nnef.tar": "dfn3/dfn3_ll.nnef.tar",
+      "dfn3/NOTICE": "dfn3/NOTICE",
+      "dfn3/LICENSE-MIT": "dfn3/LICENSE-MIT",
+      "dfn3/LICENSE-APACHE": "dfn3/LICENSE-APACHE"
+    }
+  }
+}
+```
+
+For another location, give the path to `Builder::dfn3_weights(path)`.
+
+The plugin loads the file on its own thread at start, and checks its sha256 against the one
+this version pins before it reads a weight. When the file is missing or is not the pinned one,
+`standard` stays on RNNoise and the noise removal state says why (`model: "rnnoise"`,
+`model_reason: "unavailable"`); nothing else changes.
+
+Carry `dfn3/NOTICE` (and the two licence texts) in your app's third-party notices.
 
 ### Content Security Policy
 

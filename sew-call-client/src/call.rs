@@ -882,6 +882,7 @@ impl CallClient {
             send_queue_drops: std::sync::atomic::AtomicU64::new(0),
             stats: Mutex::new(CallStatsReport::default()),
             playout: Mutex::new(None),
+            noise: Mutex::new(None),
             beacon_stopped: AtomicBool::new(false),
             policy: Mutex::new(None),
             video_stats: Arc::new(Mutex::new(crate::video::VideoSendStats::default())),
@@ -1043,6 +1044,21 @@ impl Call {
     pub fn set_playout_stats(&self, source: Arc<dyn PlayoutStats>) {
         if let Ok(mut p) = self.shared.playout.lock() {
             *p = Some(source);
+        }
+    }
+
+    /// The noise removal of this call's audio: `{mode, active, reason}`
+    /// ([`crate::NoiseRemovalState`]), while audio started with
+    /// [`crate::AudioBridge::start_with_noise`] runs; `None` otherwise.
+    pub fn noise_removal(&self) -> Option<crate::NoiseRemovalState> {
+        self.shared.noise_removal()
+    }
+
+    /// The call's audio reports its noise removal here.
+    #[cfg(feature = "audio-core")]
+    pub(crate) fn set_noise_source(&self, source: Arc<dyn crate::noise::NoiseSource>) {
+        if let Ok(mut n) = self.shared.noise.lock() {
+            *n = Some(source);
         }
     }
 

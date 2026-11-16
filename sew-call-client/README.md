@@ -45,6 +45,23 @@ Not affiliated with or endorsed by LiveKit.
   noise suppression on; desktop keeps cpal (`AUDIO_BACKEND` says which). On Android call
   `sew_call_client::android_init(env, context)` before the first join (the platform TLS
   verifier needs the JVM), and add rustls-platform-verifier's Kotlin component to the app.
+- Noise removal (with `audio-core`, desktop): `AudioBridge::start_with_noise` hands
+  kessel-audio's capture hook a `sew-noise` stage (RNNoise, between echo cancellation and gain
+  control; kessel-audio's own noise suppression is then off), in the mode a
+  `NoiseRemovalControl` holds (`NoiseRemoval::Off` or `Standard`, the default). `set` changes it
+  mid-call without a click; `state` and `subscribe` give `{mode, active, reason}`, where
+  `reason` is `budget` or `fault` when kessel-audio stopped the stage, or `unavailable` where no
+  stage runs (phones). `platform_audio_config` sets Standard on desktop.
+- `dfn3` (off by default): Standard runs DeepFilterNet3's low-latency model (by Hendrik
+  Schröter and the DeepFilterNet authors; MIT OR Apache-2.0), with RNNoise beside it as its
+  automatic step-down, on desktop and, after the OS's voice processing, on phones. The app
+  ships the weights as a resource (`DFN3_WEIGHTS_FILE`, with their NOTICE and licence texts)
+  and gives their path to `NoiseRemovalControl::set_dfn3_weights`; without usable weights
+  Standard stays RNNoise. The state then also says which `model` runs, why it is RNNoise
+  (`model_reason`) and how often the call's stage stepped down (`step_downs`). Which files
+  to ship and where: tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app".
+- `noise-bench` (debug builds only, never in `default`): `noise_bench::run`, the stage on the
+  device's microphone for a while, reported as JSON.
 - `video-core` and `video` (off by default): `kessel-video`, K2's cameras, screen capture and
   video codecs, without (`video-core`) or with (`video`) the system's devices, OS codecs and
   its pure-Rust VP8. With either, calls receive video: the remote camera and screen tracks
@@ -89,12 +106,12 @@ README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.7.0"
+sew-call-client = "0.8.0"
 ```
 
 The engine's WebRTC stack is `sew-str0m`, Alakazam Labs' fork of `str0m` 0.25 (library name
 `str0m`), which carries Sew's fixes (among them one to the bandwidth estimate at the start of a
-call). This release uses `sew-str0m` 0.25.2, the same release as on crates.io, taken from the fork's git repository for this release.
+call). This release uses `sew-str0m` 0.25.3 from crates.io.
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
 session and returns it. A minimal one, and a call through it (the same code is compiled as the

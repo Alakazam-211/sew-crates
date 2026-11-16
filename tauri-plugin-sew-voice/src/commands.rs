@@ -1,6 +1,7 @@
 //! The Tauri commands: the eight of `sew-voice:default`, the two device-key commands, the
 //! three call-detail commands, the fourteen video commands and the three recording commands
-//! (Record, Stop and the host's recording rights), each set behind its own permissions. Each one is a thin call into [`VoiceService`]; the argument names are the JSON
+//! (Record, Stop and the host's recording rights) and the two noise removal commands, each set
+//! behind its own permissions. Each one is a thin call into [`VoiceService`]; the argument names are the JSON
 //! keys the webview sends (`invoke('plugin:sew-voice|join', {target, room, muted, deafened})`,
 //! `invoke('plugin:sew-voice|consent', {granted, notice_version})`: snake_case, as every other
 //! key on the wire).
@@ -16,11 +17,11 @@ use crate::sink::FrameChannel;
 use crate::video::ParentWindow;
 use crate::wire::{
     CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceKeyInfo, DeviceList, ErrorInfo,
-    ForgetServerArgs, JoinArgs, JoinOptions, JoinResult, MuteArgs, PermissionState, PreviewAnswer,
-    PreviewArgs, RecordingRights, ScreenArgs, ScreenSource, SetDeviceArgs,
-    SetVideoCodecPreferenceArgs, SetVideoDeviceArgs, SinkIdArgs, SinkStats, StateSnapshot, Tile,
-    VideoCapsAnswer, VideoCodec, VideoCodecPreference, VideoDevices, VideoSinkAnswer,
-    VideoSinkArgs, VideoSinkUpdateArgs,
+    ForgetServerArgs, JoinArgs, JoinOptions, JoinResult, MuteArgs, NoiseRemovalState,
+    PermissionState, PreviewAnswer, PreviewArgs, RecordingRights, ScreenArgs, ScreenSource,
+    SetDeviceArgs, SetNoiseRemovalArgs, SetVideoCodecPreferenceArgs, SetVideoDeviceArgs,
+    SinkIdArgs, SinkStats, StateSnapshot, Tile, VideoCapsAnswer, VideoCodec, VideoCodecPreference,
+    VideoDevices, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
 };
 
 #[tauri::command]
@@ -207,6 +208,23 @@ pub(crate) async fn video_caps(
         caps: service.video_caps().await?,
         codec_preference: service.video_codec_preference().await?,
     })
+}
+
+#[tauri::command]
+pub(crate) async fn noise_removal(
+    service: State<'_, VoiceService>,
+) -> Result<NoiseRemovalState, ErrorInfo> {
+    service.noise_removal().await
+}
+
+#[tauri::command]
+pub(crate) async fn set_noise_removal(
+    service: State<'_, VoiceService>,
+    mode: String,
+) -> Result<NoiseRemovalState, ErrorInfo> {
+    service
+        .set_noise_removal(SetNoiseRemovalArgs::new(mode))
+        .await
 }
 
 #[tauri::command]

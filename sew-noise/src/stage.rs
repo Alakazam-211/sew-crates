@@ -3,12 +3,13 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use nnnoiseless::DenoiseState;
 
 use crate::standard::Standard;
+use crate::strong::{StepDownReason, StrongState};
 use crate::{Denoiser, FRAME};
 
 thread_local! {
@@ -40,15 +41,19 @@ pub fn warm_up_thread() {
 }
 
 /// How much noise removal a [`Stage`] applies.
+///
+/// More modes may come in a later version (a match needs a wildcard arm).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Mode {
     /// None: the block passes through unchanged, at the same latency.
     Off = 0,
     /// RNNoise.
     Standard = 1,
-    /// A stronger model. Not built into this version: asking for it is refused
-    /// ([`ModeUnavailable`]).
+    /// DeepFilterNet3's low-latency model, with Standard kept warm beside it and stepped down
+    /// to when the device can't keep up (cargo feature `dfn3`; a stage built with the model,
+    /// `Stage::with_dfn3`). A stage without the model refuses it ([`ModeUnavailable`]).
     Strong = 2,
 }
 
@@ -56,9 +61,10 @@ impl Mode {
     /// Every mode, weakest first.
     pub const ALL: [Self; 3] = [Self::Off, Self::Standard, Self::Strong];
 
-    /// Whether this build can run the mode.
+    /// Whether this build can run the mode: Strong needs cargo feature `dfn3` (and then a
+    /// stage built with the model).
     pub const fn is_available(self) -> bool {
-        !matches!(self, Self::Strong)
+        !matches!(self, Self::Strong) || cfg!(feature = "dfn3")
     }
 
     /// The mode's name: `off`, `standard` or `strong`.
@@ -125,6 +131,18 @@ struct Shared {
     window_max_ns: AtomicU64,
     cold_thread_blocks: AtomicU64,
     guard_opens: AtomicU64,
+    /// The stage was built with a model for Strong.
+    strong_available: AtomicBool,
+    strong_state: AtomicU8,
+    model_blocks: AtomicU64,
+    step_downs: AtomicU64,
+    last_step_down: AtomicU8,
+    last_step_down_block: AtomicU64,
+    retry_at_block: AtomicU64,
+    /// Measurement: the step-down rules apply (on by default).
+    step_down_rules: AtomicBool,
+    /// Measurement: step down at the next model block.
+    force_step_down: AtomicBool,
 }
 
 /// A snapshot of a stage's timing counters ([`StageControl::stats`]).
@@ -132,6 +150,7 @@ struct Shared {
 /// Times are the wall time of [`Stage::process`], measured on the thread that runs it. On
 /// `wasm32` there is no clock: the block counts advance and every time is 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct StageStats {
     /// The block budget in nanoseconds ([`Stage::set_block_budget`]; 6 ms by default).
     pub budget_ns: u64,
@@ -156,6 +175,18 @@ pub struct StageStats {
     /// How many times Standard's onset guard opened (let the input through at a lasting rise
     /// in level).
     pub guard_opens: u64,
+    /// Where Strong is ([`StrongState::Idle`] for a stage without the model).
+    pub strong_state: StrongState,
+    /// Blocks in which Strong's model ran.
+    pub model_blocks: u64,
+    /// Step-downs from Strong to Standard so far.
+    pub step_downs: u64,
+    /// Why the latest step-down happened, if there was one.
+    pub last_step_down: Option<StepDownReason>,
+    /// The stage's block count ([`Self::blocks`]) at the latest step-down.
+    pub last_step_down_block: u64,
+    /// The block count from which a stepped-down Strong may be retried.
+    pub retry_at_block: u64,
 }
 
 impl StageStats {
@@ -177,11 +208,33 @@ impl StageControl {
     /// Asks for `mode`. It takes effect at the stage's next block, faded over one block (two
     /// when turning removal on). A mode this build cannot run is refused and nothing changes.
     pub fn set_mode(&self, mode: Mode) -> Result<(), ModeUnavailable> {
-        if !mode.is_available() {
+        if !mode.is_available()
+            || (mode == Mode::Strong && !self.shared.strong_available.load(Ordering::Relaxed))
+        {
             return Err(ModeUnavailable(mode));
         }
         self.shared.mode.store(mode as u8, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Whether this stage can run [`Mode::Strong`] (it was built with the model).
+    pub fn strong_available(&self) -> bool {
+        self.shared.strong_available.load(Ordering::Relaxed)
+    }
+
+    /// Steps down from Strong at the next block the model runs in, as a slow block would
+    /// (counted, with its retry). For measuring the switch; an app sets [`Mode::Standard`].
+    #[doc(hidden)]
+    pub fn force_step_down(&self) {
+        self.shared.force_step_down.store(true, Ordering::Relaxed);
+    }
+
+    /// Turns the step-down rules off (`false`) or back on. For measuring the model on a
+    /// shared, busy machine, where a scheduling delay is not the device being too slow; never
+    /// in a call.
+    #[doc(hidden)]
+    pub fn set_step_down_rules(&self, on: bool) {
+        self.shared.step_down_rules.store(on, Ordering::Relaxed);
     }
 
     /// The mode last asked for.
@@ -214,6 +267,12 @@ impl StageControl {
             window_max_ns: s.window_max_ns.load(Ordering::Relaxed),
             cold_thread_blocks: s.cold_thread_blocks.load(Ordering::Relaxed),
             guard_opens: s.guard_opens.load(Ordering::Relaxed),
+            strong_state: StrongState::from_code(s.strong_state.load(Ordering::Relaxed)),
+            model_blocks: s.model_blocks.load(Ordering::Relaxed),
+            step_downs: s.step_downs.load(Ordering::Relaxed),
+            last_step_down: StepDownReason::from_code(s.last_step_down.load(Ordering::Relaxed)),
+            last_step_down_block: s.last_step_down_block.load(Ordering::Relaxed),
+            retry_at_block: s.retry_at_block.load(Ordering::Relaxed),
         }
     }
 }
@@ -245,10 +304,16 @@ enum Run {
 ///     RMS level, which a click is not) and the next block is still that far above the floor,
 ///     the input passes unchanged for 40 ms from the block that rose. The stage's own delay
 ///     is the look-ahead, so this adds no latency. [`StageStats::guard_opens`] counts it.
+/// - [`Mode::Strong`] (cargo feature `dfn3`, a stage built by `Stage::with_dfn3`) is
+///   DeepFilterNet3's low-latency model's output, with Standard running beside it. The stage
+///   times its own blocks and steps down to Standard before the audio pipeline would stop it
+///   for being slow, without a click and without running the model again; it retries later,
+///   and after repeated step-downs it stays on Standard. [`StageStats`] says where Strong is
+///   and why it stepped down.
 /// - A mode change is taken at a block boundary and cross-faded over one block. Turning
 ///   removal on spends one more block first, feeding the model without using its output.
 /// - [`Self::process`] does not allocate, lock or panic. Non-finite input is read as silence;
-///   the output is always finite, and in Standard always within `[-1, 1]`.
+///   the output is always finite, and in Standard and Strong always within `[-1, 1]`.
 ///
 /// The mode is atomic: [`Self::control`] gives a handle that any thread can use while the
 /// audio thread runs the stage.
@@ -280,6 +345,9 @@ pub struct Stage {
     window_max_ns: u64,
     /// Standard's floor and onset guard.
     standard: Standard,
+    /// Strong's model and step-down.
+    #[cfg(feature = "dfn3")]
+    strong: Option<Box<crate::strong::Strong>>,
 }
 
 impl std::fmt::Debug for Stage {
@@ -322,12 +390,39 @@ impl Stage {
                 window_max_ns: AtomicU64::new(0),
                 cold_thread_blocks: AtomicU64::new(0),
                 guard_opens: AtomicU64::new(0),
+                strong_available: AtomicBool::new(false),
+                strong_state: AtomicU8::new(StrongState::Idle.code()),
+                model_blocks: AtomicU64::new(0),
+                step_downs: AtomicU64::new(0),
+                last_step_down: AtomicU8::new(0),
+                last_step_down_block: AtomicU64::new(0),
+                retry_at_block: AtomicU64::new(0),
+                step_down_rules: AtomicBool::new(true),
+                force_step_down: AtomicBool::new(false),
             }),
             window_blocks: 0,
             window_over: 0,
             window_max_ns: 0,
             standard: Standard::new(0.0),
+            #[cfg(feature = "dfn3")]
+            strong: None,
         }
+    }
+
+    /// A stage in [`Mode::Strong`] over `model` (cargo feature `dfn3`). Builds the model's
+    /// stream and warms it up here: every code path runs once on a test signal, then the state
+    /// is cleared. Allocates here and never again. Slower than [`Self::new`] (a few
+    /// milliseconds); build it off the audio thread.
+    #[cfg(feature = "dfn3")]
+    pub fn with_dfn3(model: Arc<crate::dfn3::Dfn3Model>) -> Self {
+        let mut stage = Self::new();
+        stage.strong = Some(Box::new(crate::strong::Strong::new(model)));
+        stage.shared.strong_available.store(true, Ordering::Relaxed);
+        stage
+            .shared
+            .mode
+            .store(Mode::Strong as u8, Ordering::Relaxed);
+        stage
     }
 
     /// A stage that starts in `mode`.
@@ -386,6 +481,10 @@ impl Stage {
         self.wet = [0.0; FRAME];
         self.run = Run::Dry;
         self.standard = Standard::new(0.0);
+        #[cfg(feature = "dfn3")]
+        if let Some(strong) = self.strong.as_mut() {
+            strong.reset();
+        }
         self.shared.active.store(Mode::Off as u8, Ordering::Relaxed);
     }
 
@@ -407,6 +506,8 @@ impl Stage {
                 *s = 0.0;
             }
         }
+        #[cfg(feature = "dfn3")]
+        let input = *block;
         let want_wet = self.mode() != Mode::Off;
         let mut active = Mode::Off;
         match (self.run, want_wet) {
@@ -453,12 +554,26 @@ impl Stage {
                 self.standard = Standard::new(0.0);
             }
         }
+        #[cfg(feature = "dfn3")]
+        let mut ran = false;
+        #[cfg(feature = "dfn3")]
+        if let Some(strong) = self.strong.as_mut() {
+            let block_no = self.shared.blocks.load(Ordering::Relaxed);
+            let want = self.shared.mode.load(Ordering::Relaxed) == Mode::Strong as u8;
+            let out = strong.process(&input, block, want, block_no);
+            ran = out.ran;
+            if out.active {
+                active = Mode::Strong;
+            }
+        }
         self.shared.active.store(active as u8, Ordering::Relaxed);
 
         #[cfg(not(target_arch = "wasm32"))]
         let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         #[cfg(target_arch = "wasm32")]
         let ns = 0u64;
+        #[cfg(feature = "dfn3")]
+        self.judge_strong(ran, ns);
         self.count(ns);
     }
 
@@ -470,6 +585,33 @@ impl Stage {
             .process_frame(&input[..], &mut self.wet[..])
             .unwrap_or(0.0);
         self.shared.vad_bits.store(vad.to_bits(), Ordering::Relaxed);
+    }
+
+    /// After a block: Strong's step-down rules on the block's time, and its state published.
+    #[cfg(feature = "dfn3")]
+    fn judge_strong(&mut self, ran: bool, ns: u64) {
+        let Some(strong) = self.strong.as_mut() else {
+            return;
+        };
+        let s = &self.shared;
+        let block_no = s.blocks.load(Ordering::Relaxed);
+        if ran {
+            s.model_blocks.fetch_add(1, Ordering::Relaxed);
+            let force = s.force_step_down.swap(false, Ordering::Relaxed);
+            let rules = s.step_down_rules.load(Ordering::Relaxed);
+            strong.judge(ns, block_no, rules, force);
+        }
+        s.strong_state
+            .store(strong.state(block_no + 1).code(), Ordering::Relaxed);
+        s.step_downs
+            .store(u64::from(strong.step_downs), Ordering::Relaxed);
+        s.last_step_down.store(
+            strong.last.map_or(0, StepDownReason::code),
+            Ordering::Relaxed,
+        );
+        s.last_step_down_block
+            .store(strong.last_block, Ordering::Relaxed);
+        s.retry_at_block.store(strong.retry_at(), Ordering::Relaxed);
     }
 
     fn count(&mut self, ns: u64) {

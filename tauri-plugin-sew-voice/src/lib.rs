@@ -138,6 +138,12 @@ pub use wire::{
     VideoPaused, VideoPermissions, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
     VideoSource, VideoTrack,
 };
+/// The microphone's noise removal (`set_noise_removal`, `noise_removal`, the `noise_removal`
+/// event).
+pub use wire::{
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, SetNoiseRemovalArgs,
+    UNAVAILABLE_NOISE_MODES,
+};
 
 // On phones the device key is the host's (Builder::device_key_store, or a hardware key):
 // keyring's backends are desktop-only.
@@ -214,3 +220,12 @@ pub const VIDEO_COMMANDS: [&str; 13] = [
 /// (`{setting, effective, reason}`). The engine keeps it until the process ends; persisting it
 /// is the host's job.
 pub const VIDEO_CODEC_COMMANDS: [&str; 1] = ["set_video_codec_preference"];
+
+/// The noise removal commands, outside `sew-voice:default`: a window gets them with the set
+/// `sew-voice:noise-removal` or each one's own `sew-voice:allow-<command>`.
+/// `set_noise_removal {mode}` (`"off"`, `"standard"`) sets the microphone's noise removal,
+/// before or during a call, and answers `{mode, active, reason?}`; `"strong"` answers
+/// `noise_mode_unavailable` in this version. `noise_removal` answers the same shape; the
+/// `noise_removal` event carries each change. The engine keeps the setting until the process
+/// ends; persisting it is the host's job.
+pub const NOISE_COMMANDS: [&str; 2] = ["set_noise_removal", "noise_removal"];

@@ -19,3 +19,18 @@ change the file and loads nothing at run time.
 To check: download `nnnoiseless` 0.5.2 from crates.io, compare the package's sha256 with the
 checksum above (it is also the `checksum` of the `nnnoiseless` entry in a `Cargo.lock`), and
 run `sha256sum src/weights.rnn` in the unpacked package.
+
+## DeepFilterNet3 (feature `dfn3`)
+
+The `dfn3` feature runs the low-latency variant of DeepFilterNet3 (by Hendrik Schröter and the
+DeepFilterNet authors; MIT OR Apache-2.0) with this crate's own inference code. Its weights are
+not in this package; they are loaded at run time from a file the app ships, and only if that
+file's sha256 is the one this version pins (`dfn3::WEIGHTS_SHA256`).
+
+| | |
+|---|---|
+| Upstream repository | <https://github.com/Rikorose/DeepFilterNet> |
+| Upstream file | `models/DeepFilterNet3_ll_onnx.tar.gz` at commit `978576aa8400552a4ce9730838c635aa30db5e61` (the v0.5.6 tag), sha256 `5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a` |
+| File loaded | `dfn3_ll.nnef.tar`, sha256 `b6e52c0bc66b82e42e3403d22cdd3b847143026d6a41cc4380a97b044f7766af`, 39,034,880 bytes: the upstream file's float32 weights, renamed and stored as NNEF tensor files (values unchanged), converted by Alakazam Labs |
+| Converter | `scripts/dfn3/convert-weights.py` in Sew's repository, converter version 1, script sha256 `8b5384c27c63e2541763d1f7a4ba570f9a3146c2b65dd6f0032dbac95715ff75`; Python standard library only |
+| Licence | MIT OR Apache-2.0 (the upstream repository's `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`) |

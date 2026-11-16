@@ -8,13 +8,14 @@ model is RNNoise's (by Jean-Marc Valin and Mozilla), run by
 weights compiled in: nothing is loaded at run time, there is no C code and no `unsafe`.
 
 - `Stage`: for a native capture path. One 480-sample (10 ms) block in place, a fixed latency
-  of one block, and a mode (`Off`, `Standard`) that any thread can change while audio runs.
+  of one block, and a mode (`Off`, `Standard`, and with the `dfn3` feature `Strong`) that any
+  thread can change while audio runs.
 - `Denoiser`: one 480-sample frame in, one out.
 - `StreamDenoiser`: blocks of any size at any rate from 8 to 192 kHz (it resamples to and
   from 48 kHz), for a Web Audio worklet or any callback whose block size is not 480.
 
-After construction nothing allocates. Non-finite input samples are read as silence and the
-output is always finite.
+Once a thread is ready (see "Threads" below), processing allocates nothing. Non-finite input
+samples are read as silence and the output is always finite.
 
 It is part of Sew, Alakazam Labs' self-hosted team chat server, where it cleans the microphone
 of voice calls on the sender's device.
@@ -25,6 +26,15 @@ of voice calls on the sender's device.
   <https://github.com/Alakazam-211/sew-crates/security/policy> says.
 
 ## Usage
+
+```toml
+[dependencies]
+sew-noise = "0.10.2"
+# or, with DeepFilterNet3 and the capture-hook trait:
+# sew-noise = { version = "0.10.2", features = ["dfn3", "capture-stage"] }
+```
+
+No feature is on by default: `dfn3` and `capture-stage` are opt-in.
 
 ```rust
 use sew_noise::{FRAME, Mode, Stage};
@@ -50,7 +60,8 @@ assert_eq!(stage.latency_samples(), 480);
 - **Latency.** 480 samples (10 ms), fixed, in every mode. `Off` delays the input by the same
   block, so a mode change never shifts the signal in time.
 - **Modes.** `Standard` runs the model, with a floor and an onset guard (below). `Off` passes
-  the input through bit for bit and does not run the model. `Strong` names a stronger model that this version does not contain;
+  the input through bit for bit and does not run the model. `Strong` runs DeepFilterNet3 (the
+  `dfn3` feature, below). Without the `dfn3` feature, or on a stage built without the model,
   `set_mode(Mode::Strong)` returns `ModeUnavailable` and changes nothing.
 - **Standard's floor.** The input always stays in the output 30 dB under its own level, so
   nothing is taken down by more than 30 dB.
@@ -84,6 +95,46 @@ happens the first block allocates once, and `StageStats::cold_thread_blocks` cou
 `sew_noise::capture_stage::CaptureStage` is the hook an audio pipeline calls the stage
 through: `process(&mut [f32; 480])`, `latency_samples()`, `reset()`. `Stage` implements it.
 
+### The `dfn3` feature
+
+With the `dfn3` feature the stage gets a second model for `Mode::Strong`: the low-latency
+variant of DeepFilterNet3, by Hendrik Schröter and the DeepFilterNet authors
+(<https://github.com/Rikorose/DeepFilterNet>, MIT OR Apache-2.0). This crate runs it with its
+own inference code, written in Rust: the feature adds RustCrypto's `sha2` crate, and no C
+code, no `unsafe` and no neural-network runtime.
+
+The weights are not in this crate. An app ships them beside itself as a resource
+and loads them by path; the loader checks the file's sha256 against the pinned one before it
+reads a weight, and refuses any other file:
+
+```rust,ignore
+use sew_noise::Stage;
+use sew_noise::dfn3::Dfn3Model;
+
+// At start, off the audio thread.
+let stage = match Dfn3Model::load(resources.join("dfn3/dfn3_ll.nnef.tar")) {
+    Ok(model) => Stage::with_dfn3(model), // starts in Mode::Strong
+    Err(_) => Stage::new(),               // RNNoise, as without the feature
+};
+```
+
+In `Strong` the stage runs RNNoise beside the model and times its own blocks. When its blocks
+get too slow for the audio pipeline's budget, it switches to `Standard` at the next block,
+without a click and without running the model again, and tries the model again later; after
+repeated switches it stays on `Standard`. `StageStats` reports where `Strong` is
+(`strong_state`), the switches (`step_downs`, `last_step_down`) and the blocks the model ran.
+Both models delay the audio by the same amount. A block allocates nothing and takes no lock.
+
+The weights are not in this package. They are the asset `sew-dfn3-0.10.2.tar.gz` of the Sew
+0.10.2 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.10.2`; sha256
+`153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). It holds a `dfn3/` folder
+with the weights (`dfn3_ll.nnef.tar`), their NOTICE and the MIT and Apache-2.0 texts. The
+loader checks the weights file against `dfn3::WEIGHTS_SHA256`
+(`b6e52c0bc66b82e42e3403d22cdd3b847143026d6a41cc4380a97b044f7766af`) before it reads a weight.
+The file is an NNEF archive (NNEF: the Khronos Group's Neural Network Exchange Format): the
+authors' weights, values unchanged, as tensor files. [PROVENANCE.md](PROVENANCE.md) records
+the authors' file, its hash and the conversion.
+
 ### Frames and streams
 
 ```rust
@@ -109,16 +160,21 @@ neither.
 
 ## What it does not do
 
-- It works on 48 kHz mono. Other rates go through `StreamDenoiser`, whose converter is linear
-  interpolation: fine for speech at 44.1 kHz, audibly aliased far below it.
+- It is built for 48 kHz mono. `StreamDenoiser` resamples input from 8 to 192 kHz (linear
+  interpolation), so feed it 48 kHz where you can.
 - It does not cancel echo or control gain.
 - It does not remove a second voice near the microphone.
 
 ## Licence
 
-`MIT OR Apache-2.0`, at your option. `nnnoiseless` is BSD-3-Clause; its notice is in
-[NOTICE](NOTICE) and must travel with a binary that includes this crate.
+`MIT OR Apache-2.0`, at your option. `nnnoiseless` is BSD-3-Clause, and so are RNNoise's
+weights, which are built into it; its notice is in [NOTICE](NOTICE) and must travel with a
+binary that includes this crate.
 [PROVENANCE.md](PROVENANCE.md) records where the model comes from.
 
-RNNoise is the work of Jean-Marc Valin, Mozilla and the Xiph.Org Foundation. This crate is not
-affiliated with or endorsed by them or by the authors of `nnnoiseless`.
+RNNoise is the work of Jean-Marc Valin, Mozilla and the Xiph.Org Foundation. DeepFilterNet is
+the work of Hendrik Schröter and the DeepFilterNet authors. This crate is not affiliated with
+or endorsed by them or by the authors of `nnnoiseless`.
+
+With the `dfn3` feature, a binary that ships the DeepFilterNet3 weights also ships their NOTICE
+and the MIT and Apache-2.0 texts that come with them.

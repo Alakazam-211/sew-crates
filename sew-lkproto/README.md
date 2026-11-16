@@ -31,7 +31,7 @@ Not affiliated with or endorsed by LiveKit.
 
 ```toml
 [dependencies]
-sew-lkproto = "0.10.0"
+sew-lkproto = "0.10.2"
 prost = "0.14"
 ```
 

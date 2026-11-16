@@ -171,6 +171,8 @@ pub(crate) struct Shared {
     pub(crate) stats: Mutex<CallStatsReport>,
     /// The audio pipeline's playout counters ([`crate::Call::set_playout_stats`]).
     pub(crate) playout: Mutex<Option<Arc<dyn PlayoutStats>>>,
+    /// The noise removal of the call's audio ([`crate::AudioBridge::start_with_noise`]).
+    pub(crate) noise: Mutex<Option<Arc<dyn crate::noise::NoiseSource>>>,
     /// Sew refused a sample with `call_stats_off`: no more samples this call.
     pub(crate) beacon_stopped: AtomicBool,
     /// The join's media policy with the latest hints ([`crate::Call::media_policy`]).
@@ -185,6 +187,12 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The call's noise removal state, while its audio reports one.
+    pub(crate) fn noise_removal(&self) -> Option<crate::NoiseRemovalState> {
+        let src = self.noise.lock().ok().and_then(|n| n.clone())?;
+        src.noise_state()
+    }
+
     /// Records a finished window: [`crate::Call::stats`] and [`CallEvent::Stats`].
     pub(crate) fn record_window(&self, w: StatsWindow) {
         if let BeaconOutcome::Refused {
@@ -2015,9 +2023,10 @@ impl Engine {
         // The leave sample first: Sew takes samples only from a caller still in voice.
         if self.meter.started() {
             let src = self.playout_source();
-            let w = self
+            let mut w = self
                 .meter
                 .close(Instant::now(), &self.counters, src.as_deref(), true);
+            w.noise_removal = self.shared.noise_removal();
             let w = match self.beacon_prepare(w) {
                 Prepared::Send(mut w, post) => {
                     w.beacon = tokio::time::timeout(LEAVE_TIMEOUT, post.send())
@@ -2066,7 +2075,8 @@ impl Engine {
         if !self.meter.due(now) {
             return;
         }
-        let w = self.meter.close(now, &self.counters, src.as_deref(), false);
+        let mut w = self.meter.close(now, &self.counters, src.as_deref(), false);
+        w.noise_removal = self.shared.noise_removal();
         match self.beacon_prepare(w) {
             Prepared::Send(mut w, post) => {
                 let shared = self.shared.clone();

@@ -415,6 +415,18 @@
           "markdownDescription": "Denies the mute command without any pre-configured scope."
         },
         {
+          "description": "Enables the noise_removal command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-noise-removal",
+          "markdownDescription": "Enables the noise_removal command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the noise_removal command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-noise-removal",
+          "markdownDescription": "Denies the noise_removal command without any pre-configured scope."
+        },
+        {
           "description": "Enables the preview command without any pre-configured scope.",
           "type": "string",
           "const": "allow-preview",
@@ -509,6 +521,18 @@
           "type": "string",
           "const": "deny-set-device",
           "markdownDescription": "Denies the set_device command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_noise_removal command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-noise-removal",
+          "markdownDescription": "Enables the set_noise_removal command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_noise_removal command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-noise-removal",
+          "markdownDescription": "Denies the set_noise_removal command without any pre-configured scope."
         },
         {
           "description": "Enables the set_recording_rights command without any pre-configured scope.",
@@ -671,6 +695,12 @@
           "type": "string",
           "const": "device-keys",
           "markdownDescription": "The device-key commands, for a window that signs the person out: `forget_server` (deletes the\ndevices of one Sew install, the hardware keys included, and answers the removed keys) and\n`known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant\nit, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the\nwindow that needs it.\n\n#### This permission set includes:\n\n- `allow-forget-server`\n- `allow-known-device-keys`"
+        },
+        {
+          "description": "The microphone's noise removal, for an app's settings: `set_noise_removal {mode}` (`off`,\n`standard`) and `noise_removal` (`{mode, active, reason?}`); the `noise_removal` event needs no\npermission. Not in `sew-voice:default`: grant it to the settings window, or\n`sew-voice:allow-set-noise-removal` and `sew-voice:allow-noise-removal` one by one.\n\n#### This permission set includes:\n\n- `allow-set-noise-removal`\n- `allow-noise-removal`",
+          "type": "string",
+          "const": "noise-removal",
+          "markdownDescription": "The microphone's noise removal, for an app's settings: `set_noise_removal {mode}` (`off`,\n`standard`) and `noise_removal` (`{mode, active, reason?}`); the `noise_removal` event needs no\npermission. Not in `sew-voice:default`: grant it to the settings window, or\n`sew-voice:allow-set-noise-removal` and `sew-voice:allow-noise-removal` one by one.\n\n#### This permission set includes:\n\n- `allow-set-noise-removal`\n- `allow-noise-removal`"
         },
         {
           "description": "The recording commands (Sew 0.9.0), for a call UI with Record and Stop buttons:\n`start_recording` and `stop_recording`. Each is the person's own act, which the host's provider\nsends to Sew with the person's session; Sew decides who may. With them (0.6.1)\n`set_recording_rights`, the host's word on the person's rights in the room, from which the\nplugin says which of the two Sew would take now. Answering a recording's notice (`consent`,\n`withdraw_consent`) is in `sew-voice:default` and needs nothing more. Not in\n`sew-voice:default`: grant it to the call window, or `sew-voice:allow-start-recording`,\n`sew-voice:allow-stop-recording` and `sew-voice:allow-set-recording-rights` one by one.\n\n#### This permission set includes:\n\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-set-recording-rights`",

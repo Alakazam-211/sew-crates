@@ -73,12 +73,12 @@ use crate::video::{
 };
 use crate::wire::{
     CallState, CameraArgs, CodecPreferenceInfo, ConsentArgs, DeviceChoice, DeviceList, ErrorInfo,
-    JoinArgs, JoinOptions, JoinResult, LocalVideo, LocalVideoState, MuteArgs, Participant,
-    PermissionState, PluginEvent, PreviewAnswer, PreviewArgs, RecordingControls, RecordingInfo,
-    RecordingRights, ScreenArgs, ScreenSource, SelfMute, SetDeviceArgs,
-    SetVideoCodecPreferenceArgs, SetVideoDeviceArgs, SinkIdArgs, SinkMode, Speaking, StateEvent,
-    StateSnapshot, VideoCaps, VideoDevices, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs,
-    VideoTrack, code, reason, video_code,
+    JoinArgs, JoinOptions, JoinResult, LocalVideo, LocalVideoState, MuteArgs, NoiseRemovalState,
+    Participant, PermissionState, PluginEvent, PreviewAnswer, PreviewArgs, RecordingControls,
+    RecordingInfo, RecordingRights, ScreenArgs, ScreenSource, SelfMute, SetDeviceArgs,
+    SetNoiseRemovalArgs, SetVideoCodecPreferenceArgs, SetVideoDeviceArgs, SinkIdArgs, SinkMode,
+    Speaking, StateEvent, StateSnapshot, VideoCaps, VideoDevices, VideoSinkAnswer, VideoSinkArgs,
+    VideoSinkUpdateArgs, VideoTrack, code, reason, video_code,
 };
 
 /// The `speaking` event's floor: at most 10 a second.
@@ -294,10 +294,69 @@ impl VoiceService {
     }
 
     /// Forward the engine's device changes as `devices` events, from the first `devices`,
-    /// `set_device` or `join` on (until then the engine lists no devices and polls nothing).
-    /// Call once.
+    /// `set_device` or `join` on (until then the engine lists no devices and polls nothing),
+    /// and its noise removal changes as `noise_removal` events from now on. Call once.
     pub fn start(&self) {
         self.inner.devices_wanted.store(true, Ordering::Release);
+        self.forward_noise_removal();
+    }
+
+    /// Forward the engine's noise removal changes as `noise_removal` events.
+    fn forward_noise_removal(&self) {
+        let Some(mut rx) = self.inner.engine.noise_removal_events() else {
+            return;
+        };
+        let inner = Arc::downgrade(&self.inner);
+        (self.inner.spawn)(Box::pin(async move {
+            loop {
+                let state = match rx.recv().await {
+                    Ok(state) => state,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let Some(inner) = inner.upgrade() else { return };
+                let mut slot = lock(&inner.slot);
+                notify(&inner, &mut slot, &PluginEvent::NoiseRemoval(state));
+            }
+        }));
+    }
+
+    // ───────────────────────────── noise removal ─────────────────────────────
+
+    /// `noise_removal` → `{mode, active, reason?}`: the microphone's noise removal setting and
+    /// what runs. With no call, `active` is what a call would start with.
+    pub async fn noise_removal(&self) -> Result<NoiseRemovalState, ErrorInfo> {
+        Ok(self.inner.engine.noise_removal())
+    }
+
+    /// DEBUG ONLY (feature `noise-bench`): [`VoiceEngine::noise_bench`] on a blocking thread.
+    #[cfg(feature = "noise-bench")]
+    pub async fn noise_bench(
+        &self,
+        duration: std::time::Duration,
+    ) -> Result<serde_json::Value, ErrorInfo> {
+        let engine = Arc::clone(&self.inner.engine);
+        tokio::task::spawn_blocking(move || engine.noise_bench(duration))
+            .await
+            .map_err(|e| ErrorInfo::with_detail("engine_stopped", e.to_string()))?
+            .map_err(|e| e.to_info())
+    }
+
+    /// `set_noise_removal {mode}` (`"off"`, `"standard"`): before or during a call (in a call
+    /// from the next 10 ms block, without a click). Answers the state now; a `noise_removal`
+    /// event follows each change. A mode this build or platform can't run (`"strong"`) answers
+    /// `noise_mode_unavailable` and nothing changes; an unknown name `invalid_args`. The engine
+    /// keeps it until the process ends; persisting it is the host's job.
+    pub async fn set_noise_removal(
+        &self,
+        args: SetNoiseRemovalArgs,
+    ) -> Result<NoiseRemovalState, ErrorInfo> {
+        let mode = args.mode()?;
+        tracing::info!(mode = mode.as_str(), "sew-voice: noise removal");
+        self.inner
+            .engine
+            .set_noise_removal(mode)
+            .map_err(|e| e.to_info())
     }
 
     /// The first use of the devices: subscribe to the engine's device events (once, after
@@ -1515,6 +1574,8 @@ fn notify(inner: &Inner, slot: &mut Slot, event: &PluginEvent) {
         | PluginEvent::Policy(_) => {}
         // The webview's: the listener reads `on_recording`'s `can_record` and `can_stop`.
         PluginEvent::RecordingControls(_) => {}
+        // The webview's (the app's settings).
+        PluginEvent::NoiseRemoval(_) => {}
     }
 }
 

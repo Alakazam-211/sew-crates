@@ -290,6 +290,32 @@ Denies the mute command without any pre-configured scope.
 <tr>
 <td>
 
+`sew-voice:allow-noise-removal`
+
+</td>
+<td>
+
+Enables the noise_removal command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-noise-removal`
+
+</td>
+<td>
+
+Denies the noise_removal command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `sew-voice:allow-preview`
 
 </td>
@@ -491,6 +517,32 @@ Enables the set_device command without any pre-configured scope.
 <td>
 
 Denies the set_device command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:allow-set-noise-removal`
+
+</td>
+<td>
+
+Enables the set_noise_removal command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:deny-set-noise-removal`
+
+</td>
+<td>
+
+Denies the set_noise_removal command without any pre-configured scope.
 
 </td>
 </tr>
@@ -840,6 +892,23 @@ devices of one Sew install, the hardware keys included, and answers the removed 
 `known_device_keys` (lists the keys the device store holds). Not in `sew-voice:default`: grant
 it, or `sew-voice:allow-forget-server` / `sew-voice:allow-known-device-keys` alone, only to the
 window that needs it.
+
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-voice:noise-removal`
+
+</td>
+<td>
+
+The microphone's noise removal, for an app's settings: `set_noise_removal {mode}` (`off`,
+`standard`) and `noise_removal` (`{mode, active, reason?}`); the `noise_removal` event needs no
+permission. Not in `sew-voice:default`: grant it to the settings window, or
+`sew-voice:allow-set-noise-removal` and `sew-voice:allow-noise-removal` one by one.
 
 
 </td>

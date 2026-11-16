@@ -133,6 +133,8 @@ struct EngineInner {
     state: Mutex<DevState>,
     /// The phone's audio session, for every call's kessel-audio.
     session: AudioSession,
+    /// The microphone's noise removal: the setting, and each call's capture stage.
+    noise: sew_call_client::NoiseRemovalControl,
     /// The video backend (the camera permission, the background signal, the native sinks'
     /// decoder, the camera and screen publish).
     #[cfg(feature = "video-core")]
@@ -201,6 +203,7 @@ impl CallClientEngine {
                 devices_tx,
                 state: Mutex::new(DevState::default()),
                 session: AudioSession::new(),
+                noise: sew_call_client::NoiseRemovalControl::default(),
                 #[cfg(feature = "video-core")]
                 video: backend::EngineVideo::default(),
                 #[cfg(feature = "video-core")]
@@ -373,7 +376,7 @@ impl EngineInner {
             (st.input.clone(), st.output.clone())
         };
         let cfg = (self.audio)(choice(input), choice(output));
-        AudioBridge::start_with_session(call, cfg, &self.session)
+        AudioBridge::start_with_noise(call, cfg, &self.session, &self.noise)
             .map_err(|e| ErrorInfo::with_detail("mic_unavailable", e.to_string()))
     }
 
@@ -714,6 +717,48 @@ impl VoiceEngine for CallClientEngine {
         {
             crate::wire::VideoCaps::default()
         }
+    }
+
+    /// The engine's [`sew_call_client::NoiseRemovalControl`]: the live call's stage takes the
+    /// mode at its next block, and later calls start in it. `Off` and `Standard` are always
+    /// taken; `Standard` runs DeepFilterNet3 where its weights are loaded (feature `dfn3`),
+    /// RNNoise otherwise. Where no stage can run (phones without DeepFilterNet3, a kessel-audio
+    /// without the capture hook) the state says `unavailable`.
+    fn set_noise_removal(
+        &self,
+        mode: crate::wire::NoiseRemoval,
+    ) -> Result<crate::wire::NoiseRemovalState, EngineError> {
+        Ok(self.inner.noise.set(mode))
+    }
+
+    fn noise_removal(&self) -> crate::wire::NoiseRemovalState {
+        self.inner.noise.state()
+    }
+
+    fn noise_removal_events(&self) -> Option<broadcast::Receiver<crate::wire::NoiseRemovalState>> {
+        Some(self.inner.noise.subscribe())
+    }
+
+    #[cfg(feature = "dfn3")]
+    fn set_dfn3_weights(&self, path: &std::path::Path) -> Result<(), EngineError> {
+        self.inner.noise.set_dfn3_weights(path).map_err(|e| {
+            EngineError::Failed(ErrorInfo::with_detail(
+                crate::wire::code::NOISE_MODE_UNAVAILABLE,
+                e.to_string(),
+            ))
+        })
+    }
+
+    #[cfg(feature = "noise-bench")]
+    fn noise_bench(&self, duration: std::time::Duration) -> Result<serde_json::Value, EngineError> {
+        let report =
+            sew_call_client::noise_bench::run(&self.inner.noise, &self.inner.session, duration)
+                .map_err(|e| {
+                    EngineError::Failed(ErrorInfo::with_detail("mic_unavailable", e.to_string()))
+                })?;
+        serde_json::to_value(report).map_err(|e| {
+            EngineError::Failed(ErrorInfo::with_detail("engine_stopped", e.to_string()))
+        })
     }
 
     /// The preference is the engine's (`CallClient`'s), so it lasts across calls.

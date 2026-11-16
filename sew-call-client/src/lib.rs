@@ -40,6 +40,7 @@ pub mod device;
 pub mod e2ee;
 mod engine;
 pub mod gateway;
+mod noise;
 mod pc;
 mod provider;
 #[cfg(feature = "rust-crypto")]
@@ -70,6 +71,17 @@ pub use kessel_audio;
 /// kessel-video, re-exported for hosts that pick or configure the video backend.
 #[cfg(feature = "video-core")]
 pub use kessel_video;
+/// What loading DeepFilterNet3's weights cost (feature `dfn3`).
+#[cfg(feature = "dfn3")]
+pub use noise::Dfn3LoadInfo;
+/// The noise removal setting of the capture path and what runs; with `audio-core`, the control
+/// that builds the capture stage ([`AudioBridge::start_with_noise`]).
+#[cfg(feature = "audio-core")]
+pub use noise::NoiseRemovalControl;
+/// The device bench of the noise removal stage (feature `noise-bench`; debug builds only).
+#[cfg(feature = "noise-bench")]
+pub use noise::bench as noise_bench;
+pub use noise::{NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState};
 pub use provider::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
     DmCall, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED,
@@ -78,6 +90,12 @@ pub use provider::{
 /// rustls, re-exported for hosts that pass their own crypto provider
 /// ([`ClientConfig::with_crypto_provider`]).
 pub use rustls;
+/// Why DeepFilterNet3's weights were refused (feature `dfn3`).
+#[cfg(feature = "dfn3")]
+pub use sew_noise::dfn3::LoadError as Dfn3LoadError;
+/// The DeepFilterNet3 weights file's name, as an app ships it (feature `dfn3`).
+#[cfg(feature = "dfn3")]
+pub use sew_noise::dfn3::WEIGHTS_FILE as DFN3_WEIGHTS_FILE;
 /// Sew's recording types the engine's recording API carries (from `sew-proto`).
 pub use sew_proto::recording::{
     ConsentPrompt, RecordUnavailable, Recording, RecordingNotice, RecordingRef, RecordingTrigger,

@@ -42,6 +42,12 @@
 //! [`FakeCall::camera_requests`]. [`RecordingFrameChannel`] stands in for a webview's sink
 //! channel.
 //!
+//! Noise removal: the fake runs the mode it is set to (`off` or `standard`; `strong` is refused
+//! before it reaches an engine), with each change on [`VoiceEngine::noise_removal_events`].
+//! [`FakeEngine::step_down_noise`] stands in for the audio pipeline stepping the stage down
+//! (`budget`, `fault`) or a platform without it (`unavailable`); [`FakeEngine::noise_sets`]
+//! lists what was set.
+//!
 //! The decoded fallback: [`FakeEngine::enable_fake_decoder`] gives the engine
 //! [`FakeDecoders`] (VP8 and H.264; each output is the input's first byte at the fitted size,
 //! with failures and held outputs on demand), and [`FakeEngine::set_video_decoder`] any other
@@ -71,9 +77,10 @@ use crate::video::{
 };
 use crate::wire::{
     CallState, Camera, CodecPreferenceInfo, Device, DeviceChoice, DeviceList, ErrorInfo, Facing,
-    LocalVideo, LocalVideoState, Participant, PermissionState, PluginEvent, RecordingInfo,
-    RecordingParticipant, ScreenCaps, ScreenSource, SelfMute, SinkStats, StateEvent, VideoCaps,
-    VideoCodecPreference, VideoDevices, VideoPermissions, VideoTrack, video_code,
+    LocalVideo, LocalVideoState, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, Participant,
+    PermissionState, PluginEvent, RecordingInfo, RecordingParticipant, ScreenCaps, ScreenSource,
+    SelfMute, SinkStats, StateEvent, VideoCaps, VideoCodecPreference, VideoDevices,
+    VideoPermissions, VideoTrack, video_code,
 };
 
 /// The recording a fake Start makes (a Sew id).
@@ -98,6 +105,30 @@ pub struct FakeEngine {
     /// The video backend the native sinks use ([`FakeEngine::set_native_video_backend`]).
     #[cfg(feature = "video-core")]
     native_backend: Mutex<Option<NativeBackend>>,
+    /// The noise removal setting and its step-down.
+    noise: Mutex<FakeNoise>,
+    noise_tx: broadcast::Sender<NoiseRemovalState>,
+}
+
+/// The fake's noise removal.
+#[derive(Debug, Default)]
+struct FakeNoise {
+    mode: NoiseRemoval,
+    /// What the pipeline stepped the stage down for ([`FakeEngine::step_down_noise`]).
+    step_down: Option<NoiseRemovalReason>,
+    /// Every `set_noise_removal`, in order.
+    sets: Vec<NoiseRemoval>,
+    /// The state last sent.
+    last: Option<NoiseRemovalState>,
+}
+
+impl FakeNoise {
+    fn state(&self) -> NoiseRemovalState {
+        match self.step_down {
+            Some(r) => NoiseRemovalState::stepped_down(self.mode, r),
+            None => NoiseRemovalState::running(self.mode),
+        }
+    }
 }
 
 #[cfg(feature = "video-core")]
@@ -207,7 +238,32 @@ impl FakeEngine {
             background_tx: broadcast::channel(16).0,
             #[cfg(feature = "video-core")]
             native_backend: Mutex::new(None),
+            noise: Mutex::new(FakeNoise::default()),
+            noise_tx: broadcast::channel(16).0,
         }
+    }
+
+    /// The audio pipeline stepped the noise removal stage down (`Some(budget)`,
+    /// `Some(fault)`), the platform can't run it (`Some(unavailable)`), or it runs again
+    /// (`None`). A change of state is sent as the real engine sends it.
+    pub fn step_down_noise(&self, reason: Option<NoiseRemovalReason>) {
+        let mut n = lock(&self.noise);
+        n.step_down = reason;
+        self.send_noise(&mut n);
+    }
+
+    /// Every `set_noise_removal` the engine took, in order.
+    pub fn noise_sets(&self) -> Vec<NoiseRemoval> {
+        lock(&self.noise).sets.clone()
+    }
+
+    fn send_noise(&self, n: &mut FakeNoise) -> NoiseRemovalState {
+        let state = n.state();
+        if n.last != Some(state) {
+            n.last = Some(state);
+            let _ = self.noise_tx.send(state);
+        }
+        state
     }
 
     /// The camera permission `camera_permission` answers, and what a `request_camera_permission`
@@ -617,6 +673,21 @@ impl VoiceEngine for FakeEngine {
         } else {
             VideoCaps::default()
         }
+    }
+
+    fn set_noise_removal(&self, mode: NoiseRemoval) -> Result<NoiseRemovalState, EngineError> {
+        let mut n = lock(&self.noise);
+        n.mode = mode;
+        n.sets.push(mode);
+        Ok(self.send_noise(&mut n))
+    }
+
+    fn noise_removal(&self) -> NoiseRemovalState {
+        lock(&self.noise).state()
+    }
+
+    fn noise_removal_events(&self) -> Option<broadcast::Receiver<NoiseRemovalState>> {
+        Some(self.noise_tx.subscribe())
     }
 
     fn set_video_codec_preference(&self, pref: VideoCodecPreference) -> Result<(), EngineError> {

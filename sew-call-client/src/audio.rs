@@ -26,10 +26,13 @@ use kessel_audio::{AudioEngine, EngineConfig, Level, RecvFrame};
 use tokio::task::JoinHandle;
 
 use crate::call::{Call, FrameSender, FrameStream, OpusFrame, RecvItem};
+use crate::noise::{NoiseRemoval, NoiseRemovalControl, NoiseRemovalState};
 use crate::stats::{PlayoutStats, PlayoutTotals};
 
 /// How often the bridge moves frames (well under one 20 ms frame).
 const TICK: Duration = Duration::from_millis(5);
+/// The noise removal state is checked every this many ticks (100 ms).
+const NOISE_TICKS: u32 = 20;
 
 /// Why the bridge could not start.
 #[derive(Debug, thiserror::Error)]
@@ -48,7 +51,7 @@ pub enum AudioBridgeError {
 pub const AUDIO_BACKEND: &str = if PHONE_AUDIO { "os-voice" } else { "system" };
 
 /// This build drives kessel-audio's phone backend (iOS or Android, feature `mobile`).
-const PHONE_AUDIO: bool = cfg!(all(
+pub(crate) const PHONE_AUDIO: bool = cfg!(all(
     feature = "mobile",
     any(target_os = "ios", target_os = "android")
 ));
@@ -57,35 +60,119 @@ const PHONE_AUDIO: bool = cfg!(all(
 ///
 /// - **iOS and Android** (feature `mobile`): `Backend::OsVoiceProcessing`, with the OS's echo
 ///   cancellation, noise suppression and gain control on (kessel-audio's own processing then
-///   runs none of them). `input` and `output` are ignored: the OS owns the route. Start it
+///   runs none of them). On Android, a call whose audio starts in [`NoiseRemoval::Off`]
+///   ([`AudioBridge::start_with_noise`]) has the OS's noise suppression off; on iOS the OS's
+///   voice processing keeps its own noise suppression. `input` and `output` are ignored: the OS owns the route. Start it
 ///   with [`AudioBridge::start_with_session`] and report the phone's audio session to the
 ///   [`AudioSession`]; on iOS nothing opens until [`SessionEvent::Activated`].
 /// - **Desktop:** the system's devices through cpal (`Backend::System { input, output }`).
 ///
+/// - **Noise removal** (desktop): Standard, a `sew-noise` stage in kessel-audio's capture hook
+///   between echo cancellation and gain control, with kessel-audio's own noise suppression off.
+///   To change it or read its state, start the call's audio with
+///   [`AudioBridge::start_with_noise`] (which builds its own stage from the
+///   [`NoiseRemovalControl`]). While kessel-audio bypasses the stage (over its time budget, or
+///   a fault) its own noise suppression stands in. A frame's `ts48k` does not include the
+///   stage's 10 ms: its audio is 480 samples older than its stamp.
+///
 /// Everything else is kessel-audio's default.
 #[cfg(feature = "audio")]
 pub fn platform_audio_config(input: DeviceChoice, output: DeviceChoice) -> EngineConfig {
+    let cfg = platform_devices(input, output);
+    NoiseRemovalControl::default().configure(cfg).0
+}
+
+#[cfg(feature = "audio")]
+pub(crate) fn platform_devices(input: DeviceChoice, output: DeviceChoice) -> EngineConfig {
     #[cfg(all(feature = "mobile", any(target_os = "ios", target_os = "android")))]
     {
         let _ = (input, output);
-        EngineConfig {
-            backend: kessel_audio::Backend::OsVoiceProcessing(kessel_audio::OsVoiceConfig {
+        EngineConfig::default().with_backend(kessel_audio::Backend::OsVoiceProcessing(
+            kessel_audio::OsVoiceConfig {
                 os_effects: kessel_audio::OsEffects {
                     echo_cancellation: true,
                     noise_suppression: true,
                     gain_control: true,
                 },
-            }),
-            ..EngineConfig::default()
-        }
+            },
+        ))
     }
     #[cfg(not(all(feature = "mobile", any(target_os = "ios", target_os = "android"))))]
     {
-        EngineConfig {
-            backend: kessel_audio::Backend::System { input, output },
-            ..EngineConfig::default()
+        EngineConfig::default().with_backend(kessel_audio::Backend::System { input, output })
+    }
+}
+
+/// Which phone OS the phone backend runs on ([`phone_effects`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(all(feature = "mobile", any(target_os = "ios", target_os = "android"))),
+    allow(dead_code)
+)]
+pub(crate) enum PhoneOs {
+    Ios,
+    Android,
+}
+
+/// What the phone OS's voice processing does for a call: echo cancellation, noise suppression,
+/// gain control (kessel-audio's `OsEffects`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(all(feature = "mobile", any(target_os = "ios", target_os = "android"))),
+    allow(dead_code)
+)]
+pub(crate) struct PhoneEffects {
+    pub(crate) echo_cancellation: bool,
+    pub(crate) noise_suppression: bool,
+    pub(crate) gain_control: bool,
+}
+
+/// The phone OS's voice processing for a call whose audio starts in `mode`, and the matching
+/// change to kessel-audio's own processing. On Android, Off turns the OS's noise suppression
+/// off, and kessel-audio's (which would otherwise run what the OS doesn't, or stand in for a
+/// bypassed stage) stays off too. On iOS the OS's voice processing keeps its own noise
+/// suppression: VoiceProcessingIO has no separate switch for it, and kessel-audio 0.2 refuses
+/// `noise_suppression: false` there. Echo cancellation and gain control stay on everywhere.
+#[cfg_attr(
+    not(all(feature = "mobile", any(target_os = "ios", target_os = "android"))),
+    allow(dead_code)
+)]
+pub(crate) fn phone_effects(
+    os: PhoneOs,
+    mode: NoiseRemoval,
+    processing: &mut kessel_audio::ProcessingConfig,
+) -> PhoneEffects {
+    let off = os == PhoneOs::Android && mode == NoiseRemoval::Off;
+    if off {
+        processing.noise_suppression = None;
+        processing.stage_fallback_noise_suppression = None;
+    }
+    PhoneEffects {
+        echo_cancellation: true,
+        noise_suppression: !off,
+        gain_control: true,
+    }
+}
+
+/// A call's audio is about to start in `mode`: the phone backend's OS effects follow it
+/// ([`phone_effects`]). Desktop: nothing changes.
+pub(crate) fn apply_phone_mode(cfg: &mut EngineConfig, mode: NoiseRemoval) {
+    #[cfg(all(feature = "mobile", any(target_os = "ios", target_os = "android")))]
+    {
+        let os = if cfg!(target_os = "android") {
+            PhoneOs::Android
+        } else {
+            PhoneOs::Ios
+        };
+        if let kessel_audio::Backend::OsVoiceProcessing(c) = &mut cfg.backend {
+            let e = phone_effects(os, mode, &mut cfg.processing);
+            c.os_effects.echo_cancellation = e.echo_cancellation;
+            c.os_effects.noise_suppression = e.noise_suppression;
+            c.os_effects.gain_control = e.gain_control;
         }
     }
+    #[cfg(not(all(feature = "mobile", any(target_os = "ios", target_os = "android"))))]
+    let _ = (cfg, mode);
 }
 
 /// The phone's audio session, as the app reports it (CallKit on iOS, Telecom or the app's own
@@ -251,6 +338,8 @@ pub struct AudioBridge {
     task: JoinHandle<()>,
     session: AudioSession,
     session_id: u64,
+    /// The noise removal this call's audio started with, and the call's id there.
+    noise: Option<(NoiseRemovalControl, u64)>,
 }
 
 /// kessel-audio's participant ids → the publishers' engine identities.
@@ -278,6 +367,9 @@ impl Drop for AudioBridge {
         self.session.detach(self.session_id);
         self.task.abort();
         self.engine.shutdown();
+        if let Some((noise, id)) = &self.noise {
+            noise.detach(*id);
+        }
     }
 }
 
@@ -299,6 +391,34 @@ impl AudioBridge {
         cfg: EngineConfig,
         session: &AudioSession,
     ) -> Result<AudioBridge, AudioBridgeError> {
+        AudioBridge::start_inner(call, cfg, session, None)
+    }
+
+    /// As [`AudioBridge::start_with_session`], with noise removal from `noise` (the app's
+    /// setting; keep one [`NoiseRemovalControl`] for the app): the call's capture stage is built
+    /// in its mode and handed to kessel-audio (whose own noise suppression is then off), in
+    /// place of any stage `cfg` carries. While the bridge runs, [`NoiseRemovalControl::set`]
+    /// changes the mode from the next 10 ms block without a click, its state follows the
+    /// pipeline (a bypass for time or a fault steps it down), and the call's stats windows
+    /// carry it ([`crate::stats::StatsWindow::noise_removal`]).
+    pub fn start_with_noise(
+        call: &Call,
+        cfg: EngineConfig,
+        session: &AudioSession,
+        noise: &NoiseRemovalControl,
+    ) -> Result<AudioBridge, AudioBridgeError> {
+        let (cfg, id) = noise.configure(cfg);
+        AudioBridge::start_inner(call, cfg, session, Some((noise.clone(), id))).inspect_err(|_| {
+            noise.detach(id);
+        })
+    }
+
+    fn start_inner(
+        call: &Call,
+        cfg: EngineConfig,
+        session: &AudioSession,
+        noise: Option<(NoiseRemovalControl, u64)>,
+    ) -> Result<AudioBridge, AudioBridgeError> {
         let frames = call.frames().ok_or(AudioBridgeError::FramesTaken)?;
         let (engine, deferred) = start_engine(cfg)?;
         let engine = Arc::new(engine);
@@ -307,12 +427,19 @@ impl AudioBridge {
         let session_id = session.attach(sink, deferred);
         // The beacon's played and concealed audio are kessel-audio's own counters.
         call.set_playout_stats(Arc::new(KesselPlayout(Arc::downgrade(&engine))));
+        if let Some((control, id)) = &noise {
+            let weak: Weak<_> = Arc::downgrade(&engine);
+            let source: Weak<dyn crate::noise::BypassSource> = weak;
+            control.attach(*id, source);
+            call.set_noise_source(control.source(*id));
+        }
         let identities = Identities::default();
         let task = tokio::spawn(bridge(
             engine.clone(),
             identities.clone(),
             call.frame_sender(),
             frames,
+            noise.as_ref().map(|(c, _)| c.clone()),
         ));
         Ok(AudioBridge {
             engine,
@@ -320,7 +447,14 @@ impl AudioBridge {
             task,
             session: session.clone(),
             session_id,
+            noise,
         })
+    }
+
+    /// The noise removal state of this call's audio ([`AudioBridge::start_with_noise`]);
+    /// `None` for a bridge started without it.
+    pub fn noise_removal(&self) -> Option<NoiseRemovalState> {
+        self.noise.as_ref().map(|(c, _)| c.state())
     }
 
     /// The session state this bridge takes its events from.
@@ -354,7 +488,9 @@ impl AudioBridge {
 }
 
 /// Starts kessel-audio; `true` when it waits for the session (iOS's phone backend).
-fn start_engine(cfg: EngineConfig) -> Result<(AudioEngine, bool), kessel_audio::AudioError> {
+pub(crate) fn start_engine(
+    cfg: EngineConfig,
+) -> Result<(AudioEngine, bool), kessel_audio::AudioError> {
     #[cfg(all(feature = "mobile", target_os = "ios"))]
     if matches!(cfg.backend, kessel_audio::Backend::OsVoiceProcessing(_)) {
         return Ok((AudioEngine::start_when_session_active(cfg)?, true));
@@ -390,12 +526,21 @@ async fn bridge(
     identities: Identities,
     send: FrameSender,
     mut frames: FrameStream,
+    noise: Option<NoiseRemovalControl>,
 ) {
     let capture = engine.capture_frames();
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut ticks = 0u32;
     loop {
         tick.tick().await;
+        ticks = ticks.wrapping_add(1);
+        if let Some(n) = &noise
+            && ticks.is_multiple_of(NOISE_TICKS)
+        {
+            // Sends a `NoiseRemovalControl::subscribe` event when the state changed.
+            n.publish();
+        }
         while let Some(f) = capture.try_recv() {
             send.push_opus(OpusFrame {
                 payload: f.payload,
@@ -451,6 +596,55 @@ mod tests {
 
     use SessionEvent::{Activated, Deactivated, Resume, RouteChanged, Suspend};
     use kessel_audio::{CaptureSource, NullDevice, ProcessingConfig};
+
+    /// Off on Android: the OS's noise suppression off, and kessel-audio's own too (no stand-in
+    /// for it or for a bypassed stage); echo cancellation and gain control on. iOS keeps the
+    /// OS's noise suppression (kessel-audio 0.2 needs it there). Standard changes nothing.
+    #[test]
+    fn phone_effects_follow_the_mode() {
+        let all_on = PhoneEffects {
+            echo_cancellation: true,
+            noise_suppression: true,
+            gain_control: true,
+        };
+        let mut cfg = EngineConfig::default();
+        let (ns, fallback) = (
+            cfg.processing.noise_suppression,
+            cfg.processing.stage_fallback_noise_suppression,
+        );
+        let e = phone_effects(PhoneOs::Android, NoiseRemoval::Off, &mut cfg.processing);
+        assert_eq!(
+            e,
+            PhoneEffects {
+                echo_cancellation: true,
+                noise_suppression: false,
+                gain_control: true,
+            }
+        );
+        assert_eq!(cfg.processing.noise_suppression, None);
+        assert_eq!(cfg.processing.stage_fallback_noise_suppression, None);
+        for (os, mode) in [
+            (PhoneOs::Ios, NoiseRemoval::Off),
+            (PhoneOs::Ios, NoiseRemoval::Standard),
+            (PhoneOs::Android, NoiseRemoval::Standard),
+        ] {
+            let mut cfg = EngineConfig::default();
+            assert_eq!(
+                phone_effects(os, mode, &mut cfg.processing),
+                all_on,
+                "{os:?} {mode:?}"
+            );
+            assert_eq!(cfg.processing.noise_suppression, ns, "{os:?} {mode:?}");
+            assert_eq!(
+                cfg.processing.stage_fallback_noise_suppression, fallback,
+                "{os:?} {mode:?}"
+            );
+        }
+        // Desktop: apply_phone_mode changes nothing.
+        let mut cfg = EngineConfig::default();
+        apply_phone_mode(&mut cfg, NoiseRemoval::Off);
+        assert_eq!(cfg.processing.noise_suppression, ns);
+    }
 
     /// Records what reaches "kessel-audio", in order.
     #[derive(Default)]

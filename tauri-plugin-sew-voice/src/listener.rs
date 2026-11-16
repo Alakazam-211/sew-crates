@@ -302,6 +302,38 @@ impl VoiceControl {
             .await
     }
 
+    /// Sets the microphone's noise removal (the app's "Noise removal" setting), before or
+    /// during a call; answers `{mode, active, reason?}`. A mode this build can't run answers
+    /// `noise_mode_unavailable`. The engine keeps it until the process ends: store it with the
+    /// app's settings and set it again at start ([`crate::Builder::noise_removal`]).
+    pub async fn set_noise_removal(
+        &self,
+        mode: crate::wire::NoiseRemoval,
+    ) -> Result<crate::wire::NoiseRemovalState, ErrorInfo> {
+        self.service
+            .set_noise_removal(crate::wire::SetNoiseRemovalArgs::new(mode.as_str()))
+            .await
+    }
+
+    /// The noise removal setting and what runs now.
+    pub async fn noise_removal(&self) -> Result<crate::wire::NoiseRemovalState, ErrorInfo> {
+        self.service.noise_removal().await
+    }
+
+    /// DEBUG ONLY (feature `noise-bench`, never in a release build): runs the microphone through
+    /// kessel-audio and the noise removal stage a call would get (DeepFilterNet3 if its weights
+    /// loaded, else RNNoise) for `duration`, with no call, and answers the report as JSON
+    /// (block p50/p99/max, memory, the model, step-downs, device model and thermal state where
+    /// readable). Not a plugin command: an app wraps it in a debug command of its own. Do not
+    /// run it during a call. On a phone the app's audio session must be active.
+    #[cfg(feature = "noise-bench")]
+    pub async fn noise_bench(
+        &self,
+        duration: std::time::Duration,
+    ) -> Result<serde_json::Value, ErrorInfo> {
+        self.service.noise_bench(duration).await
+    }
+
     /// The video codec setting and what it gives here now (`video_caps.codec_preference`:
     /// the setting, the codec a camera or screen publishes in, and why "Prefer H.264" can't
     /// apply when it can't); `None` for an engine without video publish.

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-noise-removal"
+description = "Enables the noise_removal command without any pre-configured scope."
+commands.allow = ["noise_removal"]
+
+[[permission]]
+identifier = "deny-noise-removal"
+description = "Denies the noise_removal command without any pre-configured scope."
+commands.deny = ["noise_removal"]

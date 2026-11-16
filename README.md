@@ -30,7 +30,7 @@ in this repository or anywhere else public.
 | You are building | Use | It brings in |
 |---|---|---|
 | Voice calls in a Tauri 2 desktop app | `tauri-plugin-sew-voice` | `sew-call-client` and everything below it |
-| Voice calls in another native Rust app | `sew-call-client` | `sew-e2ee`, `sew-lk-compat`, `sew-lkproto`, `sew-proto`, `kessel-audio`, `kessel-video` |
+| Voice calls in another native Rust app | `sew-call-client` | `sew-e2ee`, `sew-lk-compat`, `sew-lkproto`, `sew-proto`, `sew-noise`, `kessel-audio`, `kessel-video` |
 | Your own end-to-end encrypted call client (keys only, no media) | `sew-e2ee` | `sew-mls-crypto`, `sew-proto` |
 | An OpenMLS crypto provider on permissive crates | `sew-mls-crypto` | nothing of Sew's |
 | Typed Sew API and gateway messages (HTTP bodies, ids, errors) | `sew-proto` | nothing of Sew's |
@@ -45,8 +45,8 @@ tauri-plugin-sew-voice
     ├── sew-e2ee ── sew-mls-crypto
     │   └── sew-proto
     ├── sew-lk-compat ── sew-lkproto
+    ├── sew-noise ── nnnoiseless (from crates.io)
     └── sew-proto
-sew-noise ── nnnoiseless (from crates.io)
 ```
 
 `sew-call-client`'s `JoinProvider` documentation has a complete, compiled example: a provider
@@ -56,14 +56,14 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.10.0 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.10.0 | Apache-2.0 |
-| `sew-mls-crypto` | 0.10.0 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.10.0 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.10.0 | Apache-2.0 |
-| `sew-noise` | 0.10.0 | MIT OR Apache-2.0 |
-| `sew-call-client` | 0.7.0 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.7.0 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.10.2 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.10.2 | Apache-2.0 |
+| `sew-mls-crypto` | 0.10.2 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.10.2 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.10.2 | Apache-2.0 |
+| `sew-noise` | 0.10.2 | MIT OR Apache-2.0 |
+| `sew-call-client` | 0.8.0 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.8.0 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
@@ -81,13 +81,13 @@ that crate.
 ## Using the crates
 
 They depend on each other by version. `sew-proto`, `sew-lkproto`, `sew-mls-crypto`,
-`sew-e2ee` and `sew-lk-compat` are published on crates.io as well, so on their own they need
-only a dependency line. `sew-call-client` and `tauri-plugin-sew-voice` are not on crates.io
-yet (they also need the forks below), and neither is `sew-noise`. To use
+`sew-e2ee`, `sew-lk-compat` and `sew-noise` are published on crates.io as well, so on their
+own they need only a dependency line. `sew-call-client` and `tauri-plugin-sew-voice` are not
+on crates.io yet. To use
 them from this directory, in your workspace's root
 `Cargo.toml`, add this one `[patch.crates-io]` block (a `[patch]` applies only from the
 workspace root; if you already have one, add these rows to it, since a second block is a TOML
-error). It points each crate at its directory and adds the forked dependencies:
+error). It points each crate at its directory:
 
 ```toml
 [patch.crates-io]
@@ -99,14 +99,12 @@ sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }
 sew-call-client = { path = "third_party/sew-crates/sew-call-client" }
 tauri-plugin-sew-voice = { path = "third_party/sew-crates/tauri-plugin-sew-voice" }
 sew-noise = { path = "third_party/sew-crates/sew-noise" }
-sew-str0m = { git = "https://github.com/Alakazam-211/str0m", rev = "18977e74b1fbabee1a9096ca60a28509ef739f3c" }
 ```
 
-The `sew-str0m` row is Alakazam Labs' public fork of `str0m` 0.25 (the WebRTC stack; library
-name `str0m`), which the voice engine needs, at the commit it is published from: `sew-str0m`
-0.25.2, the same release as on crates.io, taken from the fork's git repository for this release.
-Its own fork of `is` comes with it; the other str0m crates and its DTLS, `dimpl`,
-come from crates.io.
+The voice engine's WebRTC stack is `sew-str0m`, Alakazam Labs' public fork of `str0m` 0.25
+(library name `str0m`). It comes from crates.io (`sew-str0m` 0.25.3), with its own fork of
+`is`, `sew-str0m-is`, so it needs no row; the other str0m crates and its DTLS, `dimpl`,
+come from crates.io too.
 
 **kessel-audio** and **kessel-video** (K2's audio and video pipelines, MIT OR Apache-2.0) come
 from crates.io and need no row.

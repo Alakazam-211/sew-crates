@@ -42,3 +42,14 @@ BSD 3-Clause license. The text below is its COPYING file, unchanged:
     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 PROVENANCE.md records the nnnoiseless package and the weights file.
+
+With the `dfn3` feature, this crate runs the DeepFilterNet3 model (low-latency variant), from
+DeepFilterNet (https://github.com/Rikorose/DeepFilterNet), and src/dfn3/stream.rs is ported
+from libDF's src/lib.rs and src/tract.rs at commit 978576aa8400552a4ce9730838c635aa30db5e61,
+under MIT OR Apache-2.0:
+    Copyright (c) 2021 Hendrik Schröter
+    Licensed under either of the MIT license or the Apache License, Version 2.0, at your option.
+DeepFilterNet is the work of Hendrik Schröter and the DeepFilterNet authors.
+The model weights are not in this crate. An app that ships them ships, beside them, their
+NOTICE (which marks the converted archive as converted by Alakazam Labs) and the MIT and
+Apache-2.0 texts; PROVENANCE.md says where they come from.

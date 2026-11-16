@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-call-client"
-version = "0.7.0"
+version = "0.8.0"
 build = "build.rs"
 include = [
     "src/**",
@@ -40,17 +40,25 @@ audio = [
     "audio-core",
     "kessel-audio/cpal",
 ]
-audio-core = ["dep:kessel-audio"]
+audio-core = [
+    "dep:kessel-audio",
+    "dep:sew-noise",
+]
 builtin-ring-provider = []
 default = [
     "audio",
     "builtin-ring-provider",
+]
+dfn3 = [
+    "audio-core",
+    "sew-noise/dfn3",
 ]
 keyring-store = ["dep:keyring"]
 mobile = [
     "rust-crypto",
     "kessel-audio?/os-voice",
 ]
+noise-bench = ["audio"]
 rust-crypto = [
     "dep:dimpl",
     "dep:aes",
@@ -119,7 +127,7 @@ version = "0.12"
 version = "1"
 
 [dependencies.kessel-audio]
-version = "0.1"
+version = "0.2"
 optional = true
 default-features = false
 
@@ -173,16 +181,20 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-e2ee]
-version = "0.10.0"
+version = "0.10.2"
 
 [dependencies.sew-lk-compat]
-version = "0.10.0"
+version = "0.10.2"
 
 [dependencies.sew-lkproto]
-version = "0.10.0"
+version = "0.10.2"
+
+[dependencies.sew-noise]
+version = "0.10.2"
+optional = true
 
 [dependencies.sew-proto]
-version = "0.10.0"
+version = "0.10.2"
 
 [dependencies.sha1]
 version = "0.10"
@@ -192,7 +204,7 @@ version = "0.10"
 optional = true
 
 [dependencies.str0m]
-version = "=0.25.2"
+version = "=0.25.3"
 features = ["pii"]
 default-features = false
 package = "sew-str0m"
@@ -225,8 +237,11 @@ version = "2"
 version = "1"
 features = ["derive"]
 
+[dev-dependencies.allocation-counter]
+version = "0.8"
+
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies.str0m]
-version = "=0.25.2"
+version = "=0.25.3"
 features = [
     "aws-lc-rs",
     "pii",
@@ -282,3 +297,18 @@ unused_qualifications = "warn"
 [lints.rust.rust_2018_idioms]
 level = "warn"
 priority = -1
+
+[profile.dev.package.easyfft]
+opt-level = 3
+
+[profile.dev.package.nnnoiseless]
+opt-level = 3
+
+[profile.dev.package.realfft]
+opt-level = 3
+
+[profile.dev.package.rustfft]
+opt-level = 3
+
+[profile.dev.package.sew-noise]
+opt-level = 3

@@ -24,12 +24,11 @@ tauri-plugin-sew-voice = { git = "…", tag = "…" }   # vendored or mirrored; 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
 `sew-proto`, `sew-e2ee`, `sew-mls-crypto`), and through it on K2's `kessel-audio` and
 `kessel-video` (both from crates.io) and Alakazam Labs' fork of str0m, `sew-str0m` (the other
-str0m crates and dimpl come from crates.io). In Sew's tree the engine takes `sew-str0m` straight
-from the fork's git repository at an exact commit, so the plugin needs no `[patch]` row for it.
-The packaged crates (`scripts/package-public-crates.sh`, published read-only as `sew-crates`)
-name it by version. This release uses `sew-str0m` 0.25.2, the same release as on crates.io, taken from the fork's git repository for this release, so their README lists one
-`[patch.crates-io]` row for it, beside the rows for the Sew crates; Cargo applies `[patch]` only
-from the workspace you build, so copy those rows into your app's workspace root. Linux builds need ALSA's development files (`libasound2-dev`; Arch:
+str0m crates and dimpl come from crates.io). The engine takes `sew-str0m` 0.25.3 from crates.io
+at an exact version, so neither the plugin nor an app needs a `[patch]` row for it. The packaged
+crates (`scripts/package-public-crates.sh`, published read-only as `sew-crates`) need
+`[patch.crates-io]` rows for the Sew crates only, which their README lists; Cargo applies
+`[patch]` only from the workspace you build, so copy those rows into your app's workspace root. Linux builds need ALSA's development files (`libasound2-dev`; Arch:
 `alsa-lib`).
 
 `src-tauri/src/main.rs`:

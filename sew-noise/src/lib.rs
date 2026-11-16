@@ -15,21 +15,33 @@
 //! silence (one NaN would otherwise poison the RNN state for good) and the output is always
 //! finite.
 //!
-//! The model is RNNoise's, compiled in from `nnnoiseless`; nothing is loaded at run time.
+//! RNNoise's model is compiled in from `nnnoiseless`; without feature `dfn3` nothing is
+//! loaded at run time.
 //!
-//! Cargo feature `capture-stage`: the `capture_stage` module, the capture-hook trait an audio
-//! pipeline calls a [`Stage`] through.
+//! Cargo features:
+//! - `capture-stage`: the `capture_stage` module, the capture-hook trait an audio pipeline
+//!   calls a [`Stage`] through.
+//! - `dfn3`: [`Mode::Strong`], DeepFilterNet3's low-latency model (by Hendrik Schröter and
+//!   the DeepFilterNet authors; MIT OR Apache-2.0), run by inference code in this crate. Its
+//!   weights are not in the crate: an app ships them beside itself and loads them with
+//!   `dfn3::Dfn3Model::load`, which checks their pinned sha256 first (RustCrypto's `sha2`).
+//!   The feature adds `sha2` (and `realfft`, which `nnnoiseless` already brings), and no C, no
+//!   unsafe code and no neural-network runtime.
 
 #[cfg(feature = "capture-stage")]
 pub mod capture_stage;
+#[cfg(feature = "dfn3")]
+pub mod dfn3;
 mod resample;
 mod stage;
 mod standard;
 mod stream;
+mod strong;
 
 pub use resample::Linear;
 pub use stage::{Mode, ModeUnavailable, Stage, StageControl, StageStats, warm_up_thread};
 pub use stream::StreamDenoiser;
+pub use strong::{StepDownReason, StrongState};
 
 use nnnoiseless::DenoiseState;
 

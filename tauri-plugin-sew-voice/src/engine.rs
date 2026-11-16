@@ -21,9 +21,9 @@ use crate::video::{
     TrackSettings, VideoFrames,
 };
 use crate::wire::{
-    CallState, CodecPreferenceInfo, DeviceChoice, DeviceList, ErrorInfo, LocalVideo, Participant,
-    PermissionState, RecordingInfo, ScreenSource, SinkStats, Speaking, VideoCaps, VideoCodec,
-    VideoCodecPreference, VideoDevices, VideoTrack, video_code,
+    CallState, CodecPreferenceInfo, DeviceChoice, DeviceList, ErrorInfo, LocalVideo, NoiseRemoval,
+    NoiseRemovalState, Participant, PermissionState, RecordingInfo, ScreenSource, SinkStats,
+    Speaking, VideoCaps, VideoCodec, VideoCodecPreference, VideoDevices, VideoTrack, video_code,
 };
 
 /// The answer of a video method an engine doesn't implement.
@@ -491,6 +491,52 @@ pub trait VoiceEngine: Send + Sync + 'static {
     /// recovers without a reload. It never blocks for long. The default has none.
     fn release_calls(&self) -> BoxFuture<'_, ()> {
         Box::pin(std::future::ready(()))
+    }
+
+    // ── noise removal (the defaults: an engine without it) ──
+
+    /// Sets the microphone's noise removal for this and later calls: in a call, from its next
+    /// 10 ms block, without a click. Answers the state now. Kept until the process ends
+    /// (persisting it is the host's job). The default: `Off` is taken (there is nothing to
+    /// remove), any other mode is refused with `noise_mode_unavailable`.
+    fn set_noise_removal(&self, mode: NoiseRemoval) -> Result<NoiseRemovalState, EngineError> {
+        if mode == NoiseRemoval::Off {
+            Ok(NoiseRemovalState::running(NoiseRemoval::Off))
+        } else {
+            Err(EngineError::failed(
+                crate::wire::code::NOISE_MODE_UNAVAILABLE,
+            ))
+        }
+    }
+    /// The noise removal setting and what runs (`{mode, active, reason?}`). The default:
+    /// `off`, running.
+    fn noise_removal(&self) -> NoiseRemovalState {
+        NoiseRemovalState::running(NoiseRemoval::Off)
+    }
+    /// Each change of [`VoiceEngine::noise_removal`] (the `noise_removal` event). The plugin
+    /// subscribes at start. The default: `None` (no events).
+    fn noise_removal_events(&self) -> Option<broadcast::Receiver<NoiseRemovalState>> {
+        None
+    }
+    /// Loads DeepFilterNet3's weights from `path` (feature `dfn3`), after which Standard runs
+    /// it in new calls with RNNoise as its step-down. Slow (tens of milliseconds): the plugin
+    /// calls it on a thread of its own at start. The default: refused with
+    /// `noise_mode_unavailable` (Standard stays what the engine has).
+    fn set_dfn3_weights(&self, path: &std::path::Path) -> Result<(), EngineError> {
+        let _ = path;
+        Err(EngineError::failed(
+            crate::wire::code::NOISE_MODE_UNAVAILABLE,
+        ))
+    }
+    /// DEBUG ONLY (feature `noise-bench`): the noise removal stage on this device's microphone
+    /// for `duration`, with no call, as sew-call-client's `noise_bench::NoiseBenchReport` in
+    /// JSON. Blocks for `duration`. The default: refused with `noise_mode_unavailable`.
+    #[cfg(feature = "noise-bench")]
+    fn noise_bench(&self, duration: std::time::Duration) -> Result<serde_json::Value, EngineError> {
+        let _ = duration;
+        Err(EngineError::failed(
+            crate::wire::code::NOISE_MODE_UNAVAILABLE,
+        ))
     }
 
     // ── video (the defaults: an engine without video) ──

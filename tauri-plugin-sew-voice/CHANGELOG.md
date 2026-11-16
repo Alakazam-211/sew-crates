@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.0 (2026-11-16, Sew 0.10.2)
+
+### Breaking
+
+- 0.8.0 follows sew-call-client 0.8, which it re-exports (`sew_call_client`): sew-call-client's
+  kessel-audio 0.2 changes show through it (see its CHANGELOG). This crate's own API only grows.
+
+### Added
+
+- Feature `dfn3` (sew-call-client's `dfn3`): Standard noise removal runs DeepFilterNet3's
+  low-latency model (by Hendrik Schröter and the DeepFilterNet authors, MIT OR Apache-2.0),
+  with RNNoise as its automatic step-down. The plugin loads the weights on a thread of its own
+  at start from `Builder::dfn3_weights(path)`, by default `dfn3/dfn3_ll.nnef.tar` in the app's
+  resource directory (the app bundles `dfn3_ll.nnef.tar`, `NOTICE`, `LICENSE-MIT` and
+  `LICENSE-APACHE` there). Missing or altered weights leave Standard on RNNoise. The engine
+  seam gains the provided `VoiceEngine::set_dfn3_weights` (refused by default).
+- The `noise_removal` state and event carry sew-call-client's new `model`, `model_reason` and
+  `step_downs` once DeepFilterNet3's weights were given (absent otherwise).
+- Feature `noise-bench` (debug builds only; never in `default`): `VoiceControl::noise_bench`
+  and `VoiceService::noise_bench`, the noise removal stage on the device's microphone for a
+  while with no call, answered as JSON, for an app to wrap in a debug command of its own (no
+  plugin command, no permission); the provided `VoiceEngine::noise_bench`.
+- Noise removal for the microphone (desktop): `Builder::noise_removal(mode)` (the app's default,
+  `standard` if never called), the commands `set_noise_removal {mode}` (`"off"`, `"standard"`;
+  `"strong"` answers `noise_mode_unavailable`, an unknown name `invalid_args`) and
+  `noise_removal`, both answering `{mode, active, reason?}` (`reason`: `budget`, `fault`,
+  `unavailable`), and the event `noise_removal` with the same shape whenever it changes. A
+  change mid-call takes effect from the next 10 ms block, without a click. The permission set
+  `sew-voice:noise-removal` (not in `sew-voice:default`). `VoiceControl::set_noise_removal` and
+  `noise_removal`, `VoiceService::set_noise_removal` and `noise_removal`, the engine seam's
+  provided `VoiceEngine::set_noise_removal`, `noise_removal` and `noise_removal_events` (an
+  engine without it takes `off` and refuses the rest), `NOISE_COMMANDS`, `wire::NOISE_EVENTS`,
+  `PluginEvent::NoiseRemoval`, `SetNoiseRemovalArgs`, `UNAVAILABLE_NOISE_MODES`, and
+  sew-call-client's `NoiseRemoval`, `NoiseRemovalState` and `NoiseRemovalReason`, re-exported.
+  The fake engine runs it too. The plugin stores nothing: the host keeps the person's choice.
+
+### Changed
+
+- `off` (sew-call-client's): on Android, Off turns off the OS's noise suppression for a call
+  that starts in Off (a change during a call takes effect from the next call). On iOS the OS's
+  voice processing keeps its own noise suppression for now (a later kessel-audio release adds
+  an unprocessed path). Echo cancellation and gain control stay on.
+
+### Dependencies
+
+- Through sew-call-client, updates the WebRTC dependencies (str0m fork updates); recommended
+  for everyone. `sew-str0m` 0.25.3 and `sew-str0m-is` 0.12.2 now come from crates.io, with
+  upstream str0m fixes for TWCC feedback runs (PR #1150), video-layers-allocation
+  resolutions of 65536 (PR #1153), ICE candidates and STUN messages from port 0 or an
+  unspecified address (PR #1148), and conflicting payload types in a remote SDP description
+  (PR #1154), now rejected with an error; and a fork fix so that RTX this
+  side declined for a codec stays declined after negotiation, while a later remote RTX that
+  conflicts with a locked mapping is rejected. A host no longer needs a `[patch.crates-io]` row
+  for `sew-str0m`; remove it if it has one.
+
 ## 0.7.0 (2026-11-15, Sew 0.10.0)
 
 ### Breaking

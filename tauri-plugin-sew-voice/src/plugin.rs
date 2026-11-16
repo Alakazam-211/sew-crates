@@ -36,6 +36,9 @@ pub struct Builder {
     listener: Option<Arc<dyn VoiceListener>>,
     device: DeviceOptions,
     crypto_provider: Option<Arc<CryptoProvider>>,
+    noise_removal: Option<crate::wire::NoiseRemoval>,
+    #[cfg(feature = "dfn3")]
+    dfn3_weights: Option<PathBuf>,
 }
 
 /// Row 11: the device key in hardware and the enrolment platform; and the video backend.
@@ -60,6 +63,7 @@ impl std::fmt::Debug for Builder {
             .field("hardware_device_key", &self.device.hardware_key.is_some())
             .field("device_platform", &self.device.platform)
             .field("crypto_provider", &self.crypto_provider.is_some())
+            .field("noise_removal", &self.noise_removal)
             .finish_non_exhaustive()
     }
 }
@@ -81,7 +85,31 @@ impl Builder {
             listener: None,
             device: DeviceOptions::default(),
             crypto_provider: None,
+            noise_removal: None,
+            #[cfg(feature = "dfn3")]
+            dfn3_weights: None,
         }
+    }
+
+    /// Where DeepFilterNet3's weights are (feature `dfn3`): the file the app bundles,
+    /// `sew_call_client::DFN3_WEIGHTS_FILE`. Default: `dfn3/dfn3_ll.nnef.tar` in the app's
+    /// resource directory (bundle `dfn3_ll.nnef.tar`, `NOTICE`, `LICENSE-MIT` and
+    /// `LICENSE-APACHE` under `dfn3/`). The plugin loads them on a thread of its own at start
+    /// (the file is checked against its pinned sha256 first); until then, and if they are
+    /// missing or not the pinned file, Standard is RNNoise and the noise removal state says
+    /// `model_reason: unavailable`.
+    #[cfg(feature = "dfn3")]
+    pub fn dfn3_weights(mut self, path: impl Into<PathBuf>) -> Builder {
+        self.dfn3_weights = Some(path.into());
+        self
+    }
+
+    /// The microphone's noise removal at start (the app's default, or the person's stored
+    /// choice): [`crate::NoiseRemoval::Standard`] if never called. `set_noise_removal` changes
+    /// it later. An engine that can't run the mode keeps its own and logs a warning.
+    pub fn noise_removal(mut self, mode: crate::wire::NoiseRemoval) -> Builder {
+        self.noise_removal = Some(mode);
+        self
     }
 
     /// A native observer of the call ([`VoiceListener`], at most one: a second call replaces
@@ -188,6 +216,9 @@ impl Builder {
             listener,
             device,
             crypto_provider,
+            noise_removal,
+            #[cfg(feature = "dfn3")]
+            dfn3_weights,
         } = self;
         PluginBuilder::new(crate::PLUGIN_NAME)
             .invoke_handler(tauri::generate_handler![
@@ -221,6 +252,8 @@ impl Builder {
                 crate::commands::camera_permission,
                 crate::commands::request_camera_permission,
                 crate::commands::set_video_codec_preference,
+                crate::commands::set_noise_removal,
+                crate::commands::noise_removal,
             ])
             .setup(move |app, _api| {
                 let engine = match engine {
@@ -229,6 +262,13 @@ impl Builder {
                         default_engine(app, data_dir, app_id, device_keys, device, crypto_provider)?
                     }
                 };
+                if let Some(mode) = noise_removal
+                    && let Err(e) = engine.set_noise_removal(mode)
+                {
+                    tracing::warn!(mode = mode.as_str(), error = %e, "sew-voice: noise removal not set");
+                }
+                #[cfg(feature = "dfn3")]
+                load_dfn3(app, &engine, dfn3_weights);
                 let sink = Arc::new(TauriSink { app: app.clone() });
                 let spawn: Spawn = Arc::new(|fut| {
                     tauri::async_runtime::spawn(fut);
@@ -244,6 +284,36 @@ impl Builder {
                 Ok(())
             })
             .build()
+    }
+}
+
+/// Loads DeepFilterNet3's weights into `engine` on a thread of its own (a load takes tens of
+/// milliseconds and about 40 MB): `path`, or `dfn3/<weights file>` in the app's resources.
+#[cfg(feature = "dfn3")]
+fn load_dfn3<R: Runtime>(app: &AppHandle<R>, engine: &Arc<dyn VoiceEngine>, path: Option<PathBuf>) {
+    let path = match path {
+        Some(p) => p,
+        None => match app.path().resource_dir() {
+            Ok(dir) => dir.join("dfn3").join(sew_call_client::DFN3_WEIGHTS_FILE),
+            Err(e) => {
+                tracing::warn!(error = %e, "sew-voice: no resource directory; noise removal stays RNNoise");
+                return;
+            }
+        },
+    };
+    let engine = Arc::clone(engine);
+    let spawned = std::thread::Builder::new()
+        .name("sew-voice-dfn3".into())
+        .spawn(move || match engine.set_dfn3_weights(&path) {
+            Ok(()) => tracing::info!(path = %path.display(), "sew-voice: DeepFilterNet3 loaded"),
+            Err(e) => tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "sew-voice: DeepFilterNet3 not loaded; noise removal stays RNNoise"
+            ),
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "sew-voice: DeepFilterNet3 loader thread");
     }
 }
 
