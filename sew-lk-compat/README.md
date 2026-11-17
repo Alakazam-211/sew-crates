@@ -29,13 +29,18 @@ The protobuf types come from `sew-lkproto`.
 - Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
   repository at each release, so pull requests are not merged there)
 - API documentation: <https://docs.rs/sew-lk-compat>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `sew-lk-compat` form, which labels the issue `crate:sew-lk-compat`
+- Security problems: report them privately, as
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
 
 ## Usage
 
 ```toml
 [dependencies]
-sew-lk-compat = "0.10.3"
-sew-lkproto = "0.10.3"
+sew-lk-compat = "0.10.4"
+sew-lkproto = "0.10.4"
 prost = "0.14"
 ```
 
@@ -89,6 +94,15 @@ fn on_timer(session: &mut Session) {
     session.handle_timeout(Instant::now());
 }
 ```
+
+## Features
+
+- `rust-crypto` (off by default): the frame encryption of `e2ee` (AES-128-GCM and
+  HKDF-SHA256) on the RustCrypto crates `aes-gcm`, `hkdf` and `sha2` instead of `aws-lc-rs`.
+  iOS and Android builds need it (the crate does not compile for them without it, and
+  `aws-lc-rs` is not built there); on other targets it is optional, and `aws-lc-rs` stays a
+  dependency. The frame format and keys are the same either way. `sew-call-client`'s
+  `rust-crypto` and `mobile` features turn it on.
 
 ## Licence and origins
 

@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-lk-compat"
-version = "0.10.3"
+version = "0.10.4"
 build = false
 include = [
     "src/**",
@@ -28,7 +28,21 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "The LiveKit-protocol pieces of Sew's native voice engine: the /rtc/v1 join request and the signalling session of a single-PC voice client (rewritten from a written behaviour specification), and LiveKit's AES-GCM frame format and client-sdk-js compatibility rules (ported from LiveKit, Apache-2.0). Not affiliated with or endorsed by LiveKit."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/sew-lk-compat"
+documentation = "https://docs.rs/sew-lk-compat"
 readme = "README.md"
+keywords = [
+    "livekit",
+    "webrtc",
+    "signalling",
+    "e2ee",
+    "voice",
+]
+categories = [
+    "network-programming",
+    "multimedia::audio",
+    "cryptography",
+]
 license = "Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 
@@ -73,7 +87,7 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-lkproto]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.sha2]
 version = "0.10"

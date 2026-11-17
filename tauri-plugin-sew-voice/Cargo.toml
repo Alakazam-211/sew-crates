@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "tauri-plugin-sew-voice"
-version = "0.8.1"
+version = "0.8.2"
 build = "build.rs"
 links = "tauri-plugin-sew-voice"
 include = [
@@ -27,14 +27,26 @@ include = [
     "README.md",
     "CHANGELOG.md",
 ]
-publish = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
 description = "Sew native voice calls for Tauri 2 apps: join, leave, mute, devices and live call state, with the sign-in kept in host Rust (JoinProvider)."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/tauri-plugin-sew-voice"
+documentation = "https://docs.rs/tauri-plugin-sew-voice"
 readme = "README.md"
+keywords = [
+    "tauri",
+    "tauri-plugin",
+    "voice",
+    "webrtc",
+    "sew",
+]
+categories = [
+    "gui",
+    "multimedia::audio",
+]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 
@@ -145,11 +157,11 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-call-client]
-version = "0.8.1"
+version = "0.8.2"
 default-features = false
 
 [dependencies.sew-proto]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.tauri]
 version = "2"
@@ -185,7 +197,7 @@ features = [
 default-features = false
 
 [dev-dependencies.sew-call-client]
-version = "0.8.1"
+version = "0.8.2"
 features = ["testing"]
 default-features = false
 

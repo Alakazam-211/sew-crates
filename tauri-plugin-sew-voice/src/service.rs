@@ -1463,6 +1463,7 @@ impl VoiceService {
     /// combined signal: background while the app **or** the video backend says so.
     pub fn app_scene(&self, scene: AppScene) {
         self.inner.engine.app_scene(scene);
+        self.inner.engine.app_scene_changed();
         self.use_scene_events();
         let changed = {
             let mut sc = lock(&self.inner.scene);
@@ -1474,6 +1475,14 @@ impl VoiceService {
             apply_scene(&self.inner);
             kick_pending_camera(&self.inner);
         }
+    }
+
+    /// The app's lifecycle moved without saying which way (Tauri's `RunEvent::Resumed`, a
+    /// window's focus): to the engine's noise removal, which opens a grace window
+    /// ([`VoiceEngine::app_scene_changed`]). The sinks and the camera are untouched: only
+    /// [`Self::app_scene`] says foreground or background.
+    pub fn app_scene_changed(&self) {
+        self.inner.engine.app_scene_changed();
     }
 
     /// Whether the plugin treats the app as in the background now (the app's or the video

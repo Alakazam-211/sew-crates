@@ -32,8 +32,11 @@ Not affiliated with or endorsed by LiveKit.
 - Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
   repository at each release, so pull requests are not merged there)
 - API documentation: <https://docs.rs/sew-e2ee>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `sew-e2ee` form, which labels the issue `crate:sew-e2ee`
 - Security problems: report them privately, as
-  <https://github.com/Alakazam-211/sew-crates/security/policy> says.
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
 
 ## Terms
 
@@ -90,18 +93,56 @@ malicious protocol messages. Never enable it outside tests.**
 
 ```toml
 [dependencies]
-sew-e2ee = "0.10.3"
+sew-e2ee = "0.10.4"
 ```
 
-Most apps do not use this crate directly: they use it through the native voice engine,
-`sew-call-client` (in the [sew-crates](https://github.com/Alakazam-211/sew-crates) repository;
-not on crates.io yet), which is a complete host of it. Its `JoinProvider` documentation has a
-compiled example of a call.
+A host enrols its device (`identity`), builds an `E2eeClient` from the device identity and the
+server's trust anchors (`TrustAnchors`, from READY), prepares a key package before it joins,
+and then drives one `CallSession` per call: it hands the session each `Input` and applies each
+`Output` (key requests to send, `KeyEvent`s for its media SDK, status changes).
 
-A host of its own enrols its device (`identity`), builds an `E2eeClient` from the device
-identity and the server's trust anchors (`TrustAnchors`, from READY), prepares a key package
-before it joins, and then drives one `CallSession` per call: it hands the session each `Input`
-and applies each `Output` (key requests to send, `KeyEvent`s for its media SDK, status changes).
+The `KeyEvent`s are the part a media SDK sees. A bridge to an SDK that takes one AES-128-GCM
+frame key per sender and key slot applies them like this (`lk_frame_key` derives the key the
+way the LiveKit client SDKs do):
+
+```rust
+use sew_e2ee::{FrameIkm, KeyEvent, Slot, lk_frame_key};
+
+/// The media SDK's side: one 16-byte frame key per sender identity and slot.
+trait FrameKeys {
+    fn set_key(&mut self, identity: &str, slot: u8, key: &[u8; 16]);
+    fn set_send_slot(&mut self, slot: u8);
+    fn forget(&mut self, identity: &str);
+}
+
+/// Applies one `KeyEvent` from a `CallSession`, in order. A full bridge also answers each
+/// `KeyEvent::Fence` with `Input::Installed` once every earlier event is in effect, and on
+/// `KeyEvent::Clear` overwrites every remote slot.
+fn apply(sdk: &mut impl FrameKeys, event: KeyEvent) {
+    match event {
+        KeyEvent::Install { identity, slot, ikm } => {
+            sdk.set_key(identity.as_str(), slot.get(), &lk_frame_key(&ikm));
+        }
+        KeyEvent::Activate { identity, slot, ikm } => {
+            sdk.set_key(identity.as_str(), slot.get(), &lk_frame_key(&ikm));
+            sdk.set_send_slot(slot.get());
+        }
+        KeyEvent::Retire { identity, slot, filler } => {
+            sdk.set_key(identity.as_str(), slot.get(), &lk_frame_key(&filler));
+        }
+        KeyEvent::Forget { identity } => sdk.forget(identity.as_str()),
+        KeyEvent::Fence { .. } | KeyEvent::Clear => {}
+    }
+}
+
+// Each MLS epoch's key goes to slot (slot_base + epoch) mod 64.
+assert_eq!(Slot::of(60, 5).get(), 1);
+// The SDK's frame key for one frame-key input.
+let key = lk_frame_key(&FrameIkm::from_bytes([7; 32]));
+assert_eq!(key.len(), 16);
+```
+
+Sew's native voice engine, `sew-call-client`, is a complete host of this crate.
 
 ## Licence
 

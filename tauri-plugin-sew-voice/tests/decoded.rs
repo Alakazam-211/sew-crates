@@ -5,7 +5,7 @@
 //! four decoded sinks, and a reset plus a keyframe request on a decoder error.
 
 // The helpers (not only #[test] fns) unwrap: a test that cannot set up must fail loudly.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 

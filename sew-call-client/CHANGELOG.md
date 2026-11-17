@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.8.2 (2026-11-17, Sew 0.10.4)
+
+- Published on crates.io, as every crate it depends on is: a dependency line is all it
+  needs (README.md).
+
+### Dependencies
+
+- Requires the Sew crates at 0.10.4 (sew-noise 0.10.4's grace windows); kessel-video is locked
+  at 0.1.8.
+- Updates the WebRTC dependencies: `sew-str0m` 0.25.5 with `sew-str0m-is` 0.12.3, with upstream
+  str0m PRs #1159 and #1158. A conflicting or exhausted payload type in a remote description
+  is now warned about and ignored instead of refused; extension IDs stay as first negotiated.
+  The transport attributes of a remote description's BUNDLE media section (DTLS fingerprint
+  and setup role, ICE credentials) are preferred over its session-level defaults.
+
+### Fixed
+
+- A subscriber of the primary codec could wait without video when the bandwidth estimate was
+  low: the send side's rate split paused the primary's lowest layer whenever the estimate fell
+  short of what it needs, and a paused layer sends nothing to raise the estimate. The
+  primary's lowest wanted layer is now kept like the backup's: it runs whenever anyone wants
+  the primary, at what is left of the estimate and at least what it needs (at most its cap).
+  With both codecs wanted and an estimate short of both, both lowest layers run. The layers
+  above follow the estimate and its hysteresis as before. `VideoCaps` follows suit: a bitrate
+  cap no longer takes a lane's lowest wanted layer below its floor (which paused the primary
+  outright), and `max_layers` leaves each lane at least one layer.
+
+### Added
+
+- `NoiseRemovalControl::app_scene_changed`: the app reports a move between foreground and
+  background (or a window's focus), and the live call's noise removal stage opens a grace
+  window, so the moment's load does not cost the call DeepFilterNet3.
+- `NoiseRemovalState` carries the stage's timing for a call's log where DeepFilterNet3 is in
+  play: `step_down_reason` (`NoiseStepDownReason`: `slow_block`, `slow_window`, `heavy`,
+  `fault`, `forced`), `last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget` and
+  `in_grace`, and kessel-audio's view of the stage: `capture_stage_strikes`,
+  `capture_stage_bypassed` and `capture_stage_p99_us`. Each is absent while unset. The
+  counters ride along with each change of state and do not make one by themselves.
+
+### Changed
+
+- A call's noise removal stage opens a grace window by itself when its audio starts, and on
+  the call's own events: the phone's audio session activating or resuming, an audio route
+  change, a device switch kessel-audio reports through `AudioBridge::events`, a switch of the
+  phone's capture and a camera starting or switching. In the window the stage's timing rules
+  hold back to the audio pipeline's own line, and a step-down made then is retried sooner.
+
 ## 0.8.1 (2026-11-16, Sew 0.10.3)
 
 ### Changed
@@ -46,6 +93,18 @@
 - `AudioBridge::events`: kessel-audio's events, drained through the bridge, which notes a failed
   switch of the phone's capture on the way. Read events here rather than from
   `engine().events()`.
+
+### Fixed
+
+- A VP8-only subscriber could wait without video for a backup that never started. The send
+  side's rate split ran the backup's lowest layer only when the bandwidth estimate covered 60%
+  of its cap (or its floor), but with the primary paused by dynacast the publisher sends little
+  else, and the estimate of such an application-limited sender sits near what it sends: on an
+  80 ms TURN-TLS path, a few hundred kbit/s, right at that threshold. Below it, the layer sent
+  nothing, so nothing raised the estimate, and the subscriber waited seconds or for good. The
+  backup's lowest wanted layer now runs whenever the backup runs, at what is left of the
+  estimate and at least what it needs (at most its cap); the layers above it follow the
+  estimate as before.
 
 ## 0.8.0 (2026-11-16, Sew 0.10.2)
 

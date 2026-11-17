@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.10.4 (2026-11-17)
+
+### Added
+
+- `Dfn3Model::load_bytes` and `dfn3::Dfn3Loader` (feature `dfn3`) load the DeepFilterNet3
+  weights from memory, all at once or in pieces, with the same sha256 check and refusals as a
+  load by path.
+- `Stage::begin_block`, `Stage::step_block`, `Stage::block_steps_left`, `Stage::end_block` and
+  `Stage::block_begun` let a caller spread a block's model work over time, with
+  `Stage::process`'s output bit for bit.
+- `Dfn3Layer::cold`, `Dfn3Layer::warm_up_step`, `Dfn3Layer::extend_warm_up` and
+  `Dfn3Layer::warm_up_blocks_left` build and warm the model's layer in small steps.
+- `Stage::set_clock` gives a stage a clock where the standard library has none.
+- Grace windows: `StageControl::grace` opens one (or extends the open one) for a moment the
+  device is busy with something else, such as a call starting, an audio route change, a camera
+  starting or an app switch. In a window, Strong's timing rules hold back to the audio
+  pipeline's own line: one slow block, the percentile and the median no longer step the
+  model down; a model output that is not finite is still a fault, final at once. A step-down
+  in a window, or soon after it closed, is retried sooner than the usual first retry; the
+  schedule is otherwise unchanged. `StageControl::end_grace`, `StageControl::in_grace`,
+  `StageControl::set_auto_grace`, `StageControl::auto_grace`, `DEFAULT_GRACE`, and
+  `StageStats::in_grace`, `grace_until_block` and `grace_opens`.
+
+### Changed
+
+- The package's metadata and README follow the published-crate standard (issues, MSRV,
+  features, a compiling example).
+- A stage opens a grace window by itself at its first block, at `Stage::reset` and when it
+  takes a model layer handed over during a call (`StageControl::set_auto_grace` changes or
+  turns off its length), so a call's start-up no longer costs it the model.
+
+DeepFilterNet is the work of Hendrik Schröter and the DeepFilterNet authors.
+
 ## 0.10.3 (2026-11-16)
 
 ### Added

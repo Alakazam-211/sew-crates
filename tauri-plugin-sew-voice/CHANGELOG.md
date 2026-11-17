@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.2 (2026-11-17, Sew 0.10.4)
+
+- Published on crates.io, with `sew-call-client` and every crate they depend on: a dependency
+  line is all it needs (README.md).
+
+### Dependencies
+
+- Requires sew-call-client 0.8.2 and sew-proto 0.10.4; kessel-video (tests) is locked at 0.1.8.
+- Through sew-call-client, updates the WebRTC dependencies (`sew-str0m` 0.25.5,
+  `sew-str0m-is` 0.12.3); see sew-call-client's CHANGELOG.
+
+### Added
+
+- The `noise_removal` state and event carry the noise removal stage's timing for a call's log
+  (sew-call-client's fields): `step_down_reason` (`slow_block`, `slow_window`, `heavy`,
+  `fault`, `forced`), `last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget`,
+  `in_grace`, `capture_stage_strikes`, `capture_stage_bypassed` and `capture_stage_p99_us`.
+  Each is absent while unset; the counters ride along with each change and do not send an
+  event by themselves. The event is also sent when a grace window opens or closes.
+- `VoiceEngine::app_scene_changed` (provided, does nothing by default) and
+  `VoiceService::app_scene_changed`.
+
+### Changed
+
+- The app's lifecycle opens a grace window for the live call's noise removal, so a moment the
+  device is busy does not cost the call DeepFilterNet3: Tauri's resumed event and a window's
+  focus change, and each `VoiceControl::app_scene`. A camera starting, the audio session
+  activating and an audio route change open one through sew-call-client.
+
 ## 0.8.1 (2026-11-16, Sew 0.10.3)
 
 ### Changed

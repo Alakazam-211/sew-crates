@@ -1,0 +1,11 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "handoff"
+description = """
+`handoff`: a single-use 60 s code that the calling page trades for the App's cookie session
+(`POST /sew/native/handoff/redeem`). The plugin answers it only to a page on the account's own
+server. Grant it only to the remote capability of the App's own site, never to a window that
+loads other pages.
+"""
+permissions = ["allow-handoff"]

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-confirm-server"
+description = "Enables the confirm_server command without any pre-configured scope."
+commands.allow = ["confirm_server"]
+
+[[permission]]
+identifier = "deny-confirm-server"
+description = "Denies the confirm_server command without any pre-configured scope."
+commands.deny = ["confirm_server"]

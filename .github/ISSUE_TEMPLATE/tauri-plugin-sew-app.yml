@@ -1,0 +1,27 @@
+name: tauri-plugin-sew-app
+description: A bug, a question or a request about the tauri-plugin-sew-app crate.
+labels: ["crate:tauri-plugin-sew-app"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for `tauri-plugin-sew-app`. A problem that puts users at risk is reported privately, as [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version of tauri-plugin-sew-app you use (from your Cargo.lock).
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead. A minimal reproduction helps most.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, architecture and the output of rustc --version.

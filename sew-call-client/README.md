@@ -26,6 +26,15 @@ answer and hands it over. No token needs to reach a web view.
 
 Not affiliated with or endorsed by LiveKit.
 
+- Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
+  repository at each release, so pull requests are not merged there)
+- API documentation: <https://docs.rs/sew-call-client>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `sew-call-client` form, which labels the issue `crate:sew-call-client`
+- Security problems: report them privately, as
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
+
 ## Features
 
 - `audio` (default): the `kessel-audio` bridge on the system's audio devices (cpal: CoreAudio,
@@ -71,10 +80,16 @@ Not affiliated with or endorsed by LiveKit.
   (that call starts on RNNoise, on phones the OS's voice processing alone, with
   `model_reason: loading`, and steps up without a click), and released after
   `set_dfn3_idle_unload`'s time with no call (`DFN3_IDLE_UNLOAD` by default; `preload_dfn3`
-  loads it at once). Without usable weights Standard stays RNNoise. The state then also says
-  which `model` runs, why it is RNNoise (`model_reason`) and how often the call's stage stepped
-  down (`step_downs`). Which files
-  to ship and where: tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app".
+  loads it at once). Without usable weights Standard stays RNNoise (on phones, the OS's voice
+  processing alone). The state then also says which `model` runs, why it is RNNoise
+  (`model_reason`) and how often the call's stage stepped down (`step_downs`), with the
+  stage's timing for a call's log (`step_down_reason`, `last_step_down_ms_ago`,
+  `slowest_block_us`, `blocks_over_budget`, `in_grace`, and kessel-audio's
+  `capture_stage_strikes`, `capture_stage_bypassed`, `capture_stage_p99_us`). The call's start
+  and its busy moments (the session activating, a route change, a device switch, a camera
+  starting, and the app's lifecycle through `NoiseRemovalControl::app_scene_changed`) open a
+  grace window in which the stage keeps the model through the load. Which files to ship and
+  where: tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app".
 - `noise-bench` (debug builds only, never in `default`): `noise_bench::run`, the stage on the
   device's microphone for a while, reported as JSON.
 - `video-core` and `video` (off by default): `kessel-video`, K2's cameras, screen capture and
@@ -92,6 +107,8 @@ Not affiliated with or endorsed by LiveKit.
   that case is refused with `no_crypto_provider`.
 - `testing`: test-only helpers. Never in a release build. With `video-core` as well,
   `FixtureBackend` replays pre-encoded VP8 and H.264 simulcast streams.
+- `sim-software-key` (off; iOS simulator and x86 Android emulator builds only, refused
+  elsewhere): `SimSoftwareKey`, a software stand-in for the hardware device key.
 
 ## TLS crypto provider
 
@@ -110,23 +127,20 @@ built-in)`. It covers TLS only; the call's DTLS and SRTP keep their own backend.
 
 ## Usage
 
-The crate is not published on crates.io yet, because some of its dependencies are not:
-`sew-e2ee` and `sew-mls-crypto`, and Alakazam Labs' fork of `str0m` (K2's `kessel-audio` and
-`kessel-video` come from crates.io).
-Until they are, get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates)
-repository, which holds it with the Sew crates it depends on: clone it into your project (for
-example as `third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists
-into your workspace's root `Cargo.toml`. It needs a Sew server to join calls on (see the same
-README).
+The crate is on crates.io, and so is every crate it depends on: the Sew crates (`sew-proto`,
+`sew-lkproto`, `sew-lk-compat`, `sew-e2ee`, `sew-mls-crypto`, `sew-noise`), Alakazam Labs' fork
+of `str0m` and K2's `kessel-audio` and `kessel-video`. A dependency line is all it needs. It
+needs a Sew server to join calls on (see the
+[sew-crates](https://github.com/Alakazam-211/sew-crates) README).
 
 ```toml
 [dependencies]
-sew-call-client = "0.8.1"
+sew-call-client = "0.8.2"
 ```
 
 The engine's WebRTC stack is `sew-str0m`, Alakazam Labs' fork of `str0m` 0.25 (library name
 `str0m`), which carries Sew's fixes (among them one to the bandwidth estimate at the start of a
-call). This release uses `sew-str0m` 0.25.3 from crates.io.
+call). This release uses `sew-str0m` 0.25.5 from crates.io.
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
 session and returns it. A minimal one, and a call through it (the same code is compiled as the

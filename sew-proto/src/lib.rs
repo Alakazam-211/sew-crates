@@ -91,3 +91,8 @@ pub use http::{IdempotencyKey, Nonce, Page, PageQuery, Patch};
 pub use id::{Id, IdGenerator, IdList, NodeId, id_to_time};
 pub use perms::Perms;
 pub use time::Timestamp;
+
+/// README.md's examples, compiled and run as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

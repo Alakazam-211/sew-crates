@@ -77,3 +77,8 @@ impl OpenMlsProvider for MlsProvider {
         &self.crypto
     }
 }
+
+/// README.md's examples, compiled and run as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

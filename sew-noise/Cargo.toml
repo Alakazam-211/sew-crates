@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-noise"
-version = "0.10.3"
+version = "0.10.4"
 build = false
 include = [
     "src/**",
@@ -30,6 +30,7 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "Microphone noise removal in pure Rust: a real-time capture stage (10 ms blocks of 48 kHz mono in place, fixed latency, a mode switchable without clicks), a frame API and a stream API (any block size, any rate), over nnnoiseless, the Rust port of RNNoise. No allocation after construction, no C, no unsafe."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/sew-noise"
 documentation = "https://docs.rs/sew-noise"
 readme = "README.md"
 keywords = [

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-gateway-open"
+description = "Enables the gateway_open command without any pre-configured scope."
+commands.allow = ["gateway_open"]
+
+[[permission]]
+identifier = "deny-gateway-open"
+description = "Denies the gateway_open command without any pre-configured scope."
+commands.deny = ["gateway_open"]

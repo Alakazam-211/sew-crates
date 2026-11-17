@@ -471,6 +471,12 @@ pub trait VoiceEngine: Send + Sync + 'static {
     fn audio_session(&self, event: AudioSessionEvent) {
         let _ = event;
     }
+    /// The app moved between the foreground and the background, came back to the front, or a
+    /// window gained or lost focus (Tauri's lifecycle, and [`crate::VoiceControl::app_scene`]):
+    /// a moment the device is busy with something else. The engine's noise removal holds its
+    /// timing rules back for a grace window, so the moment does not cost the call its model. It
+    /// must not block. The default does nothing.
+    fn app_scene_changed(&self) {}
     /// A sign-out from one Sew install: delete every device of `install_id` the engine's device
     /// store holds (a hardware key through `HardwareDeviceKey::delete`) and its pins; answer the
     /// removed keys. The service refuses it while a call is live. The default holds no devices

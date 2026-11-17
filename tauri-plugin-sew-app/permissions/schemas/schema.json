@@ -1,0 +1,612 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PermissionFile",
+  "description": "Permission file that can define a default permission, a set of permissions or a list of inlined permissions.",
+  "type": "object",
+  "properties": {
+    "default": {
+      "description": "The default permission set for the plugin",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DefaultPermission"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "set": {
+      "description": "A list of permissions sets defined",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PermissionSet"
+      }
+    },
+    "permission": {
+      "description": "A list of inlined permissions",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Permission"
+      }
+    }
+  },
+  "definitions": {
+    "DefaultPermission": {
+      "description": "The default permission set of the plugin.\n\nWorks similarly to a permission with the \"default\" identifier.",
+      "type": "object",
+      "required": [
+        "permissions"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version of the permission.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does. Tauri convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permissions": {
+          "description": "All permissions this set contains.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PermissionSet": {
+      "description": "A set of direct permissions grouped together under a new name.",
+      "type": "object",
+      "required": [
+        "description",
+        "identifier",
+        "permissions"
+      ],
+      "properties": {
+        "identifier": {
+          "description": "A unique identifier for the permission.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "All permissions this set contains.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PermissionKind"
+          }
+        }
+      }
+    },
+    "Permission": {
+      "description": "Descriptions of explicit privileges of commands.\n\nIt can enable commands to be accessible in the frontend of the application.\n\nIf the scope is defined it can be used to fine grain control the access of individual or multiple commands.",
+      "type": "object",
+      "required": [
+        "identifier"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version of the permission.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "identifier": {
+          "description": "A unique identifier for the permission.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does. Tauri internal convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commands": {
+          "description": "Allowed or denied commands when using this permission.",
+          "default": {
+            "allow": [],
+            "deny": []
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/Commands"
+            }
+          ]
+        },
+        "scope": {
+          "description": "Allowed or denied scoped when using this permission.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Scopes"
+            }
+          ]
+        },
+        "platforms": {
+          "description": "Target platforms this permission applies. By default all platforms are affected by this permission.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Target"
+          }
+        }
+      }
+    },
+    "Commands": {
+      "description": "Allowed and denied commands inside a permission.\n\nIf two commands clash inside of `allow` and `deny`, it should be denied by default.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Allowed command.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny": {
+          "description": "Denied command, which takes priority.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Scopes": {
+      "description": "An argument for fine grained behavior control of Tauri commands.\n\nIt can be of any serde serializable type and is used to allow or prevent certain actions inside a Tauri command. The configured scope is passed to the command and will be enforced by the command implementation.\n\n## Example\n\n```json { \"allow\": [{ \"path\": \"$HOME/**\" }], \"deny\": [{ \"path\": \"$HOME/secret.txt\" }] } ```",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Data that defines what is allowed by the scope.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        },
+        "deny": {
+          "description": "Data that defines what is denied by the scope. This should be prioritized by validation logic.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        }
+      }
+    },
+    "Value": {
+      "description": "All supported ACL values.",
+      "anyOf": [
+        {
+          "description": "Represents a null JSON value.",
+          "type": "null"
+        },
+        {
+          "description": "Represents a [`bool`].",
+          "type": "boolean"
+        },
+        {
+          "description": "Represents a valid ACL [`Number`].",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Number"
+            }
+          ]
+        },
+        {
+          "description": "Represents a [`String`].",
+          "type": "string"
+        },
+        {
+          "description": "Represents a list of other [`Value`]s.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        },
+        {
+          "description": "Represents a map of [`String`] keys to [`Value`]s.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Value"
+          }
+        }
+      ]
+    },
+    "Number": {
+      "description": "A valid ACL number.",
+      "anyOf": [
+        {
+          "description": "Represents an [`i64`].",
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "description": "Represents a [`f64`].",
+          "type": "number",
+          "format": "double"
+        }
+      ]
+    },
+    "Target": {
+      "description": "Platform target.",
+      "oneOf": [
+        {
+          "description": "MacOS.",
+          "type": "string",
+          "enum": [
+            "macOS"
+          ]
+        },
+        {
+          "description": "Windows.",
+          "type": "string",
+          "enum": [
+            "windows"
+          ]
+        },
+        {
+          "description": "Linux.",
+          "type": "string",
+          "enum": [
+            "linux"
+          ]
+        },
+        {
+          "description": "Android.",
+          "type": "string",
+          "enum": [
+            "android"
+          ]
+        },
+        {
+          "description": "iOS.",
+          "type": "string",
+          "enum": [
+            "iOS"
+          ]
+        }
+      ]
+    },
+    "PermissionKind": {
+      "type": "string",
+      "oneOf": [
+        {
+          "description": "Enables the add_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-add-server",
+          "markdownDescription": "Enables the add_server command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the add_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-add-server",
+          "markdownDescription": "Denies the add_server command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the api command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-api",
+          "markdownDescription": "Enables the api command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the api command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-api",
+          "markdownDescription": "Denies the api command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the confirm_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-confirm-server",
+          "markdownDescription": "Enables the confirm_server command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the confirm_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-confirm-server",
+          "markdownDescription": "Denies the confirm_server command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-devices",
+          "markdownDescription": "Enables the devices command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-devices",
+          "markdownDescription": "Denies the devices command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the gateway_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-gateway-close",
+          "markdownDescription": "Enables the gateway_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the gateway_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-gateway-close",
+          "markdownDescription": "Denies the gateway_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the gateway_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-gateway-open",
+          "markdownDescription": "Enables the gateway_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the gateway_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-gateway-open",
+          "markdownDescription": "Denies the gateway_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the gateway_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-gateway-send",
+          "markdownDescription": "Enables the gateway_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the gateway_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-gateway-send",
+          "markdownDescription": "Denies the gateway_send command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the handoff command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-handoff",
+          "markdownDescription": "Enables the handoff command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the handoff command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-handoff",
+          "markdownDescription": "Denies the handoff command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notify command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notify",
+          "markdownDescription": "Enables the notify command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notify command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notify",
+          "markdownDescription": "Denies the notify command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open",
+          "markdownDescription": "Enables the open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open",
+          "markdownDescription": "Denies the open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pair command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pair",
+          "markdownDescription": "Enables the pair command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pair command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pair",
+          "markdownDescription": "Denies the pair command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pair_confirm command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pair-confirm",
+          "markdownDescription": "Enables the pair_confirm command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pair_confirm command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pair-confirm",
+          "markdownDescription": "Denies the pair_confirm command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pair_decline command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pair-decline",
+          "markdownDescription": "Enables the pair_decline command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pair_decline command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pair-decline",
+          "markdownDescription": "Denies the pair_decline command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-server",
+          "markdownDescription": "Enables the remove_server command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_server command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-server",
+          "markdownDescription": "Denies the remove_server command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the revoke_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-revoke-device",
+          "markdownDescription": "Enables the revoke_device command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the revoke_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-revoke-device",
+          "markdownDescription": "Denies the revoke_device command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the server_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-server-info",
+          "markdownDescription": "Enables the server_info command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the server_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-server-info",
+          "markdownDescription": "Denies the server_info command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the servers command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-servers",
+          "markdownDescription": "Enables the servers command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the servers command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-servers",
+          "markdownDescription": "Denies the servers command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_active command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-active",
+          "markdownDescription": "Enables the set_active command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_active command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-active",
+          "markdownDescription": "Denies the set_active command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_in command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-in",
+          "markdownDescription": "Enables the sign_in command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_in command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-in",
+          "markdownDescription": "Denies the sign_in command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_in_door command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-in-door",
+          "markdownDescription": "Enables the sign_in_door command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_in_door command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-in-door",
+          "markdownDescription": "Denies the sign_in_door command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_in_door_set_password command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-in-door-set-password",
+          "markdownDescription": "Enables the sign_in_door_set_password command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_in_door_set_password command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-in-door-set-password",
+          "markdownDescription": "Denies the sign_in_door_set_password command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the sign_out command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-sign-out",
+          "markdownDescription": "Enables the sign_out command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the sign_out command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-sign-out",
+          "markdownDescription": "Denies the sign_out command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the upload_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-upload-bytes",
+          "markdownDescription": "Enables the upload_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the upload_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-upload-bytes",
+          "markdownDescription": "Denies the upload_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the upload_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-upload-file",
+          "markdownDescription": "Enables the upload_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the upload_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-upload-file",
+          "markdownDescription": "Denies the upload_file command without any pre-configured scope."
+        },
+        {
+          "description": "Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `confirm_server`,\n`remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,\n`sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list\n(`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed\nin) and `notify` (a notification and the app badge). Every window gets every event\n(`sew-app://servers`, `signed_out`, `warning`, `deep_link`, `pair_request`, `pair_refused`).\nNot in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API\ntransport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,\n`upload_bytes`: `sew-app:transport`); and `upload_file`, which reads a file the page names\n(`sew-app:upload-file`).\n\n#### This default permission set includes:\n\n- `allow-servers`\n- `allow-add-server`\n- `allow-confirm-server`\n- `allow-remove-server`\n- `allow-server-info`\n- `allow-set-active`\n- `allow-sign-in`\n- `allow-pair`\n- `allow-sign-in-door`\n- `allow-sign-in-door-set-password`\n- `allow-pair-confirm`\n- `allow-pair-decline`\n- `allow-sign-out`\n- `allow-devices`\n- `allow-revoke-device`\n- `allow-open`\n- `allow-notify`",
+          "type": "string",
+          "const": "default",
+          "markdownDescription": "Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `confirm_server`,\n`remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,\n`sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list\n(`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed\nin) and `notify` (a notification and the app badge). Every window gets every event\n(`sew-app://servers`, `signed_out`, `warning`, `deep_link`, `pair_request`, `pair_refused`).\nNot in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API\ntransport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,\n`upload_bytes`: `sew-app:transport`); and `upload_file`, which reads a file the page names\n(`sew-app:upload-file`).\n\n#### This default permission set includes:\n\n- `allow-servers`\n- `allow-add-server`\n- `allow-confirm-server`\n- `allow-remove-server`\n- `allow-server-info`\n- `allow-set-active`\n- `allow-sign-in`\n- `allow-pair`\n- `allow-sign-in-door`\n- `allow-sign-in-door-set-password`\n- `allow-pair-confirm`\n- `allow-pair-decline`\n- `allow-sign-out`\n- `allow-devices`\n- `allow-revoke-device`\n- `allow-open`\n- `allow-notify`"
+        },
+        {
+          "description": "`handoff`: a single-use 60 s code that the calling page trades for the App's cookie session\n(`POST /sew/native/handoff/redeem`). The plugin answers it only to a page on the account's own\nserver. Grant it only to the remote capability of the App's own site, never to a window that\nloads other pages.\n\n#### This permission set includes:\n\n- `allow-handoff`",
+          "type": "string",
+          "const": "handoff",
+          "markdownDescription": "`handoff`: a single-use 60 s code that the calling page trades for the App's cookie session\n(`POST /sew/native/handoff/redeem`). The plugin answers it only to a page on the account's own\nserver. Grant it only to the remote capability of the App's own site, never to a window that\nloads other pages.\n\n#### This permission set includes:\n\n- `allow-handoff`"
+        },
+        {
+          "description": "The API transport, for an App's bundled UI: `api` (the App's client API through the server's\nnative lane, with the device bearer kept in the app), `gateway_open`, `gateway_send` and\n`gateway_close` (the gateway socket held in the app and relayed over a channel, its ticket put in\nby the app), and `upload_bytes` (raw bytes to an upload or an image route). The page never gets\nthe bearer or a ticket. Grant it to the bundled UI's own capability; a server's live site has its\ncookie session and doesn't need it. The `sewfile:` scheme needs no permission: it answers only\nthe bundled UI's pages.\n\n#### This permission set includes:\n\n- `allow-api`\n- `allow-gateway-open`\n- `allow-gateway-send`\n- `allow-gateway-close`\n- `allow-upload-bytes`",
+          "type": "string",
+          "const": "transport",
+          "markdownDescription": "The API transport, for an App's bundled UI: `api` (the App's client API through the server's\nnative lane, with the device bearer kept in the app), `gateway_open`, `gateway_send` and\n`gateway_close` (the gateway socket held in the app and relayed over a channel, its ticket put in\nby the app), and `upload_bytes` (raw bytes to an upload or an image route). The page never gets\nthe bearer or a ticket. Grant it to the bundled UI's own capability; a server's live site has its\ncookie session and doesn't need it. The `sewfile:` scheme needs no permission: it answers only\nthe bundled UI's pages.\n\n#### This permission set includes:\n\n- `allow-api`\n- `allow-gateway-open`\n- `allow-gateway-send`\n- `allow-gateway-close`\n- `allow-upload-bytes`"
+        },
+        {
+          "description": "`upload_file`: the app reads a file at a path the page names and posts its bytes to an upload\nor an image route. The page can name any file the app may read, so grant it only to a bundled UI\nthat takes the path from the person's own pick (a file dialog), never to a window that loads\nother pages.\n\n#### This permission set includes:\n\n- `allow-upload-file`",
+          "type": "string",
+          "const": "upload-file",
+          "markdownDescription": "`upload_file`: the app reads a file at a path the page names and posts its bytes to an upload\nor an image route. The page can name any file the app may read, so grant it only to a bundled UI\nthat takes the path from the person's own pick (a file dialog), never to a window that loads\nother pages.\n\n#### This permission set includes:\n\n- `allow-upload-file`"
+        }
+      ]
+    }
+  }
+}

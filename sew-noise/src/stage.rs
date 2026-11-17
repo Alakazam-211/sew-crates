@@ -114,6 +114,23 @@ const WINDOW_BLOCKS: u32 = 500;
 const WINDOW_P99_BLOCKS: u32 = WINDOW_BLOCKS / 100;
 /// The default block budget.
 const DEFAULT_BUDGET: Duration = Duration::from_millis(6);
+/// One block, in nanoseconds.
+const BLOCK_NS: u128 = 10_000_000;
+
+/// The grace window a stage opens by itself ([`StageControl::set_auto_grace`]): at its first
+/// block, at [`Stage::reset`] and when it takes a model layer handed over during a call.
+///
+/// Three seconds. A phone call's start-up (the audio session activating, the route settling, a
+/// camera opening) loads the device for about a second, each event after the one before, and
+/// an app switch does the same; the stage's own step-downs came within a second of the last
+/// such event. Three seconds from the latest event covers that with room, and each event
+/// reported through [`StageControl::grace`] opens the window again from its own time.
+pub const DEFAULT_GRACE: Duration = Duration::from_secs(3);
+
+/// Blocks in `d`, rounded up.
+fn blocks_in(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos().div_ceil(BLOCK_NS)).unwrap_or(u64::MAX)
+}
 
 /// What the stage and its [`StageControl`]s share: atomics, and (feature `dfn3`) the slot a
 /// model handed over later waits in, which the stage only ever try-locks.
@@ -144,6 +161,12 @@ struct Shared {
     step_down_rules: AtomicBool,
     /// Measurement: step down at the next model block.
     force_step_down: AtomicBool,
+    /// The grace window runs while the block count is under this (0: none was opened).
+    grace_until: AtomicU64,
+    /// The window the stage opens by itself, in blocks.
+    auto_grace_blocks: AtomicU64,
+    /// Grace windows opened (or extended).
+    grace_opens: AtomicU64,
     /// A model layer handed over by [`StageControl::attach_dfn3`], until the stage takes it.
     #[cfg(feature = "dfn3")]
     handover: std::sync::Mutex<Option<Dfn3Layer>>,
@@ -166,12 +189,40 @@ impl Dfn3Layer {
     pub fn new(model: Arc<crate::dfn3::Dfn3Model>) -> Self {
         Self(Box::new(crate::strong::Strong::new(model)))
     }
+
+    /// The layer over `model` with its warm-up still to run, for a caller that has to spread
+    /// the work over time (an audio thread with no other thread to build on): call
+    /// [`Self::warm_up_step`] until it answers true. Allocates; the steps do not. A layer handed
+    /// to [`StageControl::attach_dfn3`] before its warm-up is complete runs the rest there.
+    pub fn cold(model: Arc<crate::dfn3::Dfn3Model>) -> Self {
+        Self(Box::new(crate::strong::Strong::cold(model)))
+    }
+
+    /// Runs one step of the warm-up (a warm-up block's start, one part of the model's work, or
+    /// its end: bounded work); true once the warm-up is complete, and on every call after.
+    pub fn warm_up_step(&mut self) -> bool {
+        self.0.warm_up_step()
+    }
+
+    /// Warm-up blocks still to run (including one begun).
+    pub fn warm_up_blocks_left(&self) -> u32 {
+        self.0.warm_left
+    }
+
+    /// Runs `blocks` more warm-up blocks before the layer is used (after the warm-up is
+    /// complete too): for a caller that waits until the model's code runs at its usual speed
+    /// (a WebAssembly engine compiles hot code again, faster, some time after it first runs).
+    /// The layer is the same afterwards: its stream is cleared when the warm-up ends.
+    pub fn extend_warm_up(&mut self, blocks: u32) {
+        self.0.warm_left = self.0.warm_left.saturating_add(blocks);
+    }
 }
 
 /// A snapshot of a stage's timing counters ([`StageControl::stats`]).
 ///
 /// Times are the wall time of [`Stage::process`], measured on the thread that runs it. On
-/// `wasm32` there is no clock: the block counts advance and every time is 0.
+/// `wasm32` there is no clock unless one is given ([`Stage::set_clock`]): without it the block
+/// counts advance and every time is 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct StageStats {
@@ -210,6 +261,13 @@ pub struct StageStats {
     pub last_step_down_block: u64,
     /// The block count from which a stepped-down Strong may be retried.
     pub retry_at_block: u64,
+    /// A grace window is open now ([`StageControl::grace`]).
+    pub in_grace: bool,
+    /// The block count at which the latest grace window closes (or closed); 0 if none was
+    /// opened.
+    pub grace_until_block: u64,
+    /// Grace windows opened or extended so far, the stage's own included.
+    pub grace_opens: u64,
 }
 
 impl StageStats {
@@ -253,10 +311,11 @@ impl StageControl {
     /// starts it: the model runs one block unused, then fades in over one block, with no
     /// click. Answers the layer back when the stage already has a model or one is waiting.
     #[cfg(feature = "dfn3")]
-    pub fn attach_dfn3(&self, layer: Dfn3Layer) -> Result<(), Dfn3Layer> {
+    pub fn attach_dfn3(&self, mut layer: Dfn3Layer) -> Result<(), Dfn3Layer> {
         if self.shared.strong_available.load(Ordering::Acquire) {
             return Err(layer);
         }
+        layer.0.finish_warm_up();
         let mut slot = self
             .shared
             .handover
@@ -277,6 +336,60 @@ impl StageControl {
     #[doc(hidden)]
     pub fn force_step_down(&self) {
         self.shared.force_step_down.store(true, Ordering::Relaxed);
+    }
+
+    /// Opens a grace window of `duration` from now, or extends the open one to end then (a
+    /// window never shortens here). For a moment the device is busy with something else: a
+    /// call starting, the audio session activating, the audio route changing, a camera
+    /// starting, the app moving between foreground and background.
+    ///
+    /// In a grace window Strong's timing rules do not step the model down for one slow block,
+    /// for its 99th percentile or for its median. It steps down only at the second block over
+    /// 6 ms among the last 100 model blocks ([`StepDownReason::SlowWindow`]), the count at which
+    /// the audio pipeline's own percentile rule would bypass the whole stage. A model output
+    /// that is not finite is still a fault, final at once. The window's blocks are forgotten
+    /// when it closes, so the usual rules start afresh. A step-down inside a window, or within
+    /// 5 s after it closed, is retried after 5 s instead of the usual wait.
+    ///
+    /// Counted in the stage's blocks (10 ms each). A few atomic operations: any thread.
+    pub fn grace(&self, duration: Duration) {
+        let n = blocks_in(duration);
+        if n == 0 {
+            return;
+        }
+        let s = &self.shared;
+        let until = s.blocks.load(Ordering::Relaxed).saturating_add(n);
+        s.grace_until.fetch_max(until, Ordering::Relaxed);
+        s.grace_opens.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Closes the grace window now, if one is open (its 5 s tail for a short retry starts
+    /// now).
+    pub fn end_grace(&self) {
+        let s = &self.shared;
+        let now = s.blocks.load(Ordering::Relaxed);
+        s.grace_until.fetch_min(now, Ordering::Relaxed);
+    }
+
+    /// Whether a grace window is open now.
+    pub fn in_grace(&self) -> bool {
+        let s = &self.shared;
+        s.blocks.load(Ordering::Relaxed) < s.grace_until.load(Ordering::Relaxed)
+    }
+
+    /// The grace window the stage opens by itself: at its first block, at [`Stage::reset`] and
+    /// when it takes a model layer handed over during a call ([`DEFAULT_GRACE`] unless set).
+    /// `Duration::ZERO` turns it off; a window already open is kept.
+    pub fn set_auto_grace(&self, duration: Duration) {
+        self.shared
+            .auto_grace_blocks
+            .store(blocks_in(duration), Ordering::Relaxed);
+    }
+
+    /// [`Self::set_auto_grace`]'s window.
+    pub fn auto_grace(&self) -> Duration {
+        let blocks = self.shared.auto_grace_blocks.load(Ordering::Relaxed);
+        Duration::from_millis(blocks.saturating_mul(10))
     }
 
     /// Turns the step-down rules off (`false`) or back on. For measuring the model on a
@@ -323,6 +436,9 @@ impl StageControl {
             last_step_down: StepDownReason::from_code(s.last_step_down.load(Ordering::Relaxed)),
             last_step_down_block: s.last_step_down_block.load(Ordering::Relaxed),
             retry_at_block: s.retry_at_block.load(Ordering::Relaxed),
+            in_grace: self.in_grace(),
+            grace_until_block: s.grace_until.load(Ordering::Relaxed),
+            grace_opens: s.grace_opens.load(Ordering::Relaxed),
         }
     }
 }
@@ -359,7 +475,10 @@ enum Run {
 ///   times its own blocks and steps down to Standard before the audio pipeline would stop it
 ///   for being slow, without a click and without running the model again; it retries later,
 ///   and after repeated step-downs it stays on Standard. [`StageStats`] says where Strong is
-///   and why it stepped down.
+///   and why it stepped down. While the device is busy with something else (the stage's
+///   start, a reset, a model handed over, or a moment an app reports with
+///   [`StageControl::grace`]) a grace window holds the timing rules back to the audio
+///   pipeline's own line.
 /// - A mode change is taken at a block boundary and cross-faded over one block. Turning
 ///   removal on spends one more block first, feeding the model without using its output.
 /// - [`Self::process`] does not allocate, block or panic (a model layer handed over by
@@ -400,6 +519,15 @@ pub struct Stage {
     /// Strong's model and step-down.
     #[cfg(feature = "dfn3")]
     strong: Option<Box<crate::strong::Strong>>,
+    /// A clock given by [`Self::set_clock`], used in place of the standard library's.
+    clock: Option<fn() -> u64>,
+    /// The block begun by [`Self::begin_block`]: Standard's output for it so far, what it was,
+    /// and whether one is begun.
+    pending: [f32; FRAME],
+    pending_active: Mode,
+    pending_begun: bool,
+    /// The first block has begun (the stage's own grace window is open).
+    started: bool,
 }
 
 impl std::fmt::Debug for Stage {
@@ -451,6 +579,9 @@ impl Stage {
                 retry_at_block: AtomicU64::new(0),
                 step_down_rules: AtomicBool::new(true),
                 force_step_down: AtomicBool::new(false),
+                grace_until: AtomicU64::new(0),
+                auto_grace_blocks: AtomicU64::new(blocks_in(DEFAULT_GRACE)),
+                grace_opens: AtomicU64::new(0),
                 #[cfg(feature = "dfn3")]
                 handover: std::sync::Mutex::new(None),
                 #[cfg(feature = "dfn3")]
@@ -462,6 +593,11 @@ impl Stage {
             standard: Standard::new(0.0),
             #[cfg(feature = "dfn3")]
             strong: None,
+            clock: None,
+            pending: [0.0; FRAME],
+            pending_active: Mode::Off,
+            pending_begun: false,
+            started: false,
         }
     }
 
@@ -521,6 +657,14 @@ impl Stage {
         self.shared.budget_ns.store(ns, Ordering::Relaxed);
     }
 
+    /// Times the blocks with `clock` (monotonic nanoseconds) in place of the standard library's
+    /// clock. For targets that have none, such as `wasm32-unknown-unknown`, where a stage
+    /// otherwise counts every block as taking no time and so never steps down from Strong.
+    /// The clock is called twice a block, on the audio thread: it must not allocate or block.
+    pub fn set_clock(&mut self, clock: fn() -> u64) {
+        self.clock = Some(clock);
+    }
+
     /// [`Self::LATENCY`]: fixed for the stage's life.
     pub const fn latency_samples(&self) -> usize {
         Self::LATENCY
@@ -529,14 +673,18 @@ impl Stage {
     /// Forgets the audio held back (after a device change or a long pause): the next block's
     /// output is silence, and when removal is on, the block after fades the model back in.
     /// The model keeps its adaptive state and settles on the new signal within a few blocks.
-    /// The counters are kept. Also warms up the calling thread ([`warm_up_thread`]), which
-    /// allocates the first time a thread does it and never after.
+    /// The counters are kept, and the stage's own grace window opens
+    /// ([`StageControl::set_auto_grace`]). Also warms up the calling thread
+    /// ([`warm_up_thread`]), which allocates the first time a thread does it and never after.
     pub fn reset(&mut self) {
         warm_up_thread();
+        self.open_auto_grace();
+        self.started = true;
         self.delay = [0.0; FRAME];
         self.wet = [0.0; FRAME];
         self.run = Run::Dry;
         self.standard = Standard::new(0.0);
+        self.pending_begun = false;
         #[cfg(feature = "dfn3")]
         if let Some(strong) = self.strong.as_mut() {
             strong.reset();
@@ -549,7 +697,29 @@ impl Stage {
     pub fn process(&mut self, block: &mut [f32; FRAME]) {
         #[cfg(not(target_arch = "wasm32"))]
         let started = std::time::Instant::now();
+        let clock_started = self.clock.map(|c| c());
+        self.begin_block(block);
+        let ran = self.end_inner(block);
+        #[cfg(not(target_arch = "wasm32"))]
+        let std_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        #[cfg(target_arch = "wasm32")]
+        let std_ns = 0u64;
+        let ns = match (self.clock, clock_started) {
+            (Some(c), Some(t0)) => c().saturating_sub(t0),
+            _ => std_ns,
+        };
+        self.after_block(ran, ns);
+    }
 
+    /// Starts a block, for a caller that spreads the model's work over time (an audio thread
+    /// that runs in short slices, such as a Web Audio worklet): [`Self::begin_block`], then
+    /// [`Self::step_block`] at most [`Self::block_steps_left`] times, spread as the caller likes,
+    /// then [`Self::end_block`] for the block's output. The output is the one [`Self::process`]
+    /// gives, bit for bit, however the steps are spread. `begin_block` does Standard's work and
+    /// the start of Strong's (the cheap parts); each step is one part of Strong's model;
+    /// `end_block` runs any part left and finishes. A block begun and not ended is dropped by
+    /// the next `begin_block` (its model work is lost) or by [`Self::reset`].
+    pub fn begin_block(&mut self, input: &[f32; FRAME]) {
         if !WARM.get() {
             // The model's first frame on this thread makes (allocates) its FFT plans.
             WARM.set(true);
@@ -557,6 +727,11 @@ impl Stage {
                 .cold_thread_blocks
                 .fetch_add(1, Ordering::Relaxed);
         }
+        if !self.started {
+            self.started = true;
+            self.open_auto_grace();
+        }
+        let mut block = *input;
         for s in block.iter_mut() {
             if !s.is_finite() {
                 *s = 0.0;
@@ -565,30 +740,30 @@ impl Stage {
         #[cfg(feature = "dfn3")]
         self.take_handover();
         #[cfg(feature = "dfn3")]
-        let input = *block;
+        let input = block;
         let want_wet = self.mode() != Mode::Off;
         let mut active = Mode::Off;
         match (self.run, want_wet) {
-            (Run::Dry, false) => std::mem::swap(block, &mut self.delay),
+            (Run::Dry, false) => std::mem::swap(&mut block, &mut self.delay),
             (Run::Dry, true) => {
-                self.model(block);
-                std::mem::swap(block, &mut self.delay);
+                self.model(&block);
+                std::mem::swap(&mut block, &mut self.delay);
                 self.run = Run::Primed;
             }
             (Run::Primed, false) => {
-                std::mem::swap(block, &mut self.delay);
+                std::mem::swap(&mut block, &mut self.delay);
                 self.run = Run::Dry;
             }
             (Run::Primed, true) => {
-                self.model(block);
+                self.model(&block);
                 // Fade from the delayed input to the model's output.
-                fade(block, &mut self.delay, &self.wet, false);
+                fade(&mut block, &mut self.delay, &self.wet, false);
                 self.run = Run::Wet;
                 active = Mode::Standard;
             }
             (Run::Wet, true) => {
-                self.model(block);
-                let step = self.standard.step(block);
+                self.model(&block);
+                let step = self.standard.step(&block);
                 if step.opened {
                     self.shared.guard_opens.fetch_add(1, Ordering::Relaxed);
                 }
@@ -605,33 +780,108 @@ impl Stage {
                 active = Mode::Standard;
             }
             (Run::Wet, false) => {
-                self.model(block);
+                self.model(&block);
                 // Fade from the model's output to the delayed input.
-                fade(block, &mut self.delay, &self.wet, true);
+                fade(&mut block, &mut self.delay, &self.wet, true);
                 self.run = Run::Dry;
                 self.standard = Standard::new(0.0);
             }
         }
         #[cfg(feature = "dfn3")]
-        let mut ran = false;
-        #[cfg(feature = "dfn3")]
         if let Some(strong) = self.strong.as_mut() {
             let block_no = self.shared.blocks.load(Ordering::Relaxed);
             let want = self.shared.mode.load(Ordering::Relaxed) == Mode::Strong as u8;
-            let out = strong.process(&input, block, want, block_no);
-            ran = out.ran;
-            if out.active {
+            strong.begin(&input, want, block_no);
+        }
+        self.pending = block;
+        self.pending_active = active;
+        self.pending_begun = true;
+    }
+
+    /// Whether a block is begun ([`Self::begin_block`]) and not yet ended.
+    pub fn block_begun(&self) -> bool {
+        self.pending_begun
+    }
+
+    /// Parts of the model's work left in the block begun by [`Self::begin_block`] (0 without
+    /// Strong, or once they are done). An upper bound: which parts run depends on the first.
+    pub fn block_steps_left(&self) -> u32 {
+        #[cfg(feature = "dfn3")]
+        if self.pending_begun
+            && let Some(strong) = self.strong.as_ref()
+        {
+            return strong.steps_left();
+        }
+        0
+    }
+
+    /// Runs one part of the model's work in the begun block (bounded: half of one of the
+    /// model's recurrent layers and what goes with it). True once none is left. Allocates nothing.
+    pub fn step_block(&mut self) -> bool {
+        #[cfg(feature = "dfn3")]
+        if self.pending_begun
+            && let Some(strong) = self.strong.as_mut()
+        {
+            return strong.step();
+        }
+        true
+    }
+
+    /// Ends the block begun by [`Self::begin_block`]: `out` gets the block going out (the one
+    /// that went in one block earlier), as [`Self::process`] would have left it. `block_ns`
+    /// is the time the caller counts for this block (for example the slowest of the slices it
+    /// ran the block's work in, scaled to a block); the counters and Strong's step-down use it.
+    /// `None`: the time of this call. Without a begun block, `out` gets silence.
+    pub fn end_block(&mut self, out: &mut [f32; FRAME], block_ns: Option<u64>) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = std::time::Instant::now();
+        let clock_started = self.clock.map(|c| c());
+        if !self.pending_begun {
+            *out = [0.0; FRAME];
+            return;
+        }
+        let ran = self.end_inner(out);
+        #[cfg(not(target_arch = "wasm32"))]
+        let std_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        #[cfg(target_arch = "wasm32")]
+        let std_ns = 0u64;
+        let ns = match (block_ns, self.clock, clock_started) {
+            (Some(ns), _, _) => ns,
+            (None, Some(c), Some(t0)) => c().saturating_sub(t0),
+            _ => std_ns,
+        };
+        self.after_block(ran, ns);
+    }
+
+    /// The end of a begun block, into `out`; answers whether the model ran.
+    fn end_inner(&mut self, out: &mut [f32; FRAME]) -> bool {
+        self.pending_begun = false;
+        #[cfg_attr(not(feature = "dfn3"), allow(unused_mut))]
+        let mut active = self.pending_active;
+        #[cfg(feature = "dfn3")]
+        let mut ran = false;
+        #[cfg(not(feature = "dfn3"))]
+        let ran = false;
+        #[cfg(feature = "dfn3")]
+        if let Some(strong) = self.strong.as_mut() {
+            let block_no = self.shared.blocks.load(Ordering::Relaxed);
+            let o = strong.end(&mut self.pending, block_no);
+            ran = o.ran;
+            if o.active {
                 active = Mode::Strong;
             }
         }
+        *out = self.pending;
         self.shared.active.store(active as u8, Ordering::Relaxed);
+        ran
+    }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        #[cfg(target_arch = "wasm32")]
-        let ns = 0u64;
+    /// After a block: Strong's rules on its time, and the counters.
+    fn after_block(&mut self, ran: bool, ns: u64) {
         #[cfg(feature = "dfn3")]
         self.judge_strong(ran, ns);
+        #[cfg(not(feature = "dfn3"))]
+        let _ = ran;
         self.count(ns);
     }
 
@@ -650,7 +900,22 @@ impl Stage {
         if let Some(layer) = taken {
             self.strong = Some(layer.0);
             self.shared.handover_ready.store(false, Ordering::Release);
+            // The model starts mid-call: its first blocks get the start's grace.
+            self.open_auto_grace();
         }
+    }
+
+    /// Opens (or extends) a grace window of [`StageControl::set_auto_grace`]'s length from
+    /// this block. Atomics only.
+    fn open_auto_grace(&self) {
+        let s = &self.shared;
+        let n = s.auto_grace_blocks.load(Ordering::Relaxed);
+        if n == 0 {
+            return;
+        }
+        let until = s.blocks.load(Ordering::Relaxed).saturating_add(n);
+        s.grace_until.fetch_max(until, Ordering::Relaxed);
+        s.grace_opens.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Runs the model on `input`; its output (for the block before) lands in `self.wet`.
@@ -675,7 +940,8 @@ impl Stage {
             s.model_blocks.fetch_add(1, Ordering::Relaxed);
             let force = s.force_step_down.swap(false, Ordering::Relaxed);
             let rules = s.step_down_rules.load(Ordering::Relaxed);
-            strong.judge(ns, block_no, rules, force);
+            let grace_until = s.grace_until.load(Ordering::Relaxed);
+            strong.judge(ns, block_no, rules, force, grace_until);
         }
         s.strong_state
             .store(strong.state(block_no + 1).code(), Ordering::Relaxed);

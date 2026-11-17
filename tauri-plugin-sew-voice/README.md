@@ -62,9 +62,24 @@ With feature `dfn3`, `standard` runs DeepFilterNet3's low-latency model (by Hend
 and the DeepFilterNet authors; MIT OR Apache-2.0), with RNNoise kept beside it as its automatic
 step-down, on desktop and, after the OS's voice processing, on phones; see "Shipping
 DeepFilterNet3 in your app" below. Without the weights `standard` is RNNoise. The state then
-also carries `model` (`dfn3`, `rnnoise`), `model_reason` (why it is RNNoise) and `step_downs`.
+also carries `model` (`dfn3`, `rnnoise`), `model_reason` (why it is RNNoise) and `step_downs`,
+and for a call's log the stage's timing: `step_down_reason`, `last_step_down_ms_ago`,
+`slowest_block_us`, `blocks_over_budget`, `in_grace` and kessel-audio's
+`capture_stage_strikes`, `capture_stage_bypassed` and `capture_stage_p99_us`. A call's start,
+the audio session activating, a route change, a camera starting and the app's lifecycle
+(Tauri's resumed event, a window's focus, `VoiceControl::app_scene`) each open a short grace
+window in which the stage keeps the model through the moment's load (`in_grace: true`).
 
 Not affiliated with or endorsed by LiveKit.
+
+- Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
+  repository at each release, so pull requests are not merged there)
+- API documentation: <https://docs.rs/tauri-plugin-sew-voice>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `tauri-plugin-sew-voice` form, which labels the issue `crate:tauri-plugin-sew-voice`
+- Security problems: report them privately, as
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
 
 ## Features
 
@@ -110,6 +125,11 @@ Not affiliated with or endorsed by LiveKit.
   rustls crypto provider (`Builder::crypto_provider`) and your app installs no process default
   (`CryptoProvider::install_default`). Without it, that case fails the join (`engine_stopped`,
   the detail naming `no_crypto_provider`; docs/native-voice-sdk.md §1).
+- `dfn3` (off by default): `standard` noise removal runs DeepFilterNet3's low-latency model,
+  with RNNoise as its step-down (sew-call-client's `dfn3`); see "Shipping DeepFilterNet3 in
+  your app" below.
+- `noise-bench` (debug builds only, never in `default`): `VoiceControl::noise_bench`, the
+  noise removal stage on the device's microphone for a while, reported as JSON.
 - `sim-software-key` (off; iOS simulator and x86 Android emulator builds only, refused
   elsewhere): `SimSoftwareKey`, a software stand-in for the hardware key.
 - With no features: the plugin's core (`VoiceService`, the JSON shapes in `wire`, the engine
@@ -117,42 +137,50 @@ Not affiliated with or endorsed by LiveKit.
 
 ## Usage
 
-The crate is not published on crates.io yet, because the voice engine it runs,
-`sew-call-client`, is not. Its WebRTC stack is Alakazam Labs' fork of `str0m`, here
-`sew-str0m` 0.25.3, from crates.io like `sew-e2ee`, `kessel-audio` and `kessel-video`. Until
-the engine is on crates.io,
-get it from the read-only [sew-crates](https://github.com/Alakazam-211/sew-crates) repository,
-which holds it with the Sew crates it depends on: clone it into your project (for example as
-`third_party/sew-crates`) and copy the `[patch.crates-io]` rows its README lists into your
-app's workspace root. It needs a Sew server to join calls on (see the same README).
+The crate is on crates.io, with the voice engine it runs, `sew-call-client`, and every crate
+they depend on: the Sew crates, Alakazam Labs' fork of `str0m` (`sew-str0m` 0.25.5) and K2's
+`kessel-audio` and `kessel-video`. A dependency line is all it needs. It needs a Sew server to
+join calls on (see the [sew-crates](https://github.com/Alakazam-211/sew-crates) README).
 
 `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.8.1"
+tauri-plugin-sew-voice = "0.8.2"
 # For the example provider below (sew-call-client's README):
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
 serde_json = "1"
 ```
 
-`src-tauri/src/main.rs`:
-
 `MyJoinProvider` is your app's implementation of `sew_call_client::JoinProvider` (re-exported
 here as `tauri_plugin_sew_voice::JoinProvider`): it asks Sew for the join answer with the app's
-own session. `sew-call-client`'s README has a complete one.
+own session. `sew-call-client`'s README has a complete one. The plugin goes on the app's Tauri
+builder:
 
 ```rust
+use tauri_plugin_sew_voice::{Builder, JoinProvider};
+
+/// Adds Sew voice calls to the app, signing in through `provider`.
+fn with_sew_voice<R: tauri::Runtime>(
+    app: tauri::Builder<R>,
+    provider: impl JoinProvider,
+) -> tauri::Builder<R> {
+    app.plugin(Builder::new(provider).build())
+}
+```
+
+and in `src-tauri/src/main.rs`:
+
+```rust,ignore
 fn main() {
     let provider = MyJoinProvider {
         http: reqwest::Client::new(),
         api_base: url::Url::parse("https://chat.example.com/").expect("url"),
         session_token: load_session(), // your app's Sew session, kept in Rust
     };
-    tauri::Builder::default()
-        .plugin(tauri_plugin_sew_voice::Builder::new(provider).build())
+    with_sew_voice(tauri::Builder::default(), provider)
         .run(tauri::generate_context!())
         .expect("tauri");
 }

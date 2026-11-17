@@ -384,9 +384,17 @@ fn grouped(w: &[f32], groups: usize, i: usize, h: usize, x: &[f32], out: &mut [f
     }
 }
 
-/// One GRU step (ONNX's GRU with `linear_before_reset`), `h` updated in place.
-fn gru(l: &Gru, x: &[f32], h: &mut [f32], gates: &mut [f32], rec: &mut [f32]) {
+// One GRU step (ONNX's GRU with `linear_before_reset`) in two halves of about the same work,
+// so that a caller can spread it: [`gru_in`] then [`gru_rec`].
+
+/// A GRU step's first half: the input's part of the gates, `gates = W x`.
+fn gru_in(l: &Gru, x: &[f32], gates: &mut [f32]) {
     matvec(&l.w, x, gates);
+}
+
+/// A GRU step's second half: the state's part (`rec = R h`) and the gates; `h` updated in
+/// place.
+fn gru_rec(l: &Gru, h: &mut [f32], gates: &[f32], rec: &mut [f32]) {
     matvec(&l.r, h, rec);
     let (wb, rb) = l.b.split_at(3 * H);
     for k in 0..H {
@@ -526,15 +534,15 @@ fn skip_add(p: &(Vec<f32>, Vec<f32>), x: &[f32], add: &[f32], out: &mut [f32]) {
 
 // ---- The three networks --------------------------------------------------------------------
 
-/// The encoder on one frame: `erb` (32 normalised ERB features) and `spec` (96 bins of the
-/// normalised spectrum, real parts then imaginary parts). Fills `s.e0..s.e3`, `s.c0` and
-/// `s.emb`; answers the local SNR estimate in dB.
-pub(crate) fn encode(
+/// The encoder's first part on one frame: `erb` (32 normalised ERB features) and `spec` (96
+/// bins of the normalised spectrum, real parts then imaginary parts). Fills `s.e0..s.e3` and
+/// `s.c0`, and runs the embedding GRU's first half; [`encode_b`] finishes.
+pub(crate) fn encode_a(
     w: &Weights,
     s: &mut NetState,
     erb: &[f32; NB_ERB],
     spec: &[f32; 2 * NB_DF],
-) -> f32 {
+) {
     let mut acc = [0.0f32; C];
     // erb_conv0: 1 -> 64 channels, 3x3, causal over 3 frames, bias, ReLU.
     {
@@ -588,36 +596,43 @@ pub(crate) fn encode(
     // The embedding GRU: grouped in (ReLU), GRU, grouped out (ReLU).
     grouped(&w.e_gru_in, 16, 32, 32, &s.s_a[..H], &mut s.s_b[..H]);
     relu(&mut s.s_b[..H]);
-    gru(
-        &w.e_gru,
-        &s.s_b[..H],
-        &mut s.e_h,
-        &mut s.s_gates,
-        &mut s.s_rec,
-    );
+    gru_in(&w.e_gru, &s.s_b[..H], &mut s.s_gates);
+}
+
+/// The encoder's second part: the embedding GRU's second half and its output; fills `s.emb`
+/// and answers the local SNR estimate in dB.
+pub(crate) fn encode_b(w: &Weights, s: &mut NetState) -> f32 {
+    gru_rec(&w.e_gru, &mut s.e_h, &s.s_gates, &mut s.s_rec);
     grouped(&w.e_gru_out, 16, 32, 32, &s.e_h, &mut s.emb);
     relu(&mut s.emb);
     sigmoid(dot(&s.emb, &w.e_lsnr_w) + w.e_lsnr_b) * 50.0 - 15.0
 }
 
-/// The ERB decoder: the 32 band gains (0 to 1) from the encoder's outputs in `s`.
-pub(crate) fn decode_erb(w: &Weights, s: &mut NetState, gains: &mut [f32; NB_ERB]) {
+// The ERB decoder: the 32 band gains (0 to 1) from the encoder's outputs in `s`, in four parts
+// (half a GRU each, about the same work) so that a caller can spread a block's work over time;
+// run one after the other they are the whole decoder.
+
+/// The ERB decoder's first part: its input layer and the first GRU's first half.
+pub(crate) fn decode_erb_a(w: &Weights, s: &mut NetState) {
     grouped(&w.d_gru_in, 16, 32, 32, &s.emb, &mut s.s_a[..H]);
     relu(&mut s.s_a[..H]);
-    gru(
-        &w.d_gru0,
-        &s.s_a[..H],
-        &mut s.d_h0,
-        &mut s.s_gates,
-        &mut s.s_rec,
-    );
-    gru(
-        &w.d_gru1,
-        &s.d_h0,
-        &mut s.d_h1,
-        &mut s.s_gates,
-        &mut s.s_rec,
-    );
+    gru_in(&w.d_gru0, &s.s_a[..H], &mut s.s_gates);
+}
+
+/// The ERB decoder's second part: the first GRU's second half.
+pub(crate) fn decode_erb_a2(w: &Weights, s: &mut NetState) {
+    gru_rec(&w.d_gru0, &mut s.d_h0, &s.s_gates, &mut s.s_rec);
+}
+
+/// The ERB decoder's third part: the second GRU's first half.
+pub(crate) fn decode_erb_b(w: &Weights, s: &mut NetState) {
+    gru_in(&w.d_gru1, &s.d_h0, &mut s.s_gates);
+}
+
+/// The ERB decoder's fourth part: the second GRU's second half and the transposed
+/// convolutions to the gains.
+pub(crate) fn decode_erb_b2(w: &Weights, s: &mut NetState, gains: &mut [f32; NB_ERB]) {
+    gru_rec(&w.d_gru1, &mut s.d_h1, &s.s_gates, &mut s.s_rec);
     // The embedding as 8 bins of 64 channels.
     grouped(&w.d_gru_out, 16, 32, 32, &s.d_h1, &mut s.s_b[..H]);
     relu(&mut s.s_b[..H]);
@@ -663,9 +678,13 @@ pub(crate) fn decode_erb(w: &Weights, s: &mut NetState, gains: &mut [f32; NB_ERB
 /// Bins of the deep-filter pathway worked on side by side.
 const CONVP_BINS: usize = 8;
 
-/// The deep-filter decoder: the filter's complex taps, `coefs[f * 10 + 2 * o + {0: re, 1: im}]`
-/// for bin `f` and tap `o` (the oldest frame first).
-pub(crate) fn decode_df(w: &Weights, s: &mut NetState, coefs: &mut [f32; NB_DF * DF_ORDER * 2]) {
+// The deep-filter decoder: the filter's complex taps, `coefs[f * 10 + 2 * o + {0: re, 1: im}]`
+// for bin `f` and tap `o` (the oldest frame first), in six parts (half a GRU each), which run
+// one after the other are the whole decoder.
+
+/// The deep-filter decoder's first part: the pathway from `c0`, the GRU input layer and the
+/// first GRU's first half.
+pub(crate) fn decode_df_a(w: &Weights, s: &mut NetState) {
     // The pathway: c0 over the last 5 runs.
     s.c0_hist[s.c0_head].copy_from_slice(&s.c0);
     s.c0_head = (s.c0_head + 1) % CONVP_T;
@@ -712,10 +731,34 @@ pub(crate) fn decode_df(w: &Weights, s: &mut NetState, coefs: &mut [f32; NB_DF *
     // The GRU path.
     grouped(&w.f_gru_in, 8, 64, 64, &s.emb, &mut s.s_c[..H]);
     relu(&mut s.s_c[..H]);
-    let [h0, h1, h2] = &mut s.f_h;
-    gru(&w.f_gru[0], &s.s_c[..H], h0, &mut s.s_gates, &mut s.s_rec);
-    gru(&w.f_gru[1], &h0[..], h1, &mut s.s_gates, &mut s.s_rec);
-    gru(&w.f_gru[2], &h1[..], h2, &mut s.s_gates, &mut s.s_rec);
+    gru_in(&w.f_gru[0], &s.s_c[..H], &mut s.s_gates);
+}
+
+/// The deep-filter decoder's second part: the first GRU's second half.
+pub(crate) fn decode_df_a2(w: &Weights, s: &mut NetState) {
+    gru_rec(&w.f_gru[0], &mut s.f_h[0], &s.s_gates, &mut s.s_rec);
+}
+
+/// The deep-filter decoder's third part: the second GRU's first half.
+pub(crate) fn decode_df_b(w: &Weights, s: &mut NetState) {
+    gru_in(&w.f_gru[1], &s.f_h[0], &mut s.s_gates);
+}
+
+/// The deep-filter decoder's fourth part: the second GRU's second half.
+pub(crate) fn decode_df_b2(w: &Weights, s: &mut NetState) {
+    gru_rec(&w.f_gru[1], &mut s.f_h[1], &s.s_gates, &mut s.s_rec);
+}
+
+/// The deep-filter decoder's fifth part: the third GRU's first half.
+pub(crate) fn decode_df_c(w: &Weights, s: &mut NetState) {
+    gru_in(&w.f_gru[2], &s.f_h[1], &mut s.s_gates);
+}
+
+/// The deep-filter decoder's sixth part: the third GRU's second half, the skip and the output
+/// layer.
+pub(crate) fn decode_df_c2(w: &Weights, s: &mut NetState, coefs: &mut [f32; NB_DF * DF_ORDER * 2]) {
+    gru_rec(&w.f_gru[2], &mut s.f_h[2], &s.s_gates, &mut s.s_rec);
+    let h2 = &s.f_h[2];
     // Skip from the embedding, added.
     grouped(&w.f_skip, 16, 32, 32, &s.emb, &mut s.s_a[..H]);
     for (a, b) in s.s_a[..H].iter_mut().zip(h2.iter()) {

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pair-decline"
+description = "Enables the pair_decline command without any pre-configured scope."
+commands.allow = ["pair_decline"]
+
+[[permission]]
+identifier = "deny-pair-decline"
+description = "Denies the pair_decline command without any pre-configured scope."
+commands.deny = ["pair_decline"]

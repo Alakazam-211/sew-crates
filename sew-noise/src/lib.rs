@@ -41,7 +41,9 @@ mod strong;
 pub use resample::Linear;
 #[cfg(feature = "dfn3")]
 pub use stage::Dfn3Layer;
-pub use stage::{Mode, ModeUnavailable, Stage, StageControl, StageStats, warm_up_thread};
+pub use stage::{
+    DEFAULT_GRACE, Mode, ModeUnavailable, Stage, StageControl, StageStats, warm_up_thread,
+};
 pub use stream::StreamDenoiser;
 pub use strong::{StepDownReason, StrongState};
 

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-upload-bytes"
+description = "Enables the upload_bytes command without any pre-configured scope."
+commands.allow = ["upload_bytes"]
+
+[[permission]]
+identifier = "deny-upload-bytes"
+description = "Denies the upload_bytes command without any pre-configured scope."
+commands.deny = ["upload_bytes"]

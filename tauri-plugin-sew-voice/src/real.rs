@@ -888,6 +888,12 @@ impl VoiceEngine for CallClientEngine {
         self.inner.video.app_scene(scene.is_background());
     }
 
+    /// To the engine's [`sew_call_client::NoiseRemovalControl::app_scene_changed`]: the live
+    /// call's noise removal stage opens a grace window.
+    fn app_scene_changed(&self) {
+        self.inner.noise.app_scene_changed();
+    }
+
     #[cfg(feature = "video-core")]
     fn device_orientation(&self, degrees: u32) {
         self.inner.video.device_orientation(degrees);

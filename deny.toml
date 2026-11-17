@@ -8,9 +8,10 @@ all-features = false
 version = 2
 ignore = [
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 is unmaintained. Sew's assessment: it comes only through Tauri's GTK3 stack (glib-macros, gtk3-macros) and is a proc-macro, run at compile time only, with no code in the built binary." },
-  { id = "RUSTSEC-2026-0370", reason = "zvariant 4.2.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },
-  { id = "RUSTSEC-2026-0371", reason = "zbus_names 3.0.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },
-  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 4.2.0 is unmaintained. Sew's assessment: it is reached only through keyring (zbus, secret-service) behind sew-call-client's and the plugin's keyring-store feature, which is off by default." },
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; no known vulnerability. Reached through pbjson-types (protobuf well-known types for JSON) in sew-lkproto and through schemars (JSON Schema) in sew-proto. Clears when both move off chrono or Sew stops depending on them for it. Any vulnerability advisory on chrono blocks." },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant 4.2.0 is unmaintained; no known vulnerability. Reached only through keyring's Linux Secret Service backend (zbus 4, local session bus): a default dependency of tauri-plugin-sew-app, which keeps device sessions in the OS keychain, and behind the keyring-store feature (off by default) in sew-call-client and tauri-plugin-sew-voice. Clears when keyring moves to a maintained zbus. Any vulnerability advisory on this path blocks." },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names 3.0.0 is unmaintained; no known vulnerability. Reached only through keyring's Linux Secret Service backend (zbus 4, local session bus): a default dependency of tauri-plugin-sew-app, which keeps device sessions in the OS keychain, and behind the keyring-store feature (off by default) in sew-call-client and tauri-plugin-sew-voice. Clears when keyring moves to a maintained zbus. Any vulnerability advisory on this path blocks." },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 4.2.0 is unmaintained; no known vulnerability. Reached only through keyring's Linux Secret Service backend (zbus 4, local session bus): a default dependency of tauri-plugin-sew-app, which keeps device sessions in the OS keychain, and behind the keyring-store feature (off by default) in sew-call-client and tauri-plugin-sew-voice. Clears when keyring moves to a maintained zbus. Any vulnerability advisory on this path blocks." },
 ]
 
 [licenses]
@@ -26,8 +27,9 @@ allow = [
   "Unicode-3.0",
 ]
 confidence-threshold = 0.9
-# Exactly seven crates outside the allowlist are allowed by name, each with its own licence
-# (ruled 2026-11-03); any other crate with a licence outside the allowlist fails.
+# Exactly eight crates outside the allowlist are allowed by name, each with its own licence
+# (ruled 2026-11-03, tiny-keccak 2026-11-08); any other crate with a licence outside the
+# allowlist fails.
 exceptions = [
   # Tauri 2's own MPL-2.0 crates (HTML tooling through tauri-utils; option-ext through dirs),
   # in tauri-plugin-sew-voice's default graph.
@@ -40,6 +42,10 @@ exceptions = [
   { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
   # A build-time dependency through Tauri.
   { crate = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
+  # CC0-1.0 allowed for tiny-keccak by name, 2026-11-08 (card 70d82c46): build-time only,
+  # through const-random-macro (a proc-macro; rust-ini, from tauri-plugin-deep-link on Linux,
+  # in tauri-plugin-sew-app's default graph).
+  { name = "tiny-keccak", allow = ["CC0-1.0"] },
 ]
 
 [bans]

@@ -58,6 +58,9 @@
 //! webview's WebCodecs; keys never leave Rust. The engine side is in [`video`]: every video
 //! method of [`VoiceEngine`] and [`CallHandle`] defaults to "no video", so an engine without it
 //! is unchanged.
+// Test code may unwrap and expect: the packaged crate has no clippy.toml (whose
+// allow-unwrap-in-tests and allow-expect-in-tests say so in this repository).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod details;
 pub mod engine;
@@ -141,8 +144,8 @@ pub use wire::{
 /// The microphone's noise removal (`set_noise_removal`, `noise_removal`, the `noise_removal`
 /// event).
 pub use wire::{
-    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode,
-    SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason,
+    PhoneAudioMode, SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
 };
 
 // On phones the device key is the host's (Builder::device_key_store, or a hardware key):
@@ -229,3 +232,8 @@ pub const VIDEO_CODEC_COMMANDS: [&str; 1] = ["set_video_codec_preference"];
 /// `noise_removal` event carries each change. The engine keeps the setting until the process
 /// ends; persisting it is the host's job.
 pub const NOISE_COMMANDS: [&str; 2] = ["set_noise_removal", "noise_removal"];
+
+/// README.md's examples, compiled and run as doc tests (with the `tauri` feature).
+#[cfg(all(doctest, feature = "tauri"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

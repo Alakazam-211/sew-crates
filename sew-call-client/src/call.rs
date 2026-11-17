@@ -1062,6 +1062,16 @@ impl Call {
         }
     }
 
+    /// The device is busy with something else for a moment (a camera starting): the call's
+    /// noise removal stage opens a grace window. Nothing without a stage.
+    #[cfg_attr(not(feature = "video-core"), allow(dead_code))]
+    pub(crate) fn noise_grace(&self) {
+        let src = self.shared.noise.lock().ok().and_then(|n| n.clone());
+        if let Some(src) = src {
+            src.grace();
+        }
+    }
+
     /// Mute and deafen (`None` leaves it). Deafened implies muted; un-deafening returns
     /// `muted` to its value before the deafen.
     pub async fn mute(&self, muted: Option<bool>, deafened: Option<bool>) -> Result<(), CallError> {

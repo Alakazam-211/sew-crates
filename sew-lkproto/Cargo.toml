@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-lkproto"
-version = "0.10.3"
+version = "0.10.4"
 build = false
 include = [
     "src/**",
@@ -29,7 +29,21 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "LiveKit protocol 17 types (generated from livekit/protocol a4f4b5c0c23f without protoc) and Sew's protocol-version gates, rewritten from a written behaviour specification."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/sew-lkproto"
+documentation = "https://docs.rs/sew-lkproto"
 readme = "README.md"
+keywords = [
+    "livekit",
+    "protobuf",
+    "webrtc",
+    "protocol",
+    "sew",
+]
+categories = [
+    "api-bindings",
+    "network-programming",
+    "multimedia",
+]
 license = "Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 

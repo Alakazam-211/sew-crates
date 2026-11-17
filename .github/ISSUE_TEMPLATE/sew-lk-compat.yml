@@ -1,0 +1,27 @@
+name: sew-lk-compat
+description: A bug, a question or a request about the sew-lk-compat crate.
+labels: ["crate:sew-lk-compat"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for `sew-lk-compat`. A problem that puts users at risk is reported privately, as [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version of sew-lk-compat you use (from your Cargo.lock).
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead. A minimal reproduction helps most.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, architecture and the output of rustc --version.

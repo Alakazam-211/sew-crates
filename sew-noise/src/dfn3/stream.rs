@@ -5,7 +5,9 @@
 //! gains on the current frame and a 5-tap deep filter over the lowest 96 bins.
 //!
 //! Everything is allocated in [`Dfn3Stream::new`]; [`Dfn3Stream::process`] allocates nothing,
-//! takes no lock and does not panic.
+//! takes no lock and does not panic. A hop can also be spread over time: [`Dfn3Stream::begin`],
+//! [`Dfn3Stream::step`] (half a GRU's worth of the networks at a time) and [`Dfn3Stream::end`],
+//! with the same output bit for bit.
 //!
 //! Ported from libDF, DeepFilterNet's Rust runtime: `libDF/src/lib.rs` (the STFT, the ERB
 //! bands, the feature normalisation) and `libDF/src/tract.rs` (the per-hop path: the SNR
@@ -83,6 +85,30 @@ fn vorbis_window() -> Vec<f32> {
         .collect()
 }
 
+/// Where a hop is ([`Dfn3Stream::begin`], [`Dfn3Stream::step`], [`Dfn3Stream::end`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// No hop begun.
+    Idle,
+    /// The encoder's first part runs next (then its second).
+    Encoder,
+    EncoderB,
+    /// The ERB decoder's parts run next (four).
+    ErbA,
+    ErbA2,
+    ErbB,
+    ErbB2,
+    /// The deep-filter decoder's parts run next (six).
+    DfA,
+    DfA2,
+    DfB,
+    DfB2,
+    DfC,
+    DfC2,
+    /// The networks are done (or the hop is muted as silence); [`Dfn3Stream::end`] finishes it.
+    Done,
+}
+
 /// One stream's state.
 pub(crate) struct Dfn3Stream {
     model: Arc<Dfn3Model>,
@@ -115,6 +141,15 @@ pub(crate) struct Dfn3Stream {
     cplx_feat: [f32; 2 * NB_DF],
     gains: [f32; NB_ERB],
     coefs: [f32; NB_DF * DF_ORDER * 2],
+    /// The hop in progress: where it is, its newest spectrum slot, the SNR estimate and what it
+    /// runs, and whether it is muted as silence.
+    phase: Phase,
+    newest: usize,
+    lsnr: f32,
+    apply_gains: bool,
+    gain_zeros: bool,
+    apply_df: bool,
+    skipped: bool,
 }
 
 impl std::fmt::Debug for Dfn3Stream {
@@ -162,6 +197,13 @@ impl Dfn3Stream {
             gains: [0.0; NB_ERB],
             coefs: [0.0; NB_DF * DF_ORDER * 2],
             model,
+            phase: Phase::Idle,
+            newest: 0,
+            lsnr: 0.0,
+            apply_gains: false,
+            gain_zeros: false,
+            apply_df: false,
+            skipped: false,
         };
         s.clear();
         s
@@ -183,6 +225,7 @@ impl Dfn3Stream {
         }
         self.head = 0;
         self.skip_counter = 0;
+        self.phase = Phase::Idle;
     }
 
     /// The synthesis memory: what this stream would add to the start of its next output hop.
@@ -236,8 +279,16 @@ impl Dfn3Stream {
     }
 
     /// One hop in, one hop out (libDF's `DfTract::process` for one channel). Answers the local
-    /// SNR estimate (dB).
+    /// SNR estimate (dB). The same as [`Self::begin`], [`Self::step`] until it answers true,
+    /// and [`Self::end`].
     pub(crate) fn process(&mut self, noisy: &[f32; HOP], enh: &mut [f32; HOP]) -> f32 {
+        self.begin(noisy);
+        self.end(enh)
+    }
+
+    /// Starts a hop: the silence check, the analysis and the features (a small part of the
+    /// work). The networks run in [`Self::step`]s; [`Self::end`] finishes the hop.
+    pub(crate) fn begin(&mut self, noisy: &[f32; HOP]) {
         let e: f32 = noisy.iter().map(|x| x * x).sum();
         if e / HOP as f32 > 1e-7 {
             self.skip_counter = 0;
@@ -245,15 +296,17 @@ impl Dfn3Stream {
             self.skip_counter += 1;
         }
         if self.skip_counter > 5 {
-            enh.fill(0.0);
-            return -15.0;
+            self.skipped = true;
+            self.phase = Phase::Done;
+            return;
         }
+        self.skipped = false;
         self.analysis(noisy);
         // The oldest slot becomes the newest.
-        let newest = self.head;
+        self.newest = self.head;
         self.head = (self.head + 1) % DF_ORDER;
-        self.rolling_y[newest].copy_from_slice(&self.spec);
-        self.rolling_x[newest].copy_from_slice(&self.spec);
+        self.rolling_y[self.newest].copy_from_slice(&self.spec);
+        self.rolling_x[self.newest].copy_from_slice(&self.spec);
 
         // Features of the newest frame.
         let mut k0 = 0;
@@ -276,42 +329,140 @@ impl Dfn3Stream {
             self.cplx_feat[f] = x.re / d;
             self.cplx_feat[NB_DF + f] = x.im / d;
         }
-        let model = &self.model;
-        let profile = self.profile;
-        let lap = |prof: &mut [u64; 3], k: usize, t: Option<std::time::Instant>| {
-            if let Some(t) = t {
-                prof[k] += u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            }
-            profile.then(std::time::Instant::now)
-        };
-        let t0 = profile.then(std::time::Instant::now);
-        let lsnr = net::encode(
-            &model.weights,
-            &mut self.net,
-            &self.erb_feat,
-            &self.cplx_feat,
-        );
-        let t1 = lap(&mut self.prof_ns, 0, t0);
-        let (apply_gains, gain_zeros, apply_df) = if lsnr < MIN_DB_THRESH {
-            (false, true, false)
-        } else if lsnr > MAX_DB_ERB_THRESH {
-            (false, false, false)
-        } else if lsnr > MAX_DB_DF_THRESH {
-            (true, false, false)
+        self.phase = Phase::Encoder;
+    }
+
+    /// Parts of the networks' work still to run in this hop (an upper bound until the encoder
+    /// has run: which decoders run depends on its SNR estimate).
+    pub(crate) fn steps_left(&self) -> u32 {
+        let df = if self.apply_df { 6 } else { 0 };
+        match self.phase {
+            Phase::Encoder => 12,
+            Phase::EncoderB => 11,
+            Phase::ErbA => 4 + df,
+            Phase::ErbA2 => 3 + df,
+            Phase::ErbB => 2 + df,
+            Phase::ErbB2 => 1 + df,
+            Phase::DfA => 6,
+            Phase::DfA2 => 5,
+            Phase::DfB => 4,
+            Phase::DfB2 => 3,
+            Phase::DfC => 2,
+            Phase::DfC2 => 1,
+            Phase::Idle | Phase::Done => 0,
+        }
+    }
+
+    /// Runs one part of the networks' work (half a GRU and what goes with it); answers true
+    /// once none is left. The parts run the operations of a one-shot hop, in the same order, so
+    /// the output is the same bit for bit however the parts are spread.
+    pub(crate) fn step(&mut self) -> bool {
+        let t = self.profile.then(std::time::Instant::now);
+        let w = &self.model.weights;
+        let after_erb = if self.apply_df {
+            Phase::DfA
         } else {
-            (true, false, true)
+            Phase::Done
         };
-        if apply_gains {
-            net::decode_erb(&model.weights, &mut self.net, &mut self.gains);
-        } else if gain_zeros {
-            self.gains = [0.0; NB_ERB];
+        let k = match self.phase {
+            Phase::Idle | Phase::Done => return true,
+            Phase::Encoder => {
+                net::encode_a(w, &mut self.net, &self.erb_feat, &self.cplx_feat);
+                self.phase = Phase::EncoderB;
+                0
+            }
+            Phase::EncoderB => {
+                self.lsnr = net::encode_b(w, &mut self.net);
+                let lsnr = self.lsnr;
+                (self.apply_gains, self.gain_zeros, self.apply_df) = if lsnr < MIN_DB_THRESH {
+                    (false, true, false)
+                } else if lsnr > MAX_DB_ERB_THRESH {
+                    (false, false, false)
+                } else if lsnr > MAX_DB_DF_THRESH {
+                    (true, false, false)
+                } else {
+                    (true, false, true)
+                };
+                if self.gain_zeros {
+                    self.gains = [0.0; NB_ERB];
+                }
+                self.phase = if self.apply_gains {
+                    Phase::ErbA
+                } else if self.apply_df {
+                    Phase::DfA
+                } else {
+                    Phase::Done
+                };
+                0
+            }
+            Phase::ErbA => {
+                net::decode_erb_a(w, &mut self.net);
+                self.phase = Phase::ErbA2;
+                1
+            }
+            Phase::ErbA2 => {
+                net::decode_erb_a2(w, &mut self.net);
+                self.phase = Phase::ErbB;
+                1
+            }
+            Phase::ErbB => {
+                net::decode_erb_b(w, &mut self.net);
+                self.phase = Phase::ErbB2;
+                1
+            }
+            Phase::ErbB2 => {
+                net::decode_erb_b2(w, &mut self.net, &mut self.gains);
+                self.phase = after_erb;
+                1
+            }
+            Phase::DfA => {
+                net::decode_df_a(w, &mut self.net);
+                self.phase = Phase::DfA2;
+                2
+            }
+            Phase::DfA2 => {
+                net::decode_df_a2(w, &mut self.net);
+                self.phase = Phase::DfB;
+                2
+            }
+            Phase::DfB => {
+                net::decode_df_b(w, &mut self.net);
+                self.phase = Phase::DfB2;
+                2
+            }
+            Phase::DfB2 => {
+                net::decode_df_b2(w, &mut self.net);
+                self.phase = Phase::DfC;
+                2
+            }
+            Phase::DfC => {
+                net::decode_df_c(w, &mut self.net);
+                self.phase = Phase::DfC2;
+                2
+            }
+            Phase::DfC2 => {
+                net::decode_df_c2(w, &mut self.net, &mut self.coefs);
+                self.phase = Phase::Done;
+                2
+            }
+        };
+        if let Some(t) = t {
+            self.prof_ns[k] += u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX);
         }
-        let t2 = lap(&mut self.prof_ns, 1, t1);
-        if apply_df {
-            net::decode_df(&model.weights, &mut self.net, &mut self.coefs);
+        self.phase == Phase::Done
+    }
+
+    /// Finishes the hop begun by [`Self::begin`]: any work not yet stepped, then the gains, the
+    /// deep filter and the synthesis. Answers the local SNR estimate (dB).
+    pub(crate) fn end(&mut self, enh: &mut [f32; HOP]) -> f32 {
+        while !self.step() {}
+        self.phase = Phase::Idle;
+        if self.skipped {
+            enh.fill(0.0);
+            return -15.0;
         }
-        lap(&mut self.prof_ns, 2, t2);
-        if apply_gains || gain_zeros {
+        let newest = self.newest;
+        if self.apply_gains || self.gain_zeros {
             let spec = &mut self.rolling_y[newest];
             let mut k = 0;
             for (&n, &g) in self.erb.iter().zip(&self.gains) {
@@ -325,7 +476,7 @@ impl Dfn3Stream {
             self.skip_counter += 1;
         }
         self.out_spec.copy_from_slice(&self.rolling_y[newest]);
-        if apply_df {
+        if self.apply_df {
             // out[f] = sum over taps o (oldest frame first) of x_o[f] * c[f][o].
             for v in &mut self.out_spec[..NB_DF] {
                 *v = Complex32::default();
@@ -339,6 +490,6 @@ impl Dfn3Stream {
             }
         }
         self.synthesis(enh);
-        lsnr
+        self.lsnr
     }
 }

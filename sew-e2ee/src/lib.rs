@@ -100,3 +100,8 @@ pub mod __bridge {
         Caps::from_bridge(sender_key_index, sdk, sdk_version, browser)
     }
 }
+
+/// README.md's examples, compiled and run as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

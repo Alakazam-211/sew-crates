@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-e2ee"
-version = "0.10.3"
+version = "0.10.4"
 build = false
 include = [
     "src/**",
@@ -29,8 +29,16 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "The client library for end-to-end encrypted Sew calls: MLS (openmls) per call, per-sender frame keys, the 64-slot ring and the two-phase switch, recovery, the recorder key handoff, and the key-provider bridge contract. Sans-IO; builds for Linux, macOS, Windows and wasm32."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/sew-e2ee"
 documentation = "https://docs.rs/sew-e2ee"
 readme = "README.md"
+keywords = [
+    "e2ee",
+    "mls",
+    "openmls",
+    "voice",
+    "encryption",
+]
 categories = ["cryptography"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
@@ -91,10 +99,10 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-mls-crypto]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.sew-proto]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.sha2]
 version = "0.10"

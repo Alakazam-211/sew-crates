@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.4 (2026-11-17)
+
+- The version follows Sew 0.10.4. No API or behaviour change. The package's metadata and
+  README follow the published-crate standard (issues, MSRV, features, a compiling example that
+  runs as a doc test).
+
 ## 0.10.3 (2026-11-16)
 
 - The version follows Sew 0.10.3. No API or behaviour change.

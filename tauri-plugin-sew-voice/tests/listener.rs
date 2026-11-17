@@ -5,7 +5,7 @@
 //! own rules (leave twice, `not_in_call`, the network and audio-session pass-through).
 
 // The helpers (not only #[test] fns) unwrap: a test that cannot set up must fail loudly.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 

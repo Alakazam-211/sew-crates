@@ -1,0 +1,11 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "upload-file"
+description = """
+`upload_file`: the app reads a file at a path the page names and posts its bytes to an upload
+or an image route. The page can name any file the app may read, so grant it only to a bundled UI
+that takes the path from the person's own pick (a file dialog), never to a window that loads
+other pages.
+"""
+permissions = ["allow-upload-file"]

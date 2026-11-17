@@ -199,6 +199,8 @@ struct FakeVideoEngine {
     permission_requests: usize,
     /// Every `app_scene`, in order.
     scenes: Vec<AppScene>,
+    /// How many times `app_scene_changed` was called.
+    scene_changes: usize,
     /// Every `device_orientation`, in order.
     orientations: Vec<u32>,
     /// The decoded fallback's decoders ([`FakeEngine::set_video_decoder`]).
@@ -341,6 +343,11 @@ impl FakeEngine {
     /// Every [`VoiceEngine::app_scene`], in order.
     pub fn app_scenes(&self) -> Vec<AppScene> {
         lock(&self.video).scenes.clone()
+    }
+
+    /// How many times [`VoiceEngine::app_scene_changed`] was called.
+    pub fn app_scene_changes(&self) -> usize {
+        lock(&self.video).scene_changes
     }
 
     /// Every [`VoiceEngine::device_orientation`], in order.
@@ -885,6 +892,10 @@ impl VoiceEngine for FakeEngine {
 
     fn app_scene(&self, scene: AppScene) {
         lock(&self.video).scenes.push(scene);
+    }
+
+    fn app_scene_changed(&self) {
+        lock(&self.video).scene_changes += 1;
     }
 
     fn device_orientation(&self, degrees: u32) {

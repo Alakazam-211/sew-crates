@@ -1,0 +1,179 @@
+{
+  "_comment": "The native lane, lane 1: every exchange in order, as any App server must answer it. Requests: {{name}} is a value an earlier step saved. Response bodies match exactly, except strings of the form <kind>: <device_bearer> sewdv_ and 43 base64url, <code> 43 base64url, <session_id> 22 base64url, <timestamp> an ISO 8601 time, <media_url> a wss:// URL, <app_url> an https:// URL, <door_code> the host door's one-time code (k2lgn_ and base64url), <any> anything. A step with \"to\": \"host\" is the native client's own request to the host's sign-in door (K2's /.k2/auth/* on the App's address), not to the lane. Headers listed must be present with that value. The people and channels are the test's: bob signs in with his password; channel 5 is a voice channel, 6 a DM; recording 77 (channel 7, started by alice, 1001) asks for consent: the 409's detail is Sew's own error.details (reason, the recording as bob sees it, auto, consent_prompt) and the consent's 200 is Sew's recording as bob sees it after his answer. Record and Stop (voice/recording) pass Sew's answers unchanged: bob starts recording 79 in channel 5 and stops it; recording 77's room requires its recording while two or more are in it, so its stop is Sew's 422 recording_required. Last, bob signs in on a second install through the host's sign-in door: the lane begins (an id and a PKCE challenge; the verifier stays on the server), the client posts his password with the challenge to the host's door, and the lane trades the door's code for a device session.",
+  "lane": 1,
+  "steps": [
+    {
+      "name": "info",
+      "request": { "method": "GET", "path": "/sew/native/info" },
+      "response": { "status": 200, "body": { "ok": true, "lane": 1, "identity": "<any>", "signin": { "password": true, "pairing": "<any>", "door": true }, "voice": true, "recording": true, "signalling": "lane", "call_door": "lane", "shell": { "min": "<any>" } } }
+    },
+    {
+      "name": "sign_in_refused_to_a_page",
+      "request": { "method": "POST", "path": "/sew/native/signin/password", "headers": { "origin": "https://app.test" }, "body": { "username": "bob", "password": "lane-test-bob-pw", "device": { "id": "install-a", "name": "Laptop" } } },
+      "response": { "status": 403, "body": { "ok": false, "code": "native_only", "detail": null, "error": { "code": "native_only", "hint": "<any>" } } }
+    },
+    {
+      "name": "sign_in_bad_device",
+      "request": { "method": "POST", "path": "/sew/native/signin/password", "body": { "username": "bob", "password": "lane-test-bob-pw", "device": { "id": "", "name": "Laptop" } } },
+      "response": { "status": 422, "body": { "ok": false, "code": "validation_failed", "detail": { "field": "device.id" }, "error": { "code": "validation_failed", "hint": "device.id is not valid", "details": { "field": "device.id" } } } }
+    },
+    {
+      "name": "sign_in",
+      "request": { "method": "POST", "path": "/sew/native/signin/password", "body": { "username": "bob", "password": "lane-test-bob-pw", "device": { "id": "install-a", "name": "Laptop" } } },
+      "response": {
+        "status": 200,
+        "body": { "ok": true, "token": "<device_bearer>", "member_id": "1002", "session": { "id": "<session_id>", "device_id": "install-a", "name": "Laptop", "created_at": "<timestamp>", "last_used_at": "<timestamp>", "expires_at": "<timestamp>" } }
+      },
+      "save": { "bearer": "token", "session": "session.id" }
+    },
+    {
+      "name": "whoami",
+      "request": { "method": "GET", "path": "/sew/native/whoami", "headers": { "authorization": "Bearer {{bearer}}" } },
+      "response": { "status": 200, "body": { "ok": true, "member": "<any>", "install_id": "<any>", "spaces": "<any>", "caps": "<any>", "identity": "<any>", "session": { "id": "{{session}}", "device_id": "install-a", "name": "Laptop", "created_at": "<timestamp>", "last_used_at": "<timestamp>", "expires_at": "<timestamp>" } } }
+    },
+    {
+      "name": "no_bearer",
+      "request": { "method": "GET", "path": "/sew/native/api/v1/me" },
+      "response": { "status": 401, "body": { "ok": false, "code": "unauthenticated", "detail": null, "error": { "code": "unauthenticated", "hint": "<any>" } } }
+    },
+    {
+      "name": "post_a_message",
+      "request": { "method": "POST", "path": "/sew/native/api/v1/channels/5/messages", "headers": { "authorization": "Bearer {{bearer}}" }, "body": { "body": "hello from the shell" } },
+      "response": { "status": 201, "body": { "id": "501", "body": "hello from the shell" } }
+    },
+    {
+      "name": "auth_routes_are_not_proxied",
+      "request": { "method": "POST", "path": "/sew/native/api/v1/auth/logout", "headers": { "authorization": "Bearer {{bearer}}" }, "body": {} },
+      "response": { "status": 403, "body": { "ok": false, "code": "forbidden", "detail": null, "error": { "code": "forbidden", "hint": "<any>" } } }
+    },
+    {
+      "name": "ticket",
+      "request": { "method": "POST", "path": "/sew/native/ticket", "headers": { "authorization": "Bearer {{bearer}}" }, "body": {} },
+      "response": { "status": 200, "body": { "ticket": "<any>", "url": "wss://app.test/sew/native/api/v1/gateway?v=1&encoding=json", "expires_in_ms": 30000 } }
+    },
+    {
+      "name": "handoff",
+      "request": { "method": "POST", "path": "/sew/native/handoff", "headers": { "authorization": "Bearer {{bearer}}" }, "body": {} },
+      "response": { "status": 200, "body": { "ok": true, "code": "<code>", "expires_in_ms": 60000 } },
+      "save": { "handoff": "code" }
+    },
+    {
+      "name": "handoff_redeem_by_the_page",
+      "request": { "method": "POST", "path": "/sew/native/handoff/redeem", "headers": { "origin": "https://app.test", "x-app-csrf": "1" }, "body": { "code": "{{handoff}}" } },
+      "response": { "status": 200, "headers": { "set-cookie": "<any>" }, "body": { "ok": true, "member_id": "1002" } }
+    },
+    {
+      "name": "handoff_code_is_single_use",
+      "request": { "method": "POST", "path": "/sew/native/handoff/redeem", "headers": { "origin": "https://app.test", "x-app-csrf": "1" }, "body": { "code": "{{handoff}}" } },
+      "response": { "status": 401, "body": { "ok": false, "code": "code_invalid", "detail": null, "error": { "code": "code_invalid", "hint": "<any>" } } }
+    },
+    {
+      "name": "voice_join",
+      "request": { "method": "POST", "path": "/sew/native/voice/join", "headers": { "authorization": "Bearer {{bearer}}" }, "body": { "target": "acme", "room": "5", "muted": false, "deafened": false, "rejoin": null } },
+      "response": {
+        "status": 200,
+        "body": {
+          "join": { "url": "wss://app.test/sew/native", "token": "<any>", "expires_at": "<timestamp>", "room": "r_room1", "state": "<any>", "call_credential": { "token": "<any>", "expires_at": "<timestamp>", "join_id": "<any>", "device_scope": "<any>" } },
+          "api_base": "https://app.test/sew/native/"
+        }
+      }
+    },
+    {
+      "name": "voice_join_consent_required",
+      "request": { "method": "POST", "path": "/sew/native/voice/join", "headers": { "authorization": "Bearer {{bearer}}" }, "body": { "target": "acme", "room": "7", "muted": false, "deafened": false, "rejoin": null } },
+      "response": {
+        "status": 409,
+        "body": {
+          "ok": false,
+          "code": "recording_consent_required",
+          "detail": { "reason": "recording_consent_required", "recording": { "id": "77", "channel_id": "7", "state": "recording", "started_by": "1001", "started_at": "2026-11-06T11:58:00.000Z", "auto": false, "message_id": "88", "mixed": true, "audio_keep_days": 30, "language": "en", "max_duration_ms": 14400000, "participants": [{ "member_id": "1001", "consent": "granted", "capture": "recorded" }], "my_consent": "pending", "consent_prompt": { "recording_id": "77", "notice_version": 357303234, "recorder_name": "Bobbin", "feature_label": "Sew Notes", "started_by": { "member_id": "1001", "display_name": "Alice" }, "room": { "channel_id": "7", "kind": "voice", "name": "lounge" }, "audio_keep_days": 30, "transcript": { "posted_to_channel": true, "readable_by": ["channel_members", "search", "agents"], "e2ee": false }, "admin_download": true, "decline_mode": "join_unrecorded", "recorded_now": ["1001"] } }, "auto": false, "consent_prompt": { "recording_id": "77", "notice_version": 357303234, "recorder_name": "Bobbin", "feature_label": "Sew Notes", "started_by": { "member_id": "1001", "display_name": "Alice" }, "room": { "channel_id": "7", "kind": "voice", "name": "lounge" }, "audio_keep_days": 30, "transcript": { "posted_to_channel": true, "readable_by": ["channel_members", "search", "agents"], "e2ee": false }, "admin_download": true, "decline_mode": "join_unrecorded", "recorded_now": ["1001"] } },
+          "error": { "code": "recording_consent_required", "hint": "<any>", "details": { "reason": "recording_consent_required", "recording": { "id": "77", "channel_id": "7", "state": "recording", "started_by": "1001", "started_at": "2026-11-06T11:58:00.000Z", "auto": false, "message_id": "88", "mixed": true, "audio_keep_days": 30, "language": "en", "max_duration_ms": 14400000, "participants": [{ "member_id": "1001", "consent": "granted", "capture": "recorded" }], "my_consent": "pending", "consent_prompt": { "recording_id": "77", "notice_version": 357303234, "recorder_name": "Bobbin", "feature_label": "Sew Notes", "started_by": { "member_id": "1001", "display_name": "Alice" }, "room": { "channel_id": "7", "kind": "voice", "name": "lounge" }, "audio_keep_days": 30, "transcript": { "posted_to_channel": true, "readable_by": ["channel_members", "search", "agents"], "e2ee": false }, "admin_download": true, "decline_mode": "join_unrecorded", "recorded_now": ["1001"] } }, "auto": false, "consent_prompt": { "recording_id": "77", "notice_version": 357303234, "recorder_name": "Bobbin", "feature_label": "Sew Notes", "started_by": { "member_id": "1001", "display_name": "Alice" }, "room": { "channel_id": "7", "kind": "voice", "name": "lounge" }, "audio_keep_days": 30, "transcript": { "posted_to_channel": true, "readable_by": ["channel_members", "search", "agents"], "e2ee": false }, "admin_download": true, "decline_mode": "join_unrecorded", "recorded_now": ["1001"] } } }
+        }
+      }
+    },
+    {
+      "name": "voice_consent",
+      "request": { "method": "POST", "path": "/sew/native/voice/consent", "headers": { "authorization": "Bearer {{bearer}}" }, "body": { "target": "acme", "room": "7", "recording_id": "77", "consent": true, "notice_version": 357303234, "device_id": "dev-1" } },
+      "response": { "status": 200, "body": { "id": "77", "channel_id": "7", "state": "recording", "started_by": "1001", "started_at": "2026-11-06T11:58:00.000Z", "auto": false, "message_id": "88", "mixed": true, "audio_keep_days": 30, "language": "en", "max_duration_ms": 14400000, "participants": [{ "member_id": "1001", "consent": "granted", "capture": "recorded" }, { "member_id": "1002", "consent": "granted" }], "my_consent": "granted" } }
+    },
+    {
+      "name": "voice_recording_start",
+      "request": { "method": "POST", "path": "/sew/native/voice/recording", "headers": { "authorization": "Bearer {{bearer}}" }, "body": { "target": "acme", "room": "5", "action": "start", "device_id": "dev-1" } },
+      "response": { "status": 200, "body": { "id": "79", "channel_id": "5", "state": "starting", "started_by": "1002", "started_at": "2026-11-06T12:00:00.000Z", "auto": false, "trigger": "manual", "message_id": "89", "mixed": true, "audio_keep_days": 30, "language": null, "max_duration_ms": 14400000, "participants": [{ "member_id": "1002", "consent": "granted" }], "my_consent": "granted" } }
+    },
+    {
+      "name": "voice_recording_stop_required",
+      "request": { "method": "POST", "path": "/sew/native/voice/recording", "headers": { "authorization": "Bearer {{bearer}}" }, "body": { "target": "acme", "room": "7", "action": "stop", "recording_id": "77", "device_id": "dev-1" } },
+      "response": { "status": 422, "body": { "ok": false, "code": "invalid_state", "detail": { "reason": "recording_required" }, "error": { "code": "invalid_state", "hint": "<any>", "details": { "reason": "recording_required" } } } }
+    },
+    {
+      "name": "voice_recording_stop",
+      "request": { "method": "POST", "path": "/sew/native/voice/recording", "headers": { "authorization": "Bearer {{bearer}}" }, "body": { "target": "acme", "room": "5", "action": "stop", "recording_id": "79", "device_id": "dev-1" } },
+      "response": { "status": 200, "body": { "id": "79", "channel_id": "5", "state": "stopping", "started_by": "1002", "started_at": "2026-11-06T12:00:00.000Z", "auto": false, "trigger": "manual", "message_id": "89", "mixed": true, "audio_keep_days": 30, "language": null, "max_duration_ms": 14400000, "participants": [{ "member_id": "1002", "consent": "granted" }], "my_consent": "granted" } }
+    },
+    {
+      "name": "call_door_forwards_a_renewal",
+      "request": { "method": "POST", "path": "/sew/native/api/v1/me/voice/credential", "headers": { "authorization": "Bearer sewcc_CCCCCCCCCCCCCCCCCCCCCC.ccccccccccccccccccccccccccccccccccccccccccc" }, "body": {} },
+      "response": { "status": 200, "body": { "token": "<any>", "expires_at": "<timestamp>" } }
+    },
+    {
+      "name": "call_door_refuses_a_chat_route",
+      "request": { "method": "GET", "path": "/sew/native/api/v1/me", "headers": { "authorization": "Bearer sewcc_CCCCCCCCCCCCCCCCCCCCCC.ccccccccccccccccccccccccccccccccccccccccccc" } },
+      "response": { "status": 404, "body": { "ok": false, "code": "not_found", "detail": null, "error": { "code": "not_found", "hint": "<any>" } } }
+    },
+    {
+      "name": "devices",
+      "request": { "method": "GET", "path": "/sew/native/devices", "headers": { "authorization": "Bearer {{bearer}}" } },
+      "response": { "status": 200, "body": { "ok": true, "devices": [{ "id": "{{session}}", "device_id": "install-a", "name": "Laptop", "created_at": "<timestamp>", "last_used_at": "<timestamp>", "expires_at": "<timestamp>", "current": true }] } }
+    },
+    {
+      "name": "sign_out",
+      "request": { "method": "POST", "path": "/sew/native/signout", "headers": { "authorization": "Bearer {{bearer}}" }, "body": {} },
+      "response": { "status": 200, "body": { "ok": true } }
+    },
+    {
+      "name": "signed_out_after",
+      "request": { "method": "GET", "path": "/sew/native/api/v1/me", "headers": { "authorization": "Bearer {{bearer}}" } },
+      "response": { "status": 401, "body": { "ok": false, "code": "signed_out", "detail": { "reason": "signed_out" }, "error": { "code": "signed_out", "hint": "This device was signed out. Sign in again.", "details": { "reason": "signed_out" } } } }
+    },
+    {
+      "name": "door_begin_refused_to_a_page",
+      "request": { "method": "POST", "path": "/sew/native/signin/door/begin", "headers": { "origin": "https://app.test" }, "body": { "device": { "id": "install-b", "name": "Desktop" } } },
+      "response": { "status": 403, "body": { "ok": false, "code": "native_only", "detail": null, "error": { "code": "native_only", "hint": "<any>" } } }
+    },
+    {
+      "name": "door_begin",
+      "request": { "method": "POST", "path": "/sew/native/signin/door/begin", "body": { "device": { "id": "install-b", "name": "Desktop" } } },
+      "response": { "status": 200, "headers": { "cache-control": "no-store" }, "body": { "ok": true, "id": "<code>", "challenge": "<code>", "door": "https://app.test/.k2/auth/sign-in", "expires_in_ms": 600000 } },
+      "save": { "door_id": "id", "challenge": "challenge" }
+    },
+    {
+      "name": "door_sign_in_at_the_host",
+      "to": "host",
+      "request": { "method": "POST", "path": "/.k2/auth/sign-in", "body": { "username": "bob", "password": "lane-test-bob-pw", "challenge": "{{challenge}}" } },
+      "response": { "status": 200, "body": { "ok": true, "code": "<door_code>" } },
+      "save": { "door_code": "code" }
+    },
+    {
+      "name": "door_finish_unknown_id",
+      "request": { "method": "POST", "path": "/sew/native/signin/door/finish", "body": { "id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "code": "{{door_code}}", "device": { "id": "install-b", "name": "Desktop" } } },
+      "response": { "status": 401, "body": { "ok": false, "code": "code_invalid", "detail": null, "error": { "code": "code_invalid", "hint": "<any>" } } }
+    },
+    {
+      "name": "door_finish",
+      "request": { "method": "POST", "path": "/sew/native/signin/door/finish", "body": { "id": "{{door_id}}", "code": "{{door_code}}", "device": { "id": "install-b", "name": "Desktop" } } },
+      "response": { "status": 200, "body": { "ok": true, "token": "<device_bearer>", "member_id": "1002", "session": { "id": "<session_id>", "device_id": "install-b", "name": "Desktop", "created_at": "<timestamp>", "last_used_at": "<timestamp>", "expires_at": "<timestamp>" } } },
+      "save": { "door_bearer": "token" }
+    },
+    {
+      "name": "door_finish_is_single_use",
+      "request": { "method": "POST", "path": "/sew/native/signin/door/finish", "body": { "id": "{{door_id}}", "code": "{{door_code}}", "device": { "id": "install-b", "name": "Desktop" } } },
+      "response": { "status": 401, "body": { "ok": false, "code": "code_invalid", "detail": null, "error": { "code": "code_invalid", "hint": "<any>" } } }
+    },
+    {
+      "name": "door_whoami",
+      "request": { "method": "GET", "path": "/sew/native/whoami", "headers": { "authorization": "Bearer {{door_bearer}}" } },
+      "response": { "status": 200, "body": { "ok": true, "member": "<any>", "install_id": "<any>", "spaces": "<any>", "caps": "<any>", "identity": "<any>", "session": { "id": "<session_id>", "device_id": "install-b", "name": "Desktop", "created_at": "<timestamp>", "last_used_at": "<timestamp>", "expires_at": "<timestamp>" } } }
+    }
+  ]
+}

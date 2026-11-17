@@ -1,0 +1,34 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `confirm_server`,
+`remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,
+`sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list
+(`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed
+in) and `notify` (a notification and the app badge). Every window gets every event
+(`sew-app://servers`, `signed_out`, `warning`, `deep_link`, `pair_request`, `pair_refused`).
+Not in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API
+transport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,
+`upload_bytes`: `sew-app:transport`); and `upload_file`, which reads a file the page names
+(`sew-app:upload-file`).
+"""
+permissions = [
+  "allow-servers",
+  "allow-add-server",
+  "allow-confirm-server",
+  "allow-remove-server",
+  "allow-server-info",
+  "allow-set-active",
+  "allow-sign-in",
+  "allow-pair",
+  "allow-sign-in-door",
+  "allow-sign-in-door-set-password",
+  "allow-pair-confirm",
+  "allow-pair-decline",
+  "allow-sign-out",
+  "allow-devices",
+  "allow-revoke-device",
+  "allow-open",
+  "allow-notify",
+]

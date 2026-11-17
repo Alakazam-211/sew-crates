@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use sew_call_client::rustls::crypto::CryptoProvider;
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, WindowEvent};
 
 use crate::engine::{JoinProvider, VoiceEngine};
 use crate::listener::{VoiceControl, VoiceListener};
@@ -327,7 +327,32 @@ impl Builder {
                 app.manage(service);
                 Ok(())
             })
+            // The app's lifecycle as Tauri reports it: the app resumed (iOS: it became active;
+            // Android: `onResume`), or a window gained or lost focus. Each is a moment the
+            // device is busy: the live call's noise removal opens a grace window. (Tauri has no
+            // event for going to the background on phones; the native shim reports that with
+            // `VoiceControl::app_scene`, which does the same.)
+            .on_event(|app, event| {
+                if matches!(
+                    event,
+                    RunEvent::Resumed
+                        | RunEvent::WindowEvent {
+                            event: WindowEvent::Focused(_),
+                            ..
+                        }
+                ) {
+                    app_scene_changed(app);
+                }
+            })
             .build()
+    }
+}
+
+/// The app's scene or focus changed: to the service's engine (a grace window for the live
+/// call's noise removal). Before the plugin's setup ran there is no service yet.
+fn app_scene_changed<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(service) = app.try_state::<VoiceService>() {
+        service.app_scene_changed();
     }
 }
 

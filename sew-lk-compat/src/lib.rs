@@ -18,3 +18,8 @@ pub mod signal;
 
 pub use session::{LeaveAction, Session, SessionCounters, SessionEvent};
 pub use signal::{ClientInfoOpts, JoinParams};
+
+/// README.md's examples, compiled and run as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

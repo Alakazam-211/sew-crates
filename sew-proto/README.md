@@ -16,6 +16,11 @@ What it holds:
 - change-log kinds, permission bits, organisation policies and audit events;
 - the management API bodies;
 - the JSON Schema of every type, in `schema/` (generated with `schemars`).
+- test vectors for the rule that decides whether a person in a call may start or stop a
+  recording (`recording::controls::decide`), in `vectors/recording-controls-vectors.json`:
+  every combination of the facts the rule reads, each with the rule's answer
+  (`can_record`, `can_stop`). An implementation of the same rule in another language can check
+  itself against it; the file's `id` field says how each case's id encodes its facts.
 
 The crate is pure: apart from the clock in `clock`, it does no I/O. Its dependencies are
 `serde`, `serde_json`, `schemars` and `chrono`. It has no platform-specific code and works on
@@ -25,12 +30,17 @@ Windows).
 - Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
   repository at each release, so pull requests are not merged there)
 - API documentation: <https://docs.rs/sew-proto>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `sew-proto` form, which labels the issue `crate:sew-proto`
+- Security problems: report them privately, as
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
 
 ## Usage
 
 ```toml
 [dependencies]
-sew-proto = "0.10.3"
+sew-proto = "0.10.4"
 serde_json = "1" # for the example below
 ```
 
@@ -43,6 +53,10 @@ fn session_expired(body: &str) -> bool {
     serde_json::from_str::<ErrorBody>(body).is_ok_and(|b| b.error.code == Code::SessionExpired)
 }
 ```
+
+## Features
+
+None: the crate has no Cargo features.
 
 ## Licence
 

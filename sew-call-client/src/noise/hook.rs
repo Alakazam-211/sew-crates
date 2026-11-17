@@ -40,6 +40,34 @@ pub(crate) fn install(processing: &mut ProcessingConfig, stage: Box<dyn CaptureS
     true
 }
 
+/// kessel-audio's view of the stage, for the call's log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PipelineStage {
+    /// Budget strikes and faults so far.
+    pub(crate) strikes: u32,
+    /// Why it was last bypassed (sticky: kept after a retry).
+    pub(crate) bypassed: Option<Bypass>,
+    /// The 99th percentile of the stage's last 100 calls, microseconds.
+    pub(crate) p99_us: u32,
+}
+
+/// kessel-audio's stage counters, when a stage is set.
+pub(crate) fn pipeline_stage(engine: &AudioEngine) -> Option<PipelineStage> {
+    let st = engine.stats().capture_stage?;
+    Some(PipelineStage {
+        strikes: st.strikes,
+        bypassed: st.bypassed.map(bypass_of),
+        p99_us: st.p99_block_us,
+    })
+}
+
+fn bypass_of(r: StageBypassReason) -> Bypass {
+    match r {
+        StageBypassReason::Budget => Bypass::Budget,
+        _ => Bypass::Fault,
+    }
+}
+
 /// Why the stage is bypassed now, if it is: kessel-audio's sticky reason while the stage's
 /// output is not what goes on. A stage brought back by a retry is not bypassed (its reason
 /// stays in kessel-audio's stats); one warming up after a retry still is.
@@ -48,8 +76,5 @@ pub(crate) fn bypass(engine: &AudioEngine) -> Option<Bypass> {
     if st.active {
         return None;
     }
-    st.bypassed.map(|r| match r {
-        StageBypassReason::Budget => Bypass::Budget,
-        _ => Bypass::Fault,
-    })
+    st.bypassed.map(bypass_of)
 }

@@ -981,7 +981,7 @@ pub const EVENT_NAMES: [&str; 10] = [
 pub const RECORDING_EVENTS: [&str; 1] = ["recording_controls"];
 
 /// The noise removal event, beside [`EVENT_NAMES`]: `noise_removal` with
-/// [`NoiseRemovalState`] whenever the mode, what runs or the reason changed.
+/// [`NoiseRemovalState`] whenever the mode, what runs, the reason or the grace window changed.
 pub const NOISE_EVENTS: [&str; 1] = ["noise_removal"];
 
 impl PluginEvent {
@@ -1050,10 +1050,12 @@ pub use sew_call_client::{CodecPreferenceReason, VideoCodecPreference};
 
 /// The microphone's noise removal: the setting (`"off"`, `"standard"`), why what runs is less
 /// (`"budget"`, `"fault"`, `"unavailable"`, `"loading"`; `"switch_failed"` for a phone's
-/// capture), the phone's capture (`"os"`, `"raw"`) and `{mode, active, reason?, …}`
+/// capture), the phone's capture (`"os"`, `"raw"`), the stage's step-down rule (`"slow_block"`,
+/// `"slow_window"`, `"heavy"`, `"fault"`, `"forced"`) and `{mode, active, reason?, …}`
 /// (sew-call-client's).
 pub use sew_call_client::{
-    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode,
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason,
+    PhoneAudioMode,
 };
 
 /// `set_noise_removal`'s arguments: `{mode}`, `"off"` or `"standard"`. `"strong"` is a mode

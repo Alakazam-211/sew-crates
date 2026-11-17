@@ -15,6 +15,22 @@
 //!   first split applies at once (the camera does not wait 3 s to start), and so does an
 //!   exempt layer (the backup's lowest layer when the backup starts: a subscriber without the
 //!   primary codec waits for nothing else; a primary layer above it is cut first).
+//! - **Kept layers:** each lane's lowest wanted layer is its subscribers' only video (the
+//!   primary's for those who decode the primary codec, the backup's for a VP8-only subscriber),
+//!   so while anyone wants the lane it is never paused here: it gets what is left, and at least
+//!   what it needs to run (60% of its cap or its floor, at most its cap), whatever the estimate.
+//!   libwebrtc does the same: it never suspends a sender's lowest simulcast layer, and when the
+//!   estimate is below the sum of the senders' minimums every sender still gets its minimum.
+//!   The estimate can't stand in for the path: str0m's estimate of an application-limited
+//!   sender sits near what it sends (with the primary paused by dynacast, a few hundred kbit/s
+//!   on an 80 ms TURN-TLS path), right at a layer's start threshold. Paused, the layer would
+//!   send nothing to raise it, and its subscribers would wait on probes alone (seconds, or
+//!   never). With both lanes wanted and an estimate short of both minimums, neither lane goes
+//!   first: the primary's lowest layer takes the budget first as before, and the backup's runs
+//!   at what it needs beyond it; both run at their floors, over the estimate, rather than
+//!   leave one codec's subscribers with no video. The layers above follow the estimate and the
+//!   hysteresis as before, and the caps (heat, low power) still apply: a kept layer runs at
+//!   most at its cap, which the publisher never sets below its floor.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -72,6 +88,10 @@ pub(crate) struct AllocLayer {
     /// Starts on the next split that gives it 60% of its cap, without the raise hysteresis
     /// (the backup's lowest wanted layer as the backup starts).
     pub(crate) exempt: bool,
+    /// Runs whatever the estimate, at least at what it [needs](AllocLayer::needs) (at most its
+    /// cap): each running lane's lowest wanted layer (primary and backup), its subscribers'
+    /// only video.
+    pub(crate) kept: bool,
 }
 
 impl AllocLayer {
@@ -94,12 +114,14 @@ pub(crate) fn split(layers: &[AllocLayer], available: u64) -> BTreeMap<Key, u64>
         if !l.wanted || blocked.contains(&(l.key.0, l.key.1)) {
             continue;
         }
-        let give = l.max_bps.min(left);
-        if give < l.needs() || give == 0 {
+        let mut give = l.max_bps.min(left);
+        if l.kept {
+            give = give.max(l.needs().min(l.max_bps));
+        } else if give < l.needs() || give == 0 {
             blocked.insert((l.key.0, l.key.1));
             continue;
         }
-        left -= give;
+        left = left.saturating_sub(give);
         out.insert(l.key, give);
     }
     out
@@ -177,8 +199,9 @@ impl Allocator {
                 }
             }
         }
-        // An exempt layer the split covers: at once (no hold, no spacing, not a raise).
-        for l in layers.iter().filter(|l| l.exempt && l.wanted) {
+        // An exempt layer the split covers, and a kept one (the split always covers it): at
+        // once (no hold, no spacing, not a raise).
+        for l in layers.iter().filter(|l| (l.exempt || l.kept) && l.wanted) {
             if target.contains_key(&l.key) && self.running.insert(l.key) {
                 self.fits_since.remove(&l.key);
             }
@@ -249,6 +272,7 @@ mod tests {
                 wanted: true,
                 min_bps: 0,
                 exempt: false,
+                kept: false,
             })
             .collect()
     }
@@ -396,6 +420,7 @@ mod tests {
             wanted: true,
             min_bps: 0,
             exempt: false,
+            kept: false,
         }));
         out
     }
@@ -472,12 +497,234 @@ mod tests {
         );
         let r = a.update(t2 + RAISE_HOLD + RAISE_EVERY, up, &layers);
         assert_eq!(r.len(), 5, "{r:?}");
-        // An exempt layer the budget can't cover at 60% does not run.
+        // Exempt alone (not kept), a layer the budget can't cover at 60% does not run.
         let mut c = Allocator::default();
         let mut tight = with_backup(1, &[Q], &[Q]);
         tight[1].exempt = true;
         let r = c.update(t0, est(Q + Q / 2), &tight);
         assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![(1, 0, 0)]);
+    }
+
+    /// The case that starved a VP8-only subscriber on an 80 ms TURN-TLS path: the primary
+    /// paused by dynacast (only VP8 viewers), the estimate near what the backup's q alone sends
+    /// (~200–300 kbit/s), below what q needs once the audio's reserve is taken.
+    #[test]
+    fn the_backups_kept_layer_runs_whatever_the_estimate() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        // Primary q h f nobody wants; backup q (180p, its floor 150k) and h, q kept.
+        let mut layers = with_backup(1, &[Q, H, F], &[Q, H]);
+        for l in &mut layers[..3] {
+            l.wanted = false;
+        }
+        layers[3].min_bps = MIN_180P_BPS;
+        layers[4].min_bps = MIN_360P_BPS;
+        let e = 200_000;
+        assert!(budget(e) < layers[3].needs(), "the estimate can't cover q");
+        // Without the keep, the backup's start runs nothing on that estimate (exempt or not):
+        // no frame, so nothing to raise the estimate with.
+        let mut old = layers.clone();
+        old[3].exempt = true;
+        let mut a = Allocator::default();
+        assert!(a.update(t0, e, &old).is_empty());
+        assert!(a.update(at(10), e, &old).is_empty());
+        // Kept: q runs at once at what it needs (its floor here), h stays off.
+        layers[3].exempt = true;
+        layers[3].kept = true;
+        let mut a = Allocator::default();
+        let r = a.update(t0, e, &layers);
+        assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 1, 0), Q)]);
+        // The estimate falls further (even to nothing): q is not cut.
+        layers[3].exempt = false;
+        for (s, low_est) in [(1, 120_000), (2, 0), (3, 60_000)] {
+            let r = a.update(at(s), low_est, &layers);
+            assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 1, 0), Q)]);
+        }
+        // q at its cap when the budget has more; h after the hysteresis as before.
+        let up = est((Q + H) * 2);
+        assert_eq!(a.update(at(4), up, &layers).len(), 1);
+        let r = a.update(at(4) + RAISE_HOLD, up, &layers);
+        assert_eq!(
+            r.into_iter().collect::<Vec<_>>(),
+            vec![((1, 1, 0), Q), ((1, 1, 1), H)]
+        );
+        // A cap below the floor (heat): kept, it runs at its cap.
+        let mut low = layers.clone();
+        low[3].max_bps = 100_000;
+        assert_eq!(split(&low, 0).get(&(1, 1, 0)), Some(&100_000));
+        // With the primary wanted too: the primary's q takes the budget first, the kept layer
+        // still runs at what it needs, and nothing above either.
+        for l in &mut layers[..3] {
+            l.wanted = true;
+        }
+        let s = split(&layers, Q + 50_000);
+        assert_eq!(
+            s.into_iter().collect::<Vec<_>>(),
+            vec![((1, 0, 0), Q), ((1, 1, 0), Q)]
+        );
+    }
+
+    /// A primary camera (q 180p, h 360p, f 720p, with their floors), its q kept.
+    fn primary_kept() -> Vec<AllocLayer> {
+        let mut layers = cam(1, &[Q, H, F]);
+        for (l, h) in layers.iter_mut().zip([180, 360, 720]) {
+            l.min_bps = min_bitrate_bps(h);
+        }
+        layers[0].kept = true;
+        layers
+    }
+
+    /// The primary's starvation: a primary-only publication (no backup) on an estimate below
+    /// what its q needs, a subscriber wanting it. Unkept, the split ran nothing (no frame to
+    /// raise the estimate with); kept, q runs at what it needs.
+    #[test]
+    fn the_primarys_kept_layer_runs_whatever_the_estimate() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let layers = primary_kept();
+        let e = 200_000;
+        assert!(budget(e) < layers[0].needs(), "the estimate can't cover q");
+        // Unkept: nothing runs, on the first split or any later one.
+        let mut old = layers.clone();
+        old[0].kept = false;
+        let mut a = Allocator::default();
+        assert!(a.update(t0, e, &old).is_empty());
+        assert!(a.update(at(10_000), e, &old).is_empty());
+        // Kept: q at once at what it needs, on the first split and on a later one (a primary
+        // running nothing, paused by dynacast, until a subscriber came).
+        let mut a = Allocator::default();
+        let r = a.update(t0, e, &layers);
+        assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 0, 0), Q)]);
+        let mut b = Allocator::default();
+        let mut nobody = layers.clone();
+        for l in &mut nobody {
+            l.wanted = false;
+        }
+        assert!(b.update(t0, e, &nobody).is_empty());
+        let r = b.update(at(500), e, &layers);
+        assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 0, 0), Q)]);
+        // Lower still, even no estimate: q is never cut.
+        for (ms, low) in [(1_000, 100_000), (2_000, 0), (3_000, 50_000)] {
+            let r = a.update(at(ms), low, &layers);
+            assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 0, 0), Q)]);
+        }
+        // Only h wanted (q not): h is the lowest wanted, kept at its floor.
+        let mut h_only = layers.clone();
+        h_only[0].wanted = false;
+        h_only[0].kept = false;
+        h_only[1].kept = true;
+        assert_eq!(
+            split(&h_only, 0).into_iter().collect::<Vec<_>>(),
+            vec![((1, 0, 1), MIN_360P_BPS)]
+        );
+    }
+
+    #[test]
+    fn above_the_primarys_kept_layer_the_estimate_and_the_hysteresis_rule() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let layers = primary_kept();
+        let mut a = Allocator::default();
+        // Starts low: q only.
+        let r = a.update(t0, est(Q / 2), &layers);
+        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![(1, 0, 0)]);
+        // Room for h without the margin: h stays off however long.
+        let no_margin = est(Q + H);
+        a.update(at(1_000), no_margin, &layers);
+        let r = a.update(at(20_000), no_margin, &layers);
+        assert_eq!(r.len(), 1, "no margin, no raise: {r:?}");
+        // With the margin for h (not f): h after RAISE_HOLD, not before.
+        let up = est((Q + H) * 116 / 100);
+        assert_eq!(a.update(at(21_000), up, &layers).len(), 1);
+        assert_eq!(a.update(at(23_900), up, &layers).len(), 1);
+        let r = a.update(at(24_000), up, &layers);
+        assert_eq!(
+            r.into_iter().collect::<Vec<_>>(),
+            vec![((1, 0, 0), Q), ((1, 0, 1), H)]
+        );
+        // With the margin for f too: f only after its own hold, and RAISE_EVERY after h's.
+        let all = est((Q + H + F) * 2);
+        assert_eq!(a.update(at(25_000), all, &layers).len(), 2);
+        assert_eq!(a.update(at(27_900), all, &layers).len(), 2);
+        assert_eq!(a.update(at(28_000), all, &layers).len(), 3);
+        // The estimate collapses: h and f are cut at once, q stays at what it needs.
+        let r = a.update(at(28_100), est(Q / 3), &layers);
+        assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 0, 0), Q)]);
+        // A budget that covers q but not h's floor (400k): h stays cut.
+        let r = a.update(at(40_000), est(Q + 399_000), &layers);
+        assert_eq!(r.len(), 1, "{r:?}");
+    }
+
+    /// Heat and low power cap layers before the split (the publisher never takes a kept layer
+    /// below its floor, but a policy cap below the floor stands): a kept layer runs at most at
+    /// its cap, and a capped layer above it still pauses below its floor.
+    #[test]
+    fn a_kept_primary_layer_stays_under_its_caps() {
+        let t0 = Instant::now();
+        // q's cap below its floor (a policy cap of 100k): kept, it runs at its cap whatever
+        // the estimate; unkept, it never ran at all.
+        let mut low = primary_kept();
+        low[0].max_bps = 100_000;
+        assert_eq!(split(&low, 0).get(&(1, 0, 0)), Some(&100_000));
+        assert_eq!(split(&low, 5_000_000).get(&(1, 0, 0)), Some(&100_000));
+        let mut unkept = low.clone();
+        unkept[0].kept = false;
+        assert!(!split(&unkept, 5_000_000).contains_key(&(1, 0, 0)));
+        // Heat at half the rate on h and f (q kept at its cap, its floor): h's 250k is below
+        // its 400k floor and f's 850k below its 1 Mbit/s, so on any estimate only q runs.
+        let mut hot = primary_kept();
+        hot[1].max_bps = H / 2;
+        hot[2].max_bps = F / 2;
+        let mut a = Allocator::default();
+        let r = a.update(t0, est(10_000_000), &hot);
+        assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 0, 0), Q)]);
+        // One layer under heat (max_layers 1: the publisher hands over q alone): q runs on any
+        // estimate, at its cap.
+        let one = &primary_kept()[..1];
+        let mut b = Allocator::default();
+        for (s, e) in [(0, 0), (1, est(10_000_000)), (2, 30_000)] {
+            let r = b.update(t0 + Duration::from_secs(s), e, one);
+            assert_eq!(r.into_iter().collect::<Vec<_>>(), vec![((1, 0, 0), Q)]);
+        }
+    }
+
+    /// Both lanes wanted (H.264 and VP8-only subscribers), each lowest layer kept, on an
+    /// estimate that covers one minimum or none: both run at what they need (libwebrtc gives
+    /// every sender its minimum below the sum of minimums); nothing above them runs.
+    #[test]
+    fn both_kept_layers_run_at_their_floors_when_the_estimate_covers_one() {
+        let t0 = Instant::now();
+        let mut layers = with_backup(1, &[Q, H, F], &[Q, H]);
+        for (l, h) in layers.iter_mut().zip([180, 360, 720, 180, 360]) {
+            l.min_bps = min_bitrate_bps(h);
+        }
+        layers[0].kept = true;
+        layers[3].kept = true;
+        let both = vec![((1, 0, 0), Q), ((1, 1, 0), Q)];
+        // One minimum, a little more, none at all: both q at their needs.
+        for b in [Q, Q + 50_000, 0] {
+            assert_eq!(
+                split(&layers, b).into_iter().collect::<Vec<_>>(),
+                both,
+                "{b}"
+            );
+        }
+        // Through the allocator: both at once, neither cut as the estimate falls.
+        let mut a = Allocator::default();
+        let r = a.update(t0, est(Q), &layers);
+        assert_eq!(r.into_iter().collect::<Vec<_>>(), both);
+        let r = a.update(t0 + Duration::from_secs(1), 0, &layers);
+        assert_eq!(r.into_iter().collect::<Vec<_>>(), both);
+        // Room for both and the primary's h: h runs after the hysteresis; the backup's h waits
+        // for more.
+        let up = est((Q + Q + H) * 116 / 100);
+        let t1 = t0 + Duration::from_secs(2);
+        assert_eq!(a.update(t1, up, &layers).len(), 2);
+        let r = a.update(t1 + RAISE_HOLD, up, &layers);
+        assert_eq!(
+            r.keys().copied().collect::<Vec<_>>(),
+            vec![(1, 0, 0), (1, 0, 1), (1, 1, 0)]
+        );
     }
 
     #[test]

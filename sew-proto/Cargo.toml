@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-proto"
-version = "0.10.3"
+version = "0.10.4"
 build = false
 include = [
     "src/**",
@@ -31,7 +31,21 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "Sew wire contracts: ids, addresses, errors, HTTP and gateway bodies, permissions, policies, audit."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/sew-proto"
+documentation = "https://docs.rs/sew-proto"
 readme = "README.md"
+keywords = [
+    "sew",
+    "chat",
+    "protocol",
+    "api",
+    "websocket",
+]
+categories = [
+    "api-bindings",
+    "network-programming",
+    "encoding",
+]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 

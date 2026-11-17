@@ -56,3 +56,8 @@ pub mod logger {
     include!("gen/logger.rs");
     include!("gen/logger.serde.rs");
 }
+
+/// README.md's examples, compiled and run as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

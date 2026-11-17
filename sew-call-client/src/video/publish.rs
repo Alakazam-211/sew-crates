@@ -819,9 +819,10 @@ impl VideoSender {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct VideoCaps {
-    /// Each layer's cap, percent of the policy's (1 to 100).
+    /// Each layer's cap, percent of the policy's (1 to 100); a publication's lowest wanted
+    /// layer keeps at least its size's floor (or the policy's cap, if lower).
     pub bitrate_pct: u8,
-    /// At most this many layers, from the lowest (`None`: all).
+    /// At most this many layers, from the lowest (`None`: all; never fewer than one).
     pub max_layers: Option<u8>,
     /// At most this frame rate (`None`: the layers').
     pub max_fps: Option<u32>,
@@ -2320,8 +2321,10 @@ impl Publisher {
     // -------------------------------------------------------------------------- the split
 
     /// Every running lane's layers under the caps (the policy's, the host's thermal and power
-    /// caps on both lanes; the backup's own caps on top). The backup keeps at least its lowest
-    /// layer whatever the caps: it is a subscriber's only video.
+    /// caps on both lanes; the backup's own caps on top). Each lane keeps at least its lowest
+    /// layer whatever the caps, and its lowest wanted layer is kept (runs whatever the estimate,
+    /// a bitrate cap never taking it below its floor): the primary's is its subscribers' only
+    /// video, the backup's a VP8-only subscriber's.
     fn capped_layers(&self) -> Vec<AllocLayer> {
         let mut out = Vec::new();
         for p in &self.pubs {
@@ -2334,10 +2337,11 @@ impl Publisher {
                 }
                 let max_layers = if lane.backup {
                     let caps = [self.caps.max_layers, self.backup_caps.max_layers];
-                    caps.into_iter().flatten().min().map(|m| m.max(1))
+                    caps.into_iter().flatten().min()
                 } else {
                     self.caps.max_layers
-                };
+                }
+                .map(|m| m.max(1));
                 let lowest_wanted = lane.layers.iter().position(|l| l.wanted);
                 for (k, l) in lane.layers.iter().enumerate() {
                     if max_layers.is_some_and(|m| k >= usize::from(m)) {
@@ -2347,9 +2351,9 @@ impl Publisher {
                     let mut max = policy_max * u64::from(self.caps.bitrate_pct) / 100;
                     let min_bps = super::alloc::min_bitrate_bps(l.spec.height.min(l.spec.width));
                     let lowest = lowest_wanted == Some(k);
-                    if lane.backup && lowest {
-                        // A bitrate cap (heat, low power) never takes the backup's lowest layer
-                        // below its floor: it would pause a subscriber's only video.
+                    if lowest {
+                        // A bitrate cap (heat, low power) never takes a lane's lowest wanted
+                        // layer below its floor: it would pause its subscribers' only video.
                         max = max.max(policy_max.min(min_bps));
                     }
                     out.push(AllocLayer {
@@ -2359,6 +2363,7 @@ impl Publisher {
                         wanted: l.wanted,
                         min_bps,
                         exempt: lane.backup && lane.exempt && lowest,
+                        kept: lowest,
                     });
                 }
             }
@@ -2975,7 +2980,7 @@ mod tests {
     }
 
     #[test]
-    fn caps_reach_both_lanes_and_heat_never_stops_the_backup() {
+    fn caps_reach_both_lanes_and_heat_never_stops_a_lanes_lowest_layer() {
         let mut pb = Publisher::new(Arc::default());
         let mut b = three();
         b.truncate(2);
@@ -2993,17 +2998,33 @@ mod tests {
         }
         assert_eq!(pb.capped_layers().len(), 5);
         // The host's caps (heat, low power) on both lanes: one layer each at half the rate,
-        // except the backup's lowest, which keeps its floor.
+        // but neither lane's lowest wanted layer below its floor (q's cap is its floor here).
         pb.caps = VideoCaps::new(50, Some(1), Some(20));
         let l = pb.capped_layers();
         let got: Vec<((u64, usize, usize), u64)> = l.iter().map(|l| (l.key, l.max_bps)).collect();
-        assert_eq!(got, vec![((7, 0, 0), 75_000), ((7, 1, 0), 150_000)]);
+        assert_eq!(got, vec![((7, 0, 0), 150_000), ((7, 1, 0), 150_000)]);
+        // Only h wanted on the primary: h is its lowest wanted, kept at its floor (400k of its
+        // 500k), q (not wanted) at half its rate.
+        pb.caps = VideoCaps::new(50, None, None);
+        pb.pubs[0].lanes[0].layers[0].wanted = false;
+        let l = pb.capped_layers();
+        let got: Vec<((u64, usize, usize), u64)> = l.iter().map(|l| (l.key, l.max_bps)).collect();
+        assert_eq!(
+            &got[..3],
+            &[
+                ((7, 0, 0), 75_000),
+                ((7, 0, 1), 400_000),
+                ((7, 0, 2), 850_000)
+            ]
+        );
+        pb.pubs[0].lanes[0].layers[0].wanted = true;
+        pb.caps = VideoCaps::new(50, Some(1), Some(20));
         let (prim, backup) = (&pb.pubs[0].lanes[0], &pb.pubs[0].lanes[1]);
         assert_eq!(pb.fps_of(prim, &prim.layers[0].spec), 20);
         assert_eq!(pb.fps_of(backup, &backup.layers[0].spec), 20);
-        // Caps asking for no layer at all: the backup keeps one.
+        // Caps asking for no layer at all: each lane keeps one.
         pb.caps = VideoCaps::new(100, Some(0), None);
-        assert_eq!(keys(&pb), vec![(7, 1, 0)]);
+        assert_eq!(keys(&pb), vec![(7, 0, 0), (7, 1, 0)]);
         // A phone's thermal steps for the backup alone: Serious one layer, Critical at 15 fps.
         pb.caps = VideoCaps::none();
         pb.backup_caps = BackupCaps {
@@ -3030,6 +3051,35 @@ mod tests {
             .map(|l| l.key)
             .collect();
         assert_eq!(ex, vec![(7, 1, 1)], "the lowest wanted, h here");
+        // Kept (runs whatever the estimate): each running lane's lowest wanted layer, the
+        // backup's exempt or not.
+        pb.pubs[0].lanes[1].exempt = false;
+        let kept = |pb: &Publisher| -> Vec<(u64, usize, usize)> {
+            pb.capped_layers()
+                .iter()
+                .filter(|l| l.kept)
+                .map(|l| l.key)
+                .collect()
+        };
+        assert_eq!(kept(&pb), vec![(7, 0, 0), (7, 1, 1)]);
+        pb.pubs[0].lanes[1].layers[0].wanted = true;
+        assert_eq!(kept(&pb), vec![(7, 0, 0), (7, 1, 0)]);
+        pb.pubs[0].lanes[1].on = false;
+        assert_eq!(
+            kept(&pb),
+            vec![(7, 0, 0)],
+            "the backup off: the primary's q"
+        );
+        // The primary's lowest wanted layer moves with dynacast; nothing wanted, nothing kept.
+        pb.pubs[0].lanes[0].layers[0].wanted = false;
+        assert_eq!(kept(&pb), vec![(7, 0, 1)]);
+        for l in &mut pb.pubs[0].lanes[0].layers {
+            l.wanted = false;
+        }
+        assert!(
+            kept(&pb).is_empty(),
+            "nobody wants the primary: nothing kept"
+        );
     }
 
     #[test]

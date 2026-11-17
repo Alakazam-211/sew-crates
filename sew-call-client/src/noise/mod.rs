@@ -46,6 +46,9 @@ pub use control::NoiseRemovalControl;
 /// the [`NoiseRemovalControl`] its audio started with. `None` once that audio ended.
 pub(crate) trait NoiseSource: Send + Sync {
     fn noise_state(&self) -> Option<NoiseRemovalState>;
+    /// The device is busy with something else for a moment (a camera starting): the call's
+    /// stage holds its timing rules back for a grace window.
+    fn grace(&self) {}
 }
 
 /// How much noise this device's microphone has removed. The default is
@@ -211,8 +214,51 @@ impl std::fmt::Display for NoiseModel {
     }
 }
 
+/// Why the call's stage last stepped down from DeepFilterNet3 to RNNoise
+/// ([`NoiseRemovalState::step_down_reason`]): the stage's own rule names.
+///
+/// Its JSON is `"slow_block"`, `"slow_window"`, `"heavy"`, `"fault"` or `"forced"`. More may
+/// come in a later version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum NoiseStepDownReason {
+    /// One block took too long on its own.
+    SlowBlock,
+    /// Too many recent blocks were slow (the 99th percentile; in a grace window, the second
+    /// block over the audio pipeline's own line).
+    SlowWindow,
+    /// Recent blocks were steadily close to the budget (the median).
+    Heavy,
+    /// The model gave a sample that was not finite: final for the call.
+    Fault,
+    /// Asked for by a measurement.
+    Forced,
+}
+
+impl NoiseStepDownReason {
+    /// The reason's name: `slow_block`, `slow_window`, `heavy`, `fault` or `forced`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NoiseStepDownReason::SlowBlock => "slow_block",
+            NoiseStepDownReason::SlowWindow => "slow_window",
+            NoiseStepDownReason::Heavy => "heavy",
+            NoiseStepDownReason::Fault => "fault",
+            NoiseStepDownReason::Forced => "forced",
+        }
+    }
+}
+
+impl std::fmt::Display for NoiseStepDownReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The noise removal setting and what runs: `{mode, active, reason?, model?, model_reason?,
-/// step_downs?, phone_mode?, phone_mode_reason?, phone_mode_switches?, phone_mode_gap_ms?}`.
+/// step_downs?, phone_mode?, phone_mode_reason?, phone_mode_switches?, phone_mode_gap_ms?,
+/// step_down_reason?, last_step_down_ms_ago?, slowest_block_us?, blocks_over_budget?,
+/// in_grace?, capture_stage_strikes?, capture_stage_bypassed?, capture_stage_p99_us?}`.
 ///
 /// `mode` is what was asked, `active` what the microphone's audio goes through now, and
 /// `reason` (absent when `active` is `mode`) why they differ. With no call, `active` is what a
@@ -234,6 +280,17 @@ impl std::fmt::Display for NoiseModel {
 /// this call's stage stepped down. They are absent otherwise, so the JSON is then
 /// `{mode, active, reason?}` as before. A UI shows, for example,
 /// "DeepFilterNet3" or "RNNoise (stepped down: budget)".
+///
+/// For a call's log, where DeepFilterNet3 is in play and a call's stage runs, the state also
+/// carries the stage's timing: `step_down_reason` (the stage's rule at the latest step-down),
+/// `last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget` and `in_grace` (a grace
+/// window is open: the timing rules are held back while the device is busy with something
+/// else, see `NoiseRemovalControl::app_scene_changed`); and kessel-audio's view of the
+/// stage: `capture_stage_strikes`, `capture_stage_bypassed` (why the pipeline last bypassed
+/// the stage, kept after a retry brought it back) and `capture_stage_p99_us`. Each is absent
+/// while unset or zero. The counters (`last_step_down_ms_ago`, `slowest_block_us`,
+/// `blocks_over_budget`, `capture_stage_p99_us`) are read with the state and ride along with
+/// each change; they do not make a change by themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct NoiseRemovalState {
@@ -267,10 +324,45 @@ pub struct NoiseRemovalState {
     /// Phones: how long the microphone paused for the last switch that reopened it, ms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phone_mode_gap_ms: Option<u32>,
+    /// The stage's rule at its latest step-down from DeepFilterNet3 (absent before any).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_down_reason: Option<NoiseStepDownReason>,
+    /// How long ago, in the call's audio, the latest step-down was (ms; absent before any).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_step_down_ms_ago: Option<u64>,
+    /// The call's slowest stage block so far, microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slowest_block_us: Option<u64>,
+    /// The call's stage blocks over the stage's budget so far.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub blocks_over_budget: u64,
+    /// A grace window is open: the stage's timing rules are held back while the device is busy
+    /// with something else (the call's start, the audio session, a route change, a camera, an
+    /// app switch).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub in_grace: bool,
+    /// kessel-audio's budget strikes and faults against the stage so far.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub capture_stage_strikes: u32,
+    /// Why kessel-audio last bypassed the stage (`budget` or `fault`), kept after a retry
+    /// brought it back (`reason` says whether it is bypassed now).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_bypassed: Option<NoiseRemovalReason>,
+    /// kessel-audio's 99th percentile of the stage's last 100 blocks, microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_p99_us: Option<u32>,
 }
 
 fn is_zero(v: &u32) -> bool {
     *v == 0
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl NoiseRemovalState {
@@ -291,7 +383,27 @@ impl NoiseRemovalState {
             phone_mode_reason: None,
             phone_mode_switches: 0,
             phone_mode_gap_ms: None,
+            step_down_reason: None,
+            last_step_down_ms_ago: None,
+            slowest_block_us: None,
+            blocks_over_budget: 0,
+            in_grace: false,
+            capture_stage_strikes: 0,
+            capture_stage_bypassed: None,
+            capture_stage_p99_us: None,
         }
+    }
+
+    /// This state without the counters that change with every block
+    /// (`last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget`,
+    /// `capture_stage_p99_us`): what a change of state is judged on.
+    #[cfg_attr(not(feature = "audio-core"), allow(dead_code))]
+    pub(crate) fn change_key(mut self) -> NoiseRemovalState {
+        self.last_step_down_ms_ago = None;
+        self.slowest_block_us = None;
+        self.blocks_over_budget = 0;
+        self.capture_stage_p99_us = None;
+        self
     }
 
     /// This state with the phone's capture, why it is not what the setting asks for
@@ -414,6 +526,64 @@ mod tests {
             assert_eq!(m.as_str(), n);
             assert_eq!(serde_json::to_value(m).unwrap(), serde_json::json!(n));
         }
+    }
+
+    /// The timing fields: absent when unset (the JSON is as before), their names when set, read
+    /// back; the counters do not make a change by themselves, the reason and the grace do.
+    #[test]
+    fn timing_fields_json() {
+        let base = NoiseRemovalState::running(NoiseRemoval::Standard);
+        assert_eq!(
+            serde_json::to_value(base).unwrap(),
+            serde_json::json!({"mode": "standard", "active": "standard"})
+        );
+        let mut s = base;
+        s.step_down_reason = Some(NoiseStepDownReason::SlowWindow);
+        s.last_step_down_ms_ago = Some(1_234);
+        s.slowest_block_us = Some(7_100);
+        s.blocks_over_budget = 3;
+        s.in_grace = true;
+        s.capture_stage_strikes = 1;
+        s.capture_stage_bypassed = Some(NoiseRemovalReason::Budget);
+        s.capture_stage_p99_us = Some(6_200);
+        let v = serde_json::to_value(s).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"mode": "standard", "active": "standard",
+                "step_down_reason": "slow_window", "last_step_down_ms_ago": 1234,
+                "slowest_block_us": 7100, "blocks_over_budget": 3, "in_grace": true,
+                "capture_stage_strikes": 1, "capture_stage_bypassed": "budget",
+                "capture_stage_p99_us": 6200})
+        );
+        let back: NoiseRemovalState = serde_json::from_value(v).unwrap();
+        assert_eq!(back, s);
+        for (r, n) in [
+            (NoiseStepDownReason::SlowBlock, "slow_block"),
+            (NoiseStepDownReason::SlowWindow, "slow_window"),
+            (NoiseStepDownReason::Heavy, "heavy"),
+            (NoiseStepDownReason::Fault, "fault"),
+            (NoiseStepDownReason::Forced, "forced"),
+        ] {
+            assert_eq!(r.as_str(), n);
+            assert_eq!(r.to_string(), n);
+            assert_eq!(serde_json::to_value(r).unwrap(), serde_json::json!(n));
+        }
+        // The counters ride along; the reason, the grace and the strikes make a change.
+        let mut counters = base;
+        counters.last_step_down_ms_ago = Some(10);
+        counters.slowest_block_us = Some(1);
+        counters.blocks_over_budget = 9;
+        counters.capture_stage_p99_us = Some(5);
+        assert_eq!(counters.change_key(), base.change_key());
+        let mut grace = base;
+        grace.in_grace = true;
+        assert_ne!(grace.change_key(), base.change_key());
+        let mut reason = base;
+        reason.step_down_reason = Some(NoiseStepDownReason::Heavy);
+        assert_ne!(reason.change_key(), base.change_key());
+        let mut strikes = base;
+        strikes.capture_stage_strikes = 1;
+        assert_ne!(strikes.change_key(), base.change_key());
     }
 
     /// The phone fields: absent when unset (the JSON is as before), present when set, and

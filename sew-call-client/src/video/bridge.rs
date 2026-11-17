@@ -1205,6 +1205,11 @@ impl VideoBridge {
         if !policy.video_enabled || !policy.camera_allowed {
             return Err(VideoError::NotAllowed);
         }
+        // A camera opens (or reopens on another device): the device is busy for a moment, so
+        // the call's noise removal stage holds its timing rules back.
+        if slot.as_ref().is_none_or(|r| r.device != req.device) {
+            call.noise_grace();
+        }
         if let Some(r) = slot.as_ref() {
             if r.device == req.device {
                 return Ok(r.state());
@@ -1251,6 +1256,7 @@ impl VideoBridge {
         req.device = device;
         req.temporal_layers = r.temporal;
         let policy = call.media_policy().ok_or(VideoError::NotAllowed)?;
+        call.noise_grace();
         self.switch(call, &mut slot, &policy, req).await
     }
 

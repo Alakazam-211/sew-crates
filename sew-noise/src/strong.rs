@@ -15,6 +15,15 @@
 //!   median over 3 ms, a device that keeps up but with little left (a hot phone);
 //! - a non-finite sample from the model (a fault: no retry).
 //!
+//! Grace. While a grace window is open ([`crate::StageControl::grace`]; the stage opens one
+//! of [`crate::DEFAULT_GRACE`] at its first block, at a reset and when it takes a model handed
+//! over) the first three rules are held back: the model steps down only at the second block
+//! over 6 ms among the last 100 model blocks (reported as [`StepDownReason::SlowWindow`]), the
+//! count at which the audio pipeline's own percentile rule would bypass the whole stage. A
+//! fault is final as ever. The window's blocks are forgotten when it closes. A step-down in a
+//! window, or within 5 s after it closed, is retried after 5 s; the schedule below is
+//! otherwise unchanged.
+//!
 //! The switch is glitch-free and costs no model run: the block after the decision is the
 //! model's held overlap-add tail (what it had already computed for that block) plus
 //! Standard's output weighted by the window's complement, which is a one-block cross-fade

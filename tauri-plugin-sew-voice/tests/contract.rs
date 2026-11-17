@@ -2,7 +2,7 @@
 //! HTTP shapes, and that the command list, the build script and the permission set agree.
 
 // The helpers (not only #[test] fns) unwrap: a test that cannot set up must fail loudly.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -23,8 +23,8 @@ use tauri_plugin_sew_voice::{
     VideoPaused, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoSource, VideoTrack,
 };
 use tauri_plugin_sew_voice::{
-    NOISE_COMMANDS, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode,
-    SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
+    NOISE_COMMANDS, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason,
+    PhoneAudioMode, SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
 };
 
 /// `v` serializes to exactly `want` and `want` parses back to `v`.
@@ -1270,6 +1270,30 @@ fn noise_removal_shapes() {
         &NoiseRemovalState::stepped_down(NoiseRemoval::Standard, NoiseRemovalReason::Budget),
         json!({"mode": "standard", "active": "off", "reason": "budget"}),
     );
+    // The stage's timing for a call's log (where DeepFilterNet3 is in play), and
+    // kessel-audio's view of the stage.
+    let mut timed =
+        NoiseRemovalState::stepped_down(NoiseRemoval::Standard, NoiseRemovalReason::Budget);
+    timed.step_down_reason = Some(NoiseStepDownReason::SlowBlock);
+    timed.last_step_down_ms_ago = Some(4_500);
+    timed.slowest_block_us = Some(9_300);
+    timed.blocks_over_budget = 2;
+    timed.in_grace = true;
+    timed.capture_stage_strikes = 1;
+    timed.capture_stage_bypassed = Some(NoiseRemovalReason::Budget);
+    timed.capture_stage_p99_us = Some(6_400);
+    exact(
+        &timed,
+        json!({"mode": "standard", "active": "off", "reason": "budget",
+            "step_down_reason": "slow_block", "last_step_down_ms_ago": 4500,
+            "slowest_block_us": 9300, "blocks_over_budget": 2, "in_grace": true,
+            "capture_stage_strikes": 1, "capture_stage_bypassed": "budget",
+            "capture_stage_p99_us": 6400}),
+    );
+    exact(&NoiseStepDownReason::SlowWindow, json!("slow_window"));
+    exact(&NoiseStepDownReason::Heavy, json!("heavy"));
+    exact(&NoiseStepDownReason::Fault, json!("fault"));
+    exact(&NoiseStepDownReason::Forced, json!("forced"));
     exact(&SetNoiseRemovalArgs::new("off"), json!({"mode": "off"}));
     assert_eq!(
         SetNoiseRemovalArgs::new("standard").mode(),

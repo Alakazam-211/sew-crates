@@ -27,20 +27,22 @@ the end-to-end encrypted calls (`sew-e2ee`).
 - Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
   repository at each release, so pull requests are not merged there)
 - API documentation: <https://docs.rs/sew-mls-crypto>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `sew-mls-crypto` form, which labels the issue `crate:sew-mls-crypto`
 - Security problems: report them privately, as
-  <https://github.com/Alakazam-211/sew-crates/security/policy> says.
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
 - No third-party audit: this crate has not had a third-party security audit.
 
 ## Usage
 
 ```toml
 [dependencies]
-sew-mls-crypto = "0.10.3"
+sew-mls-crypto = "0.10.4"
 openmls = "=0.9.0"
 ```
 
 ```rust
-use openmls::prelude::*;
 use sew_mls_crypto::MlsProvider;
 
 let provider = MlsProvider::new();
@@ -56,11 +58,13 @@ itself: `openmls` 0.9.0 depends on `openmls_traits` 0.6, and this crate implemen
 Leave openmls' `targeted-messages-draft` and `virtual-clients-draft` features off: they add
 required methods to `OpenMlsCrypto` that this provider does not implement.
 
-MSRV: Rust 1.95.
-
 `SignatureKeyPair` is the signature key pair of a basic credential (Ed25519 or ECDSA P-256), in
 place of `openmls_basic_credential`'s: the same keys, signatures, serde and TLS forms and storage
 id, so key pairs and groups made with either work with the other.
+
+## Features
+
+None: the crate has no Cargo features.
 
 ## Licence
 

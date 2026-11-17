@@ -2,7 +2,7 @@
 
 The open Rust crates of Sew, Alakazam Labs' team chat server: its wire contracts, the end-to-end
 encrypted call keys, the LiveKit-protocol pieces, the native voice engine and its Tauri 2
-plugin, and the microphone noise removal. Each directory is one crate as `cargo package` ships it, with its own licence files.
+plugin, the Tauri 2 plugin for an App shell on a Sew server, and the microphone noise removal. Each directory is one crate as `cargo package` ships it, with its own licence files.
 
 ## Getting the code
 
@@ -17,6 +17,9 @@ git clone https://github.com/Alakazam-211/sew-crates third_party/sew-crates
 
 Security problems: see [SECURITY.md](SECURITY.md) (private reporting only).
 
+Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>, with the form of the crate concerned, which
+labels the issue `crate:<name>` (for example `crate:sew-proto`).
+
 ## What you need: a Sew server
 
 These crates are clients. They talk to a Sew server (the chat server: accounts, channels,
@@ -29,6 +32,7 @@ in this repository or anywhere else public.
 
 | You are building | Use | It brings in |
 |---|---|---|
+| A Tauri 2 desktop App shell on a Sew App server (servers, sign-in, the device session in the OS keychain, voice through the App's native lane) | `tauri-plugin-sew-app` | `tauri-plugin-sew-voice` and everything below it |
 | Voice calls in a Tauri 2 desktop app | `tauri-plugin-sew-voice` | `sew-call-client` and everything below it |
 | Voice calls in another native Rust app | `sew-call-client` | `sew-e2ee`, `sew-lk-compat`, `sew-lkproto`, `sew-proto`, `sew-noise`, `kessel-audio`, `kessel-video` |
 | Your own end-to-end encrypted call client (keys only, no media) | `sew-e2ee` | `sew-mls-crypto`, `sew-proto` |
@@ -40,13 +44,14 @@ in this repository or anywhere else public.
 How they depend on each other:
 
 ```text
-tauri-plugin-sew-voice
-└── sew-call-client ── kessel-audio, kessel-video (K2's, from crates.io)
-    ├── sew-e2ee ── sew-mls-crypto
-    │   └── sew-proto
-    ├── sew-lk-compat ── sew-lkproto
-    ├── sew-noise ── nnnoiseless (from crates.io)
-    └── sew-proto
+tauri-plugin-sew-app
+└── tauri-plugin-sew-voice
+    └── sew-call-client ── kessel-audio, kessel-video (K2's, from crates.io)
+        ├── sew-e2ee ── sew-mls-crypto
+        │   └── sew-proto
+        ├── sew-lk-compat ── sew-lkproto
+        ├── sew-noise ── nnnoiseless (from crates.io)
+        └── sew-proto
 ```
 
 `sew-call-client`'s `JoinProvider` documentation has a complete, compiled example: a provider
@@ -56,14 +61,15 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.10.3 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.10.3 | Apache-2.0 |
-| `sew-mls-crypto` | 0.10.3 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.10.3 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.10.3 | Apache-2.0 |
-| `sew-noise` | 0.10.3 | MIT OR Apache-2.0 |
-| `sew-call-client` | 0.8.1 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.8.1 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.10.4 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.10.4 | Apache-2.0 |
+| `sew-mls-crypto` | 0.10.4 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.10.4 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.10.4 | Apache-2.0 |
+| `sew-noise` | 0.10.4 | MIT OR Apache-2.0 |
+| `sew-call-client` | 0.8.2 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.8.2 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-app` | 0.5.1 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
@@ -81,10 +87,10 @@ that crate.
 ## Using the crates
 
 They depend on each other by version. `sew-proto`, `sew-lkproto`, `sew-mls-crypto`,
-`sew-e2ee`, `sew-lk-compat` and `sew-noise` are published on crates.io as well, so on their
-own they need only a dependency line. `sew-call-client` and `tauri-plugin-sew-voice` are not
-on crates.io yet. To use
-them from this directory, in your workspace's root
+`sew-e2ee`, `sew-lk-compat`, `sew-noise`, `sew-call-client` and
+`tauri-plugin-sew-voice` are published on crates.io as well, so on their own they need only a
+dependency line. `tauri-plugin-sew-app` is not on crates.io yet. To use
+it (or the others) from this directory, in your workspace's root
 `Cargo.toml`, add this one `[patch.crates-io]` block (a `[patch]` applies only from the
 workspace root; if you already have one, add these rows to it, since a second block is a TOML
 error). It points each crate at its directory:
@@ -98,11 +104,12 @@ sew-e2ee = { path = "third_party/sew-crates/sew-e2ee" }
 sew-lk-compat = { path = "third_party/sew-crates/sew-lk-compat" }
 sew-call-client = { path = "third_party/sew-crates/sew-call-client" }
 tauri-plugin-sew-voice = { path = "third_party/sew-crates/tauri-plugin-sew-voice" }
+tauri-plugin-sew-app = { path = "third_party/sew-crates/tauri-plugin-sew-app" }
 sew-noise = { path = "third_party/sew-crates/sew-noise" }
 ```
 
 The voice engine's WebRTC stack is `sew-str0m`, Alakazam Labs' public fork of `str0m` 0.25
-(library name `str0m`). It comes from crates.io (`sew-str0m` 0.25.3), with its own fork of
+(library name `str0m`). It comes from crates.io (`sew-str0m` 0.25.5), with its own fork of
 `is`, `sew-str0m-is`, so it needs no row; the other str0m crates and its DTLS, `dimpl`,
 come from crates.io too.
 
@@ -111,12 +118,12 @@ from crates.io and need no row.
 
 ## Building and testing this directory
 
-`Cargo.toml` here is a workspace of the eight crates with those rows filled in, and
+`Cargo.toml` here is a workspace of the nine crates with those rows filled in, and
 `Cargo.lock` is the lock this release was resolved and tested with (`cargo test --workspace`
 and `cargo doc`, on Linux). So, for example,
 `cargo build --locked -p sew-call-client --no-default-features --features audio-core` builds from
 this directory alone. The voice engine's default `audio` feature needs ALSA's development files
-on Linux, and the plugin's default `tauri` feature needs Tauri's (webkit2gtk-4.1, gtk3,
+on Linux, and the plugins' default `tauri` feature needs Tauri's (webkit2gtk-4.1, gtk3,
 libsoup3). `deny.toml` is the cargo-deny configuration this release was checked with, and
 `clippy.toml` the clippy configuration (`cargo clippy --workspace --all-targets -- -D warnings`
 passes with it).

@@ -30,6 +30,9 @@
 //! through `sew-e2ee`, the call socket ([`gateway`]), the device store ([`device`]), the
 //! mandatory checks and sew-lk-compat's LkGcm. The only other provider is the test-only
 //! `StaticKeys` (feature `testing`).
+// Test code may unwrap and expect: the packaged crate has no clippy.toml (whose
+// allow-unwrap-in-tests and allow-expect-in-tests say so in this repository).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod api;
 #[cfg(feature = "audio-core")]
@@ -82,7 +85,10 @@ pub use noise::bench as noise_bench;
 /// call by default (feature `dfn3`).
 #[cfg(feature = "dfn3")]
 pub use noise::{DFN3_IDLE_UNLOAD, Dfn3LoadInfo};
-pub use noise::{NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, PhoneAudioMode};
+pub use noise::{
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason,
+    PhoneAudioMode,
+};
 pub use provider::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
     DmCall, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED,
@@ -201,3 +207,8 @@ pub fn system_clock() -> Clock {
     use sew_proto::clock::Clock as _;
     std::sync::Arc::new(|| sew_proto::clock::SystemClock.now_unix_ms())
 }
+
+/// README.md's examples, compiled and run as doc tests (with the `audio-core` feature: the example starts the audio bridge).
+#[cfg(all(doctest, feature = "audio-core"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;

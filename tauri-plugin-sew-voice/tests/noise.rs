@@ -3,7 +3,7 @@
 //! change, a mode this version can't run is refused with nothing changed, and an engine without
 //! noise removal takes only `off`.
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 

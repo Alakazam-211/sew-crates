@@ -2,7 +2,7 @@
 
 A Tauri App on a Sew server (on K2, or a standalone Sew) is a thin shell: its window loads the
 App's live site, and its Rust signs in to the App's server through the server's **native lane**
-(`/sew/native/*`, lane 1, served by the Seed's BFF). `tauri-plugin-sew-app` is the part every
+(`/sew/native/*`, lane 1, served by the App's server). `tauri-plugin-sew-app` is the part every
 such shell needs; `tauri-plugin-sew-voice` is the call engine beside it. The crate's README
 (`crates/tauri-plugin-sew-app/README.md`) is the full guide; this page is the checklist.
 
@@ -67,14 +67,15 @@ and `handoff` without its set are refused.
 
 ## Testing
 
-- `scripts/check-tauri-app.sh` (a k2 compute job; see its header): fmt, clippy and tests of the
-  core, the default features and the mock-runtime capability test, the public-crate check, and
-  a build of `examples/tauri-app-example`.
-- The fake lane (`fake::FakeLane`, `Builder::fake`) for tests and UI work;
-  `SEW_APP_FAKE=1` runs the example with no server.
-- `tests/real_lane.rs` (ignored) against a live App server's lane: `SEW_APP_LANE_URL`,
-  `SEW_APP_LANE_USER`, `SEW_APP_LANE_PASSWORD` and optionally `SEW_APP_LANE_ROOM`, then
-  `cargo test --test real_lane -- --ignored`.
+- The crate's own tests: `cargo test` (the core and HTTP, with a replay of the lane's contract
+  fixture), `cargo test --no-default-features` (the core alone) and
+  `cargo test --features tauri-test` (the capability test on Tauri's mock runtime). In Sew's
+  own tree, `scripts/check-tauri-app.sh` runs them with fmt, clippy, the public-crate check and
+  a build of Sew's example shell.
+- The fake lane (`fake::FakeLane`, `Builder::fake`) for tests and UI work, with no server.
+- `tests/real_lane.rs`, built only with `--cfg sew_real_lane`, against a live App server's lane:
+  `SEW_APP_LANE_URL`, `SEW_APP_LANE_USER`, `SEW_APP_LANE_PASSWORD` and optionally
+  `SEW_APP_LANE_ROOM`, then `RUSTFLAGS="--cfg sew_real_lane" cargo test --test real_lane`.
 
 ## Not yet
 

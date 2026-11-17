@@ -9,8 +9,9 @@
 //! The model is the work of Hendrik Schröter and the DeepFilterNet authors
 //! (<https://github.com/Rikorose/DeepFilterNet>, MIT OR Apache-2.0). Its weights are not in this
 //! crate: an app ships the weights archive as a resource ([`WEIGHTS_FILE`]) and passes its path
-//! to [`Dfn3Model::load`], which checks the archive's sha256 against [`WEIGHTS_SHA256`] before
-//! reading a weight. A [`Stage`](crate::Stage) built with the model ([`crate::Stage::with_dfn3`])
+//! to [`Dfn3Model::load`] (or its bytes to [`Dfn3Model::load_bytes`], or to a [`Dfn3Loader`] in
+//! pieces), which checks the archive's sha256 against [`WEIGHTS_SHA256`] before reading a
+//! weight. A [`Stage`](crate::Stage) built with the model ([`crate::Stage::with_dfn3`])
 //! runs it as [`Mode::Strong`](crate::Mode::Strong), with RNNoise kept warm beside it as the
 //! step-down; without a model (the file missing, or its hash not the pinned one) an app builds
 //! [`crate::Stage::new`] and runs RNNoise.
@@ -25,6 +26,8 @@ mod weights;
 
 use std::path::Path;
 use std::sync::Arc;
+
+use sha2::{Digest, Sha256};
 
 pub(crate) use stream::{Dfn3Stream, tail_weight};
 
@@ -100,6 +103,22 @@ impl Dfn3Model {
         }))
     }
 
+    /// Loads the weights archive from `bytes` (an app that holds the archive in memory, such as
+    /// a web page that fetched it).
+    ///
+    /// The same checks and refusals as [`Self::load`]: first the sha256 of all of `bytes` is
+    /// checked against [`WEIGHTS_SHA256`] ([`LoadError::Mismatch`] otherwise), and only then is a
+    /// weight read; the bytes are hashed again as they are read. Memory during the load is the
+    /// weights beside `bytes`. Slow: call it off the audio thread, or use a [`Dfn3Loader`] to
+    /// spread the work.
+    pub fn load_bytes(bytes: &[u8]) -> Result<Arc<Self>, LoadError> {
+        let mut loader = Dfn3Loader::new();
+        loader.hash(bytes)?;
+        loader.verify()?;
+        loader.read(bytes)?;
+        loader.finish()
+    }
+
     /// Checks that the file at `path` is the pinned weights archive (its sha256 is
     /// [`WEIGHTS_SHA256`]) without loading it: the file is hashed in 64 KiB chunks and nothing
     /// of it is kept. For an app that records where the weights are and loads them later.
@@ -115,6 +134,149 @@ impl Dfn3Model {
     pub fn weight_bytes(&self) -> usize {
         self.weights.bytes()
     }
+}
+
+/// Loads the weights archive from bytes handed over in pieces, for a caller that has to spread
+/// the work over time (an audio thread with no other thread to load on, such as a Web Audio
+/// worklet). The bytes go through twice, in order, in pieces of any size:
+///
+/// 1. [`Self::hash`] every piece, then [`Self::verify`]: refuses unless the bytes are the pinned
+///    archive ([`WEIGHTS_SHA256`]). Nothing has been parsed yet.
+/// 2. [`Self::read`] every piece again, then [`Self::finish`]: the model. The pieces are hashed
+///    again as they are read, so bytes that changed between the passes are refused.
+///
+/// The checks and refusals are [`Dfn3Model::load`]'s. A call out of this order, or any call
+/// after a refusal, is refused. Memory is the weights and nothing else: each piece is read as
+/// it comes.
+///
+/// ```
+/// use sew_noise::dfn3::{Dfn3Loader, LoadError};
+///
+/// let mut loader = Dfn3Loader::new();
+/// loader.hash(b"not the weights").unwrap();
+/// assert!(matches!(loader.verify(), Err(LoadError::Mismatch { .. })));
+/// assert!(loader.read(b"not the weights").is_err(), "refused for good");
+/// ```
+pub struct Dfn3Loader {
+    pass: Pass,
+}
+
+enum Pass {
+    Hashing { hash: Sha256, bytes: u64 },
+    Verified,
+    Reading(weights::Reader),
+    Refused,
+}
+
+impl std::fmt::Debug for Dfn3Loader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pass = match self.pass {
+            Pass::Hashing { .. } => "hashing",
+            Pass::Verified => "verified",
+            Pass::Reading(_) => "reading",
+            Pass::Refused => "refused",
+        };
+        f.debug_struct("Dfn3Loader").field("pass", &pass).finish()
+    }
+}
+
+impl Default for Dfn3Loader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Dfn3Loader {
+    /// A loader at the start of the first pass.
+    pub fn new() -> Self {
+        Self {
+            pass: Pass::Hashing {
+                hash: Sha256::new(),
+                bytes: 0,
+            },
+        }
+    }
+
+    fn out_of_order(&mut self, call: &str) -> LoadError {
+        self.pass = Pass::Refused;
+        LoadError::Format(format!("the loader's {call} was called out of order"))
+    }
+
+    /// The first pass: the next piece of the archive.
+    pub fn hash(&mut self, piece: &[u8]) -> Result<(), LoadError> {
+        match &mut self.pass {
+            Pass::Hashing { hash, bytes } => {
+                hash.update(piece);
+                *bytes += piece.len() as u64;
+                Ok(())
+            }
+            _ => Err(self.out_of_order("hash")),
+        }
+    }
+
+    /// The end of the first pass: refuses unless the bytes hashed are the pinned archive.
+    pub fn verify(&mut self) -> Result<(), LoadError> {
+        match std::mem::replace(&mut self.pass, Pass::Refused) {
+            Pass::Hashing { hash, bytes } => {
+                let sha = weights::hex(&hash.finalize());
+                if sha != WEIGHTS_SHA256 || bytes != WEIGHTS_BYTES {
+                    return Err(LoadError::Mismatch { sha256: sha });
+                }
+                self.pass = Pass::Verified;
+                Ok(())
+            }
+            _ => Err(self.out_of_order("verify")),
+        }
+    }
+
+    /// The second pass: the next piece of the same bytes, read into weights.
+    pub fn read(&mut self, piece: &[u8]) -> Result<(), LoadError> {
+        if matches!(self.pass, Pass::Verified) {
+            self.pass = Pass::Reading(weights::Reader::new());
+        }
+        let Pass::Reading(reader) = &mut self.pass else {
+            return Err(self.out_of_order("read"));
+        };
+        if let Err(e) = reader.feed(piece) {
+            self.pass = Pass::Refused;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The end of the second pass: the model, shared by every stage built with it.
+    pub fn finish(mut self) -> Result<Arc<Dfn3Model>, LoadError> {
+        match std::mem::replace(&mut self.pass, Pass::Refused) {
+            Pass::Reading(reader) => Ok(Arc::new(Dfn3Model {
+                weights: net::Weights::from_tensors(reader.finish()?)?,
+            })),
+            _ => Err(self.out_of_order("finish")),
+        }
+    }
+}
+
+/// Runs the loader's code once, on bytes that are not the weights: 64 KiB hashed in 4 KiB
+/// pieces, then a tiny archive in the weights' format read in 512-byte pieces (and refused, as
+/// it is not the pinned archive). For an app that loads the weights on an audio thread later:
+/// run at a time when a slow first run does not matter (before audio starts), so that a
+/// WebAssembly engine has compiled this code by the time the real load runs. It shares no
+/// state with any loader or model, and allocates a few small buffers, freed before it returns.
+#[doc(hidden)]
+pub fn warm_up_loader() {
+    let mut h = Sha256::new();
+    let piece = [0u8; 4096];
+    for _ in 0..16 {
+        h.update(piece);
+    }
+    let _ = weights::hex(&h.finalize());
+    let archive = weights::synthetic_archive();
+    let mut reader = weights::Reader::new();
+    for p in archive.chunks(512) {
+        if reader.feed(p).is_err() {
+            return;
+        }
+    }
+    let _ = reader.finish();
 }
 
 /// The model alone, one 480-sample hop at a time, with no stage around it: for comparing this

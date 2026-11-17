@@ -26,12 +26,17 @@ Not affiliated with or endorsed by LiveKit.
 - Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
   repository at each release, so pull requests are not merged there)
 - API documentation: <https://docs.rs/sew-lkproto>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `sew-lkproto` form, which labels the issue `crate:sew-lkproto`
+- Security problems: report them privately, as
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
 
 ## Usage
 
 ```toml
 [dependencies]
-sew-lkproto = "0.10.3"
+sew-lkproto = "0.10.4"
 prost = "0.14"
 ```
 
@@ -55,6 +60,10 @@ fn version(declared: i32) -> Result<ProtocolVersion, BelowFloor> {
 error that holds the number the client declared (`declared`). A `ProtocolVersion` then answers
 feature questions, for example `supports_packet_trailer()`, so callers do not compare numbers
 themselves.
+
+## Features
+
+None: the crate has no Cargo features.
 
 ## Licence
 

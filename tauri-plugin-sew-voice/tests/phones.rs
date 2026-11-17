@@ -3,7 +3,7 @@
 //! `video_changed`, the camera permission and the device orientation.
 
 // The helpers (not only #[test] fns) unwrap: a test that cannot set up must fail loudly.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -636,6 +636,13 @@ async fn orientation_and_scene_reach_the_engine_without_a_call() {
     w.control.resume();
     assert!(!w.svc.is_background());
     assert_eq!(w.engine.app_scenes().len(), 2);
+    // Each scene is also a moment for the noise removal's grace window, as is Tauri's
+    // lifecycle (resumed, a window's focus), which says no direction and moves no sink.
+    assert_eq!(w.engine.app_scene_changes(), 2);
+    w.svc.app_scene_changed();
+    assert_eq!(w.engine.app_scene_changes(), 3);
+    assert_eq!(w.engine.app_scenes().len(), 2);
+    assert!(!w.svc.is_background());
 }
 
 fn screen_changes(w: &World) -> Vec<serde_json::Value> {

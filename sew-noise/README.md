@@ -22,16 +22,20 @@ of voice calls on the sender's device.
 
 - Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
   repository at each release, so pull requests are not merged there)
+- API documentation: <https://docs.rs/sew-noise>
+- Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
+  with the `sew-noise` form, which labels the issue `crate:sew-noise`
 - Security problems: report them privately, as
-  <https://github.com/Alakazam-211/sew-crates/security/policy> says.
+  [SECURITY.md](https://github.com/Alakazam-211/sew-crates/blob/main/SECURITY.md) says.
+- MSRV: Rust 1.95.
 
 ## Usage
 
 ```toml
 [dependencies]
-sew-noise = "0.10.3"
+sew-noise = "0.10.4"
 # or, with DeepFilterNet3 and the capture-hook trait:
-# sew-noise = { version = "0.10.3", features = ["dfn3", "capture-stage"] }
+# sew-noise = { version = "0.10.4", features = ["dfn3", "capture-stage"] }
 ```
 
 No feature is on by default: `dfn3` and `capture-stage` are opt-in.
@@ -125,8 +129,31 @@ repeated switches it stays on `Standard`. `StageStats` reports where `Strong` is
 (`strong_state`), the switches (`step_downs`, `last_step_down`) and the blocks the model ran.
 Both models delay the audio by the same amount. A block allocates nothing and takes no lock.
 
-The weights are not in this package. They are the asset `sew-dfn3-0.10.3.tar.gz` of the Sew
-0.10.3 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.10.3`; sha256
+A device is briefly busy at a call's start and when the app or the OS does something else
+(the audio route changes, a camera starts, the app moves to the background). The stage opens
+a grace window by itself when it starts, and an app reports such moments with
+`StageControl::grace`: in the window the stage switches only where the audio pipeline's own
+budget rule would stop it anyway, and a switch made then is retried sooner.
+
+An app that holds the weights in memory (a web page that fetched them, for example) loads them
+with `Dfn3Model::load_bytes`, which makes the same check and the same refusals as a load by
+path. An app with no thread to spare for the load, such as a Web Audio worklet, can spread it
+over time: a `dfn3::Dfn3Loader` takes the bytes in pieces of any size, first to check their
+sha256 (nothing is parsed until it matches) and then to read them; `Dfn3Layer::cold` and
+`Dfn3Layer::warm_up_step` build the model's layer one block of work at a time; and
+`StageControl::attach_dfn3` hands it to a running stage, which fades `Strong` in without a
+click. Where the standard library has no clock (`wasm32-unknown-unknown`), `Stage::set_clock`
+gives the stage one, so that it can time its blocks and step down.
+
+The same caller can spread each block's model work too: `Stage::begin_block` does the cheap
+part, `Stage::step_block` runs one part of the model at a time (`Stage::block_steps_left`
+says how many are left), and `Stage::end_block` finishes the block, with the time the caller
+counts for it. The output is `Stage::process`'s, bit for bit, however the steps are spread; a
+caller that spreads a block over the time until the next one is in sends it out one block
+later.
+
+The weights are not in this package. They are the asset `sew-dfn3-0.10.4.tar.gz` of the Sew
+0.10.4 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.10.4`; sha256
 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). It holds a `dfn3/` folder
 with the weights (`dfn3_ll.nnef.tar`), their NOTICE and the MIT and Apache-2.0 texts. The
 loader checks the weights file against `dfn3::WEIGHTS_SHA256`

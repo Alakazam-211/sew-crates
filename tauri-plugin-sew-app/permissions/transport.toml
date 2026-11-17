@@ -1,0 +1,20 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "transport"
+description = """
+The API transport, for an App's bundled UI: `api` (the App's client API through the server's
+native lane, with the device bearer kept in the app), `gateway_open`, `gateway_send` and
+`gateway_close` (the gateway socket held in the app and relayed over a channel, its ticket put in
+by the app), and `upload_bytes` (raw bytes to an upload or an image route). The page never gets
+the bearer or a ticket. Grant it to the bundled UI's own capability; a server's live site has its
+cookie session and doesn't need it. The `sewfile:` scheme needs no permission: it answers only
+the bundled UI's pages.
+"""
+permissions = [
+  "allow-api",
+  "allow-gateway-open",
+  "allow-gateway-send",
+  "allow-gateway-close",
+  "allow-upload-bytes",
+]

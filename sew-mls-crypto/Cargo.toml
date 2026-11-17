@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-mls-crypto"
-version = "0.10.3"
+version = "0.10.4"
 build = "build.rs"
 include = [
     "src/**",
@@ -30,8 +30,16 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "An OpenMLS crypto provider on permissive crates only: openmls_traits' OpenMlsCrypto and OpenMlsRand over RustCrypto, with HPKE (RFC 9180) through the `hpke` crate (MIT OR Apache-2.0) instead of the MPL-2.0 hpke-rs. Builds for Linux, macOS, Windows and wasm32."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/sew-mls-crypto"
 documentation = "https://docs.rs/sew-mls-crypto"
 readme = "README.md"
+keywords = [
+    "mls",
+    "openmls",
+    "hpke",
+    "crypto",
+    "rustcrypto",
+]
 categories = ["cryptography"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"

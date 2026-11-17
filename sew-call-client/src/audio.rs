@@ -273,6 +273,25 @@ impl SessionSink for AudioEngine {
     }
 }
 
+/// A bridge's session sink: the call's noise removal hears an event first (an activation, a
+/// resume or a route change opens its stage's grace window before the device reopens), then
+/// kessel-audio's engine.
+pub(crate) struct BridgeSink {
+    pub(crate) engine: Weak<AudioEngine>,
+    pub(crate) noise: Option<(NoiseRemovalControl, u64)>,
+}
+
+impl SessionSink for BridgeSink {
+    fn apply(&self, event: SessionEvent) {
+        if let Some((noise, id)) = &self.noise {
+            noise.session_event(*id, event);
+        }
+        if let Some(engine) = self.engine.upgrade() {
+            engine.apply(event);
+        }
+    }
+}
+
 impl AudioSession {
     /// A new session state (nothing reported yet).
     pub fn new() -> AudioSession {
@@ -351,6 +370,8 @@ pub struct AudioBridge {
     session_id: u64,
     /// The noise removal this call's audio started with, and the call's id there.
     noise: Option<(NoiseRemovalControl, u64)>,
+    /// The session's sink for this call (the session holds it weakly).
+    _sink: Arc<BridgeSink>,
 }
 
 /// kessel-audio's participant ids → the publishers' engine identities.
@@ -442,7 +463,11 @@ impl AudioBridge {
             control.attach(*id, source);
             call.set_noise_source(control.source(*id));
         }
-        let weak: Weak<_> = Arc::downgrade(&engine);
+        let bridge_sink = Arc::new(BridgeSink {
+            engine: Arc::downgrade(&engine),
+            noise: noise.clone(),
+        });
+        let weak: Weak<BridgeSink> = Arc::downgrade(&bridge_sink);
         let sink: Weak<dyn SessionSink> = weak;
         let session_id = session.attach(sink, deferred);
         // The beacon's played and concealed audio are kessel-audio's own counters.
@@ -462,6 +487,7 @@ impl AudioBridge {
             session: session.clone(),
             session_id,
             noise,
+            _sink: bridge_sink,
         })
     }
 
@@ -474,13 +500,20 @@ impl AudioBridge {
     /// kessel-audio's events since the last read: the engine's queue
     /// (`engine().events()`), drained. Read them here rather than from the engine: the
     /// bridge looks at each on the way (an error while the phone's capture is switching means
-    /// the switch failed: [`NoiseRemovalState::phone_mode_reason`]) and hands every one on.
+    /// the switch failed: [`NoiseRemovalState::phone_mode_reason`]; a change of the devices
+    /// in use opens the noise removal stage's grace window,
+    /// [`NoiseRemovalState::in_grace`]) and hands every one on.
     pub fn events(&self) -> Vec<kessel_audio::Event> {
         let rx = self.engine.events();
         let mut out = Vec::new();
         while let Some(e) = rx.try_recv() {
-            if let (kessel_audio::Event::Error(_), Some((noise, id))) = (&e, &self.noise) {
-                noise.audio_error(*id);
+            match (&e, &self.noise) {
+                (kessel_audio::Event::Error(_), Some((noise, id))) => noise.audio_error(*id),
+                // The streams reopened on other devices: the stage's grace window.
+                (kessel_audio::Event::DevicesInUse(_), Some((noise, id))) => {
+                    noise.devices_changed(*id);
+                }
+                _ => {}
             }
             out.push(e);
         }

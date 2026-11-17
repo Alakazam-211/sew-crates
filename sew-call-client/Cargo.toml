@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-call-client"
-version = "0.8.1"
+version = "0.8.2"
 build = "build.rs"
 include = [
     "src/**",
@@ -24,14 +24,26 @@ include = [
     "README.md",
     "CHANGELOG.md",
 ]
-publish = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
 description = "Sew's native voice engine: LiveKit-protocol signalling and reconnect against Sew's media server, str0m transport with TURN over UDP, TCP and TLS (relay-only when asked), MLS call keys with the mandatory E2EE checks over the call credential and the call socket, the device store, and the kessel-audio bridge."
+homepage = "https://github.com/Alakazam-211/sew-crates/tree/main/sew-call-client"
+documentation = "https://docs.rs/sew-call-client"
 readme = "README.md"
+keywords = [
+    "voice",
+    "webrtc",
+    "e2ee",
+    "livekit",
+    "sew",
+]
+categories = [
+    "multimedia::audio",
+    "network-programming",
+]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 
@@ -181,20 +193,20 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-e2ee]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.sew-lk-compat]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.sew-lkproto]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.sew-noise]
-version = "0.10.3"
+version = "0.10.4"
 optional = true
 
 [dependencies.sew-proto]
-version = "0.10.3"
+version = "0.10.4"
 
 [dependencies.sha1]
 version = "0.10"
@@ -204,7 +216,7 @@ version = "0.10"
 optional = true
 
 [dependencies.str0m]
-version = "=0.25.3"
+version = "=0.25.5"
 features = ["pii"]
 default-features = false
 package = "sew-str0m"
@@ -241,7 +253,7 @@ features = ["derive"]
 version = "0.8"
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies.str0m]
-version = "=0.25.3"
+version = "=0.25.5"
 features = [
     "aws-lc-rs",
     "pii",

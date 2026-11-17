@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use kessel_audio::{AudioEngine, EngineConfig};
-use sew_noise::{Mode, Stage, StageControl, warm_up_thread};
+use sew_noise::{Mode, Stage, StageControl, StepDownReason, warm_up_thread};
 use tokio::sync::broadcast;
 
 use super::hook::{self, Bypass, CaptureStage};
 use super::{
-    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseSource, PhoneAudioMode,
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseSource,
+    NoiseStepDownReason, PhoneAudioMode,
 };
 use crate::audio::{PhoneOs, PhoneStart};
 
@@ -157,6 +158,53 @@ fn from_code(v: u8) -> NoiseRemoval {
     }
 }
 
+/// How long a grace window lasts after a moment the device is busy with something else (the
+/// stage's own start window is as long): `sew_noise::DEFAULT_GRACE`.
+const GRACE: Duration = sew_noise::DEFAULT_GRACE;
+
+/// The stage's rule as the state names it.
+fn step_down_reason(r: StepDownReason) -> Option<NoiseStepDownReason> {
+    match r {
+        StepDownReason::SlowBlock => Some(NoiseStepDownReason::SlowBlock),
+        StepDownReason::SlowWindow => Some(NoiseStepDownReason::SlowWindow),
+        StepDownReason::Heavy => Some(NoiseStepDownReason::Heavy),
+        StepDownReason::Fault => Some(NoiseStepDownReason::Fault),
+        StepDownReason::Forced => Some(NoiseStepDownReason::Forced),
+        _ => None,
+    }
+}
+
+/// `state` with the stage's timing and kessel-audio's counters of it, for the call's log.
+fn with_timing(
+    mut state: NoiseRemovalState,
+    stage: &StageControl,
+    audio: Option<&Arc<dyn LiveAudio>>,
+) -> NoiseRemovalState {
+    let st = stage.stats();
+    if st.step_downs > 0 {
+        state.step_down_reason = st.last_step_down.and_then(step_down_reason);
+        state.last_step_down_ms_ago = Some(
+            st.blocks
+                .saturating_sub(st.last_step_down_block)
+                .saturating_mul(10),
+        );
+    }
+    if st.blocks > 0 {
+        state.slowest_block_us = Some(st.max_block_ns / 1_000);
+    }
+    state.blocks_over_budget = st.over_budget;
+    state.in_grace = st.in_grace;
+    if let Some(p) = audio.and_then(|a| a.pipeline_stage()) {
+        state.capture_stage_strikes = p.strikes;
+        state.capture_stage_bypassed = p.bypassed.map(|b| match b {
+            Bypass::Budget => NoiseRemovalReason::Budget,
+            Bypass::Fault => NoiseRemovalReason::Fault,
+        });
+        state.capture_stage_p99_us = Some(p.p99_us);
+    }
+    state
+}
+
 /// How long a switch of the phone's capture may take before it counts as failed when no error
 /// was seen (kessel-audio reopens the device in milliseconds; its error event may have been
 /// read by someone else).
@@ -181,11 +229,19 @@ pub(crate) trait LiveAudio: Send + Sync {
     fn capture_switches(&self) -> (u64, Option<Duration>) {
         (0, None)
     }
+    /// The pipeline's counters of the stage (`None`: none set, or not read here).
+    fn pipeline_stage(&self) -> Option<hook::PipelineStage> {
+        None
+    }
 }
 
 impl LiveAudio for AudioEngine {
     fn bypass(&self) -> Option<Bypass> {
         hook::bypass(self)
+    }
+
+    fn pipeline_stage(&self) -> Option<hook::PipelineStage> {
+        hook::pipeline_stage(self)
     }
 
     #[cfg(all(feature = "mobile", any(target_os = "ios", target_os = "android")))]
@@ -239,7 +295,7 @@ struct Inner {
     unprocessed: AtomicBool,
     next_id: AtomicU64,
     live: Mutex<Option<Live>>,
-    /// The state last published.
+    /// The state last published (its [`NoiseRemovalState::change_key`]).
     last: Mutex<Option<NoiseRemovalState>>,
     events: broadcast::Sender<NoiseRemovalState>,
     #[cfg(feature = "dfn3")]
@@ -700,7 +756,7 @@ impl NoiseRemovalControl {
             return state.with_model(Some(NoiseModel::Dfn3), None, step_downs);
         }
         let why = match st.last_step_down {
-            Some(sew_noise::StepDownReason::Fault) => Some(NoiseRemovalReason::Fault),
+            Some(StepDownReason::Fault) => Some(NoiseRemovalReason::Fault),
             Some(_) => Some(NoiseRemovalReason::Budget),
             // Handed over during the call, and warming up before it fades in.
             None if st.strong_state == sew_noise::StrongState::Warming
@@ -773,6 +829,10 @@ impl NoiseRemovalControl {
         };
         if want == current {
             return;
+        }
+        // The microphone reopens: the stage's timing rules hold back meanwhile.
+        if let Some(stage) = &l.stage {
+            stage.grace(GRACE);
         }
         audio.switch_capture(crate::audio::phone_start(
             p.os,
@@ -850,6 +910,65 @@ impl NoiseRemovalControl {
         }
     }
 
+    /// Opens (or extends) a grace window on the live call's stage (`id`: only if it is that
+    /// call's) and sends the state's change at once. Nothing without a live stage.
+    fn open_grace(&self, id: Option<u64>) {
+        let opened = {
+            let live = lock(&self.inner.live);
+            match live
+                .as_ref()
+                .filter(|l| id.is_none_or(|i| l.id == i))
+                .and_then(|l| l.stage.as_ref())
+            {
+                Some(stage) => {
+                    stage.grace(GRACE);
+                    true
+                }
+                None => false,
+            }
+        };
+        if opened {
+            self.publish();
+        }
+    }
+
+    /// The app moved between the foreground and the background, or its window gained or lost
+    /// focus. Call it from the app's lifecycle (iOS's scene phase, Android's `onResume` and
+    /// `onPause`, a window's focus); it never blocks.
+    ///
+    /// Such a switch loads the device for a moment. The live call's stage opens a grace window
+    /// (about 3 s, `sew_noise::DEFAULT_GRACE`): its timing rules are held back to the audio
+    /// pipeline's own line, so the switch does not cost the call DeepFilterNet3, and a
+    /// step-down that happens anyway is retried after 5 s instead of 30 s. The state says
+    /// `in_grace` while it lasts. Nothing happens without a call.
+    ///
+    /// The call's own events open the same window by themselves: its audio starting, the
+    /// phone's audio session activating or resuming, an audio route change
+    /// ([`crate::AudioSession::event`]), a device switch kessel-audio reports
+    /// ([`crate::AudioBridge::events`]), a switch of the phone's capture, and a camera starting
+    /// through `VideoBridge::set_camera` (feature `video-core`).
+    pub fn app_scene_changed(&self) {
+        self.open_grace(None);
+    }
+
+    /// The phone's audio session reported `event` to the call `id`'s audio: the device is busy
+    /// for a moment when the session activates or resumes and when the route changes.
+    pub(crate) fn session_event(&self, id: u64, event: crate::audio::SessionEvent) {
+        use crate::audio::SessionEvent;
+        match event {
+            SessionEvent::Activated | SessionEvent::Resume | SessionEvent::RouteChanged => {
+                self.open_grace(Some(id));
+            }
+            SessionEvent::Deactivated | SessionEvent::Suspend => {}
+        }
+    }
+
+    /// kessel-audio switched the call `id`'s devices (a hot-plug, a default change, a fallback
+    /// after a loss): the streams reopened.
+    pub(crate) fn devices_changed(&self, id: u64) {
+        self.open_grace(Some(id));
+    }
+
     /// The setting and what runs now.
     pub fn state(&self) -> NoiseRemovalState {
         let mode = self.mode();
@@ -879,7 +998,7 @@ impl NoiseRemovalControl {
         }
     }
 
-    /// What a live call's stage does now.
+    /// What a live call's stage does now, with its timing where DeepFilterNet3 is in play.
     fn live_state(
         &self,
         mode: NoiseRemoval,
@@ -889,6 +1008,20 @@ impl NoiseRemovalControl {
         let Some(stage) = &live.stage else {
             return NoiseRemovalState::stepped_down(mode, NoiseRemovalReason::Unavailable);
         };
+        let state = self.stage_state(mode, stage, audio);
+        if !self.dfn3_given() {
+            return state;
+        }
+        with_timing(state, stage, audio)
+    }
+
+    /// What the live call's `stage` does now.
+    fn stage_state(
+        &self,
+        mode: NoiseRemoval,
+        stage: &StageControl,
+        audio: Option<&Arc<dyn LiveAudio>>,
+    ) -> NoiseRemovalState {
         if crate::audio::PHONE_AUDIO && mode == NoiseRemoval::Standard && !stage.strong_available()
         {
             // A phone's stage passes the audio through until DeepFilterNet3 is there.
@@ -921,9 +1054,11 @@ impl NoiseRemovalControl {
     /// Sends the state if it changed since it was last sent; answers it.
     pub(crate) fn publish(&self) -> NoiseRemovalState {
         let state = self.state();
+        // The counters ride along; they don't make a change by themselves.
+        let key = state.change_key();
         let mut last = lock(&self.inner.last);
-        if *last != Some(state) {
-            *last = Some(state);
+        if *last != Some(key) {
+            *last = Some(key);
             // No receiver is fine.
             let _ = self.inner.events.send(state);
         }
@@ -1081,6 +1216,12 @@ impl NoiseSource for CallNoise {
             return None;
         }
         Some(NoiseRemovalControl { inner }.state())
+    }
+
+    fn grace(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            NoiseRemovalControl { inner }.open_grace(Some(self.id));
+        }
     }
 }
 
@@ -1845,6 +1986,53 @@ mod tests {
             engine.shutdown();
         }
     }
+
+    /// The call's events open its stage's grace window: the session activating or resuming
+    /// and a route change (through the bridge's session sink, before kessel-audio hears it),
+    /// a device switch, a camera starting (the call's noise source) and the app's scene
+    /// changing. A suspend or a deactivation does not, nor another call's events, nor anything
+    /// without a call.
+    #[test]
+    fn the_calls_events_open_grace() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        let stage = control.build_stage();
+        let ctl = stage.control();
+        ctl.set_auto_grace(Duration::ZERO);
+        let id = control.live_with(Some(ctl.clone()));
+        let session = crate::AudioSession::new();
+        let sink = Arc::new(crate::audio::BridgeSink {
+            engine: Weak::new(),
+            noise: Some((control.clone(), id)),
+        });
+        let weak: Weak<crate::audio::BridgeSink> = Arc::downgrade(&sink);
+        session.attach(weak, false);
+        assert!(!ctl.in_grace());
+        let opens = |what: &str, f: &dyn Fn()| {
+            f();
+            assert!(ctl.in_grace(), "{what} opens a grace window");
+            assert!(ctl.stats().grace_until_block >= 300, "{what}: about 3 s");
+            ctl.end_grace();
+        };
+        let keeps_closed = |what: &str, f: &dyn Fn()| {
+            f();
+            assert!(!ctl.in_grace(), "{what} opens no grace window");
+        };
+        use crate::SessionEvent::{Activated, Deactivated, Resume, RouteChanged, Suspend};
+        opens("activated", &|| session.event(Activated));
+        keeps_closed("suspend", &|| session.event(Suspend));
+        opens("resume", &|| session.event(Resume));
+        opens("a route change", &|| session.event(RouteChanged));
+        keeps_closed("deactivated", &|| session.event(Deactivated));
+        opens("a device switch", &|| control.devices_changed(id));
+        keeps_closed("another call's device switch", &|| {
+            control.devices_changed(id + 1)
+        });
+        opens("a camera starting", &|| control.source(id).grace());
+        opens("the app's scene", &|| control.app_scene_changed());
+        control.detach(id);
+        control.app_scene_changed();
+        assert!(!ctl.in_grace(), "no call: nothing");
+    }
 }
 
 /// DeepFilterNet3 in the control, on the repository's copy of the weights.
@@ -2146,5 +2334,142 @@ mod dfn3_tests {
         );
         end(&control, &engine, id);
         let _ = std::fs::remove_file(&copy);
+    }
+
+    // ── grace (an iPhone field log: the start-up's load stepped DeepFilterNet3 down) ──
+
+    /// A clock whose every reading is `STEP` ns after the one before: each block takes `STEP`
+    /// (the stage reads the clock twice a block). Only the test below uses it.
+    static NOW: AtomicU64 = AtomicU64::new(0);
+    static STEP: AtomicU64 = AtomicU64::new(1_000_000);
+
+    fn clock() -> u64 {
+        NOW.fetch_add(STEP.load(Ordering::Relaxed), Ordering::Relaxed)
+    }
+
+    const MS: u64 = 1_000_000;
+
+    /// The call's blocks: a start-up (one block of 8 ms, then 100 of 5 ms, over the stage's
+    /// single-block, percentile and median lines), quiet blocks, then at 4 s, just after the
+    /// audio route changed, a 7 ms block and 50 of 5 ms; quiet again.
+    fn block_time(i: u64) -> u64 {
+        match i {
+            0 => 8 * MS,
+            1..=100 => 5 * MS,
+            410 => 7 * MS,
+            411..=460 => 5 * MS,
+            _ => MS,
+        }
+    }
+
+    /// A call's stage over DeepFilterNet3 with the test clock, live in `control`, its session
+    /// sink attached to `session` as the bridge attaches it.
+    fn timed_call(
+        control: &NoiseRemovalControl,
+        session: &crate::AudioSession,
+    ) -> (NoiseStage, StageControl, u64, Arc<crate::audio::BridgeSink>) {
+        let mut stage = control.build_stage();
+        stage.set_clock(clock);
+        let ctl = stage.control();
+        assert!(ctl.strong_available());
+        let id = control.live_with(Some(ctl.clone()));
+        let sink = Arc::new(crate::audio::BridgeSink {
+            engine: Weak::new(),
+            noise: Some((control.clone(), id)),
+        });
+        let weak: Weak<crate::audio::BridgeSink> = Arc::downgrade(&sink);
+        session.attach(weak, false);
+        (NoiseStage::new(stage), ctl, id, sink)
+    }
+
+    fn block(stage: &mut NoiseStage, i: u64) {
+        STEP.store(block_time(i), Ordering::Relaxed);
+        let mut b = [0.0f32; 480];
+        for (j, s) in b.iter_mut().enumerate() {
+            *s = 0.05 * ((i as usize * 480 + j) as f32 * 0.031).sin();
+        }
+        stage.process(&mut b);
+    }
+
+    /// The field log's shape: slow blocks at the start of a call and again just after an audio
+    /// route change. The call's stage keeps DeepFilterNet3 through both (the stage's own start
+    /// window, then the one the route change opens through the session); the state says
+    /// `in_grace` while a window is open and carries the stage's timing. Without the route
+    /// change the same blocks step it down, and the state says why and when.
+    #[test]
+    fn start_up_and_a_route_change_keep_dfn3() {
+        let Some(weights) = weights() else { return };
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        control.set_dfn3_weights(&weights).unwrap();
+        control.preload_dfn3().unwrap();
+
+        let session = crate::AudioSession::new();
+        let (mut stage, ctl, id, _sink) = timed_call(&control, &session);
+        let mut events = control.subscribe();
+        stage.reset();
+        for i in 0..400 {
+            block(&mut stage, i);
+            if i == 150 {
+                assert!(control.state().in_grace, "the start's window");
+            }
+        }
+        let s = control.state();
+        assert_eq!(
+            (s.active, s.model, s.step_downs, s.in_grace),
+            (NoiseRemoval::Standard, Some(NoiseModel::Dfn3), 0, false),
+            "the start-up kept DeepFilterNet3: {s:?}"
+        );
+        assert!(s.slowest_block_us.is_some_and(|us| us >= 8_000), "{s:?}");
+        assert!(s.blocks_over_budget >= 1, "{s:?}");
+        assert_eq!(s.step_down_reason, None);
+        session.event(crate::SessionEvent::RouteChanged);
+        assert!(control.state().in_grace, "the route change's window");
+        let sent: Vec<NoiseRemovalState> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+        assert!(
+            sent.iter().any(|s| s.in_grace),
+            "the window's opening is sent at once: {sent:?}"
+        );
+        for i in 400..900 {
+            block(&mut stage, i);
+        }
+        let s = control.state();
+        assert_eq!(
+            (s.active, s.model, s.step_downs, s.in_grace),
+            (NoiseRemoval::Standard, Some(NoiseModel::Dfn3), 0, false),
+            "the route change's slow blocks kept DeepFilterNet3: {s:?}"
+        );
+        assert_eq!(ctl.active(), Mode::Strong);
+        let json = serde_json::to_value(s).unwrap();
+        assert!(json.get("in_grace").is_none(), "{json}");
+        assert!(json.get("slowest_block_us").is_some(), "{json}");
+        control.detach(id);
+
+        // The same blocks without the route change's window: the 7 ms block steps down.
+        let session = crate::AudioSession::new();
+        let (mut stage, _ctl, id, _sink) = timed_call(&control, &session);
+        stage.reset();
+        for i in 0..500 {
+            block(&mut stage, i);
+        }
+        let s = control.state();
+        assert_eq!(
+            (s.model, s.model_reason, s.step_downs, s.step_down_reason),
+            (
+                Some(NoiseModel::Rnnoise),
+                Some(NoiseRemovalReason::Budget),
+                1,
+                Some(NoiseStepDownReason::SlowBlock)
+            ),
+            "{s:?}"
+        );
+        assert_eq!(
+            s.last_step_down_ms_ago,
+            Some(900),
+            "at block 410, read after 500"
+        );
+        let json = serde_json::to_value(s).unwrap();
+        assert_eq!(json["step_down_reason"], "slow_block");
+        assert_eq!(json["last_step_down_ms_ago"], 900);
+        control.detach(id);
     }
 }
