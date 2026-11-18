@@ -18,7 +18,7 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.8.2"
+tauri-plugin-sew-voice = "0.8.3"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
@@ -282,7 +282,7 @@ Events go to every window as `sew-voice://<name>`:
 | `sew-voice://speaking` | `[{member_id, level}]`, `level` 0–1, at most 10 a second, your own member included |
 | `sew-voice://devices` | the `devices` answer, on hot-plug, a default change or a `set_device` |
 | `sew-voice://errors` | `{code, detail}` |
-| `sew-voice://recording` | `{recording_id, auto, started_by?, my_consent, consent_prompt?, participants: [{member_id, consent, recorded}], recorder_present, trigger, required, can_record?, can_stop?}`, or `null` once no recording is active (Sew 0.7.3, §3a; `trigger` and `required` Sew 0.9.0; `can_record` and `can_stop` plugin 0.6.1, each only when `true`) |
+| `sew-voice://recording` | `{recording_id, auto, started_by?, started_at?, my_consent, consent_prompt?, participants: [{member_id, consent, recorded}], recorder_present, trigger, required, can_record?, can_stop?}`, or `null` once no recording is active (Sew 0.7.3, §3a; `trigger` and `required` Sew 0.9.0; `can_record` and `can_stop` plugin 0.6.1, each only when `true`; `started_at` after plugin 0.8.2: when the recording started by Sew's clock, RFC 3339 UTC with milliseconds, so a late joiner shows the real running time; absent for the held `auto` placeholder) |
 | `sew-voice://recording_controls` | `{can_record, can_stop, record_unavailable?, source?}`: whether Sew would take a Record or a Stop from this person now, sent when any of them changes (plugin 0.6.1, §3a, Which buttons). `source` (plugin 0.7.0) is `sew` when the Sew server computed them and absent (meaning `host`) when the plugin worked them out from `set_recording_rights`; `record_unavailable` (plugin 0.7.0, from Sew only) is `recording_capacity` or `recorder_unavailable` while `can_record` is `true` but a Record would be refused for now |
 
 **States.**
@@ -318,7 +318,7 @@ Events go to every window as `sew-voice://<name>`:
   Against a Sew older than 0.7.1 a removal ends `kicked`; against one older than 0.7.2 a
   sign-out ends `credential_lost`.
 - Treat reasons you don't know as "call ended".
-- The exact payloads are in the plugin's `tests/native-voice-contract.json`; the fake engine
+- The exact payloads are in the plugin's `contracts/native-voice-contract.json`; the fake engine
   (`fake::FakeCall::end`, `fake::FakeCall::set_speak_denied`) produces them with no call.
 
 **SPEAK.** A member without SPEAK in the channel (a role or an overwrite, not a moderator) has
@@ -658,6 +658,11 @@ command's error with Sew's reason. In Rust they are `Call::start_recording` and
   `"required"`; `"manual"` or `"auto"` against an older Sew) and `required` (the room requires
   its recording, so hide Stop while two or more are in the room); in Rust they are
   sew-call-client's `CallRecording::trigger` and `required`.
+- **When it started.** The `recording` event carries `started_by` and `started_at` (RFC 3339,
+  UTC, milliseconds, by Sew's clock). Count the recording's running time from `started_at`, so
+  someone who joins a call already being recorded sees the real time, not the time since their
+  own join. `started_at` is absent only while a held join into an auto-record room waits
+  (`recording_id` `auto`); in Rust it is `CallRecording::started_at`.
 
 Without the recording route your provider keeps `recording`'s default and both commands
 reject `recording_unsupported`.
@@ -799,7 +804,7 @@ the Keystore device key, the network watch and the call audio mode (§7).
 
 The exact calls for each scenario (held join, mid-call pending, granted, declined, withdrawn,
 `on_self_mute` while server-muted and while SPEAK is denied, a stop) are in the plugin's
-`tests/sew-native-voice-listener.json`.
+`contracts/sew-native-voice-listener.json`.
 
 ### Video on phones
 
@@ -1107,7 +1112,7 @@ tile, the connection bars, an incoming DM call) also uses these. They are not in
   get `call_ring` with `ringing: false` and reason `cancelled`. On a phone, the listener's `on_incoming(Some)` is where CallKit's
   `reportNewIncomingCall` (or Telecom's `addNewIncomingCall`) goes, and answering is
   `VoiceControl::join` with the ring's `target` and `room`.
-- The exact payloads are in the plugin's `tests/native-voice-details.json`; the fake call
+- The exact payloads are in the plugin's `contracts/native-voice-details.json`; the fake call
   (`fake::FakeCall::set_security`, `set_roster`, `set_quality`) produces them with no call.
 
 ## 4. Permissions

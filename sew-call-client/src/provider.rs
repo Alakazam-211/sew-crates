@@ -477,8 +477,50 @@ impl ProviderError {
 /// The host's join callback: call Sew's voice or DM call join with `call_credential: true`
 /// (and no `e2ee`) and return the answer unchanged.
 ///
-/// A minimal provider for an app that holds its own Sew session (a bearer token for Sew's client
-/// API), and a call through it:
+/// # What implementing it needs
+///
+/// The trait and its types ([`BoxFuture`], [`JoinRequest`], [`JoinAnswer`], [`ProviderError`])
+/// are this crate's. Beside `sew-call-client`, a provider needs:
+///
+/// - `url = "2"`: [`JoinAnswer::from_json`] takes Sew's client API base as a `url::Url`;
+/// - an HTTP client of the app's choice to call Sew with the app's own session. The full
+///   example below uses `reqwest = { version = "0.12", default-features = false, features =
+///   ["json", "rustls-tls"] }` and `serde_json = "1"`;
+/// - to run a call, a Tokio runtime (`tokio = { version = "1", features = ["rt-multi-thread",
+///   "macros"] }`): [`crate::CallClient::join`] must be called from inside one.
+///
+/// The smallest provider, over the app's own HTTP code:
+///
+/// ```
+/// use sew_call_client::{BoxFuture, JoinAnswer, JoinProvider, JoinRequest, ProviderError};
+///
+/// struct AppJoin {
+///     /// Sew's client API base, e.g. `https://chat.example.com/`.
+///     api_base: url::Url,
+/// }
+///
+/// impl AppJoin {
+///     /// The app's own call to Sew's voice join for `req.room` (with `call_credential: true`),
+///     /// answering the response body.
+///     async fn post_voice_join(&self, req: &JoinRequest) -> Result<Vec<u8>, ProviderError> {
+///         # let _ = req;
+///         # Err(ProviderError::Unavailable { retry_after_ms: None })
+///     }
+/// }
+///
+/// impl JoinProvider for AppJoin {
+///     fn join(&self, req: JoinRequest) -> BoxFuture<'_, Result<JoinAnswer, ProviderError>> {
+///         Box::pin(async move {
+///             let body = self.post_voice_join(&req).await?;
+///             JoinAnswer::from_json(&body, self.api_base.clone())
+///                 .map_err(|e| ProviderError::Other(e.to_string()))
+///         })
+///     }
+/// }
+/// ```
+///
+/// A complete provider for an app that holds its own Sew session (a bearer token for Sew's
+/// client API), and a call through it:
 ///
 /// ```no_run
 /// use std::path::PathBuf;
@@ -777,6 +819,45 @@ mod tests {
         let v = CallRecording::from_consent_required(&c);
         assert_eq!(v.trigger, RecordingTrigger::Auto);
         assert!(!v.required);
+    }
+
+    #[test]
+    fn a_recording_carries_its_start_clock() {
+        use crate::call::CallRecording;
+        let rec = serde_json::json!({
+            "id": "77", "channel_id": "2002", "state": "recording", "started_by": "1001",
+            "started_at": "2026-11-02T09:58:00Z", "auto": false, "message_id": "88",
+            "mixed": false, "audio_keep_days": 30, "max_duration_ms": 14_400_000u64,
+            "participants": []
+        });
+        let r: Recording = serde_json::from_value(rec.clone()).unwrap();
+        let v = CallRecording::from_sew(&r);
+        assert_eq!(v.started_by.as_deref(), Some("1001"));
+        let at = v.started_at.expect("Sew's recording carries its start");
+        assert_eq!(at.to_wire(), "2026-11-02T09:58:00.000Z");
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["started_at"], "2026-11-02T09:58:00.000Z");
+        assert_eq!(json["started_by"], "1001");
+        // Joining a call already being recorded: the held join's recording keeps both.
+        let c = ConsentRequired::from_details(&serde_json::json!({
+            "recording": rec, "auto": false, "consent_prompt": prompt()
+        }))
+        .unwrap();
+        let held = CallRecording::from_consent_required(&c);
+        assert_eq!(held.started_at, Some(at));
+        assert_eq!(held.started_by.as_deref(), Some("1001"));
+        // An auto-record room's first join: no recording yet, so no start.
+        let c = ConsentRequired::from_details(&serde_json::json!({
+            "recording": null, "auto": true, "consent_prompt": prompt()
+        }))
+        .unwrap();
+        let v = CallRecording::from_consent_required(&c);
+        assert_eq!(v.started_at, None);
+        let json = serde_json::to_value(&v).unwrap();
+        assert!(
+            json.get("started_at").is_none(),
+            "left out when unknown: {json}"
+        );
     }
 
     #[test]

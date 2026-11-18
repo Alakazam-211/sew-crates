@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use kessel_audio::{AudioEngine, EngineConfig};
-use sew_noise::{Mode, Stage, StageControl, StepDownReason, warm_up_thread};
+use sew_noise::{
+    Mode, Stage, StageControl, StageStats, StepDownReason, StrongState, warm_up_thread,
+};
 use tokio::sync::broadcast;
 
 use super::hook::{self, Bypass, CaptureStage};
@@ -205,6 +207,96 @@ fn with_timing(
     state
 }
 
+/// One DeepFilterNet3 moment of a call's stage worth a log line: never per block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Dfn3Line {
+    /// Loaded and its output goes on, for the first time in the call.
+    Attached,
+    /// Stepped down to RNNoise, and why; the call's step-downs so far.
+    SteppedDown {
+        reason: &'static str,
+        step_downs: u64,
+    },
+    /// A retry is due in this many ms.
+    RetryIn { ms: u64 },
+    /// No retry: stepped down for the rest of the call.
+    Retired,
+    /// A retry took: its output goes on again.
+    RetrySucceeded { step_downs: u64 },
+}
+
+impl Dfn3Line {
+    /// The line's text.
+    fn message(&self) -> String {
+        match self {
+            Dfn3Line::Attached => "noise removal: DeepFilterNet3 attached and running".to_owned(),
+            Dfn3Line::SteppedDown { reason, step_downs } => format!(
+                "noise removal: DeepFilterNet3 stepped down to RNNoise (reason {reason}, \
+                 step-down {step_downs})"
+            ),
+            Dfn3Line::RetryIn { ms } => format!(
+                "noise removal: DeepFilterNet3 retry scheduled in {}.{} s",
+                ms / 1000,
+                (ms % 1000) / 100
+            ),
+            Dfn3Line::Retired => {
+                "noise removal: DeepFilterNet3 not retried for the rest of the call".to_owned()
+            }
+            Dfn3Line::RetrySucceeded { step_downs } => format!(
+                "noise removal: DeepFilterNet3 retry succeeded (after {step_downs} step-downs)"
+            ),
+        }
+    }
+}
+
+/// What the call's log last said of DeepFilterNet3: read from the stage's stats each time the
+/// state is checked (about every 100 ms in a call), so a moment makes one line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Dfn3Log {
+    state: StrongState,
+    step_downs: u64,
+}
+
+impl Dfn3Log {
+    /// The lines `st` makes since the last look.
+    fn observe(&mut self, st: &StageStats) -> Vec<Dfn3Line> {
+        let mut out = Vec::new();
+        let stepped = st.step_downs > self.step_downs;
+        if stepped {
+            out.push(Dfn3Line::SteppedDown {
+                reason: st.last_step_down.map_or("unknown", StepDownReason::as_str),
+                step_downs: st.step_downs,
+            });
+            if st.strong_state == StrongState::Retired {
+                out.push(Dfn3Line::Retired);
+            } else {
+                out.push(Dfn3Line::RetryIn {
+                    ms: st
+                        .retry_at_block
+                        .saturating_sub(st.blocks)
+                        .saturating_mul(10),
+                });
+            }
+        } else if st.strong_state == StrongState::Retired && self.state != StrongState::Retired {
+            out.push(Dfn3Line::Retired);
+        }
+        if st.strong_state == StrongState::Running
+            && (self.state != StrongState::Running || stepped)
+        {
+            out.push(if st.step_downs == 0 {
+                Dfn3Line::Attached
+            } else {
+                Dfn3Line::RetrySucceeded {
+                    step_downs: st.step_downs,
+                }
+            });
+        }
+        self.state = st.strong_state;
+        self.step_downs = st.step_downs;
+        out
+    }
+}
+
 /// How long a switch of the phone's capture may take before it counts as failed when no error
 /// was seen (kessel-audio reopens the device in milliseconds; its error event may have been
 /// read by someone else).
@@ -281,6 +373,8 @@ struct Live {
     stage: Option<StageControl>,
     audio: Option<Weak<dyn LiveAudio>>,
     phone: Option<PhoneLive>,
+    /// What the log last said of DeepFilterNet3 in this call.
+    dfn3_log: Dfn3Log,
 }
 
 impl Live {
@@ -759,8 +853,8 @@ impl NoiseRemovalControl {
             Some(StepDownReason::Fault) => Some(NoiseRemovalReason::Fault),
             Some(_) => Some(NoiseRemovalReason::Budget),
             // Handed over during the call, and warming up before it fades in.
-            None if st.strong_state == sew_noise::StrongState::Warming
-                || st.strong_state == sew_noise::StrongState::Idle =>
+            None if st.strong_state == StrongState::Warming
+                || st.strong_state == StrongState::Idle =>
             {
                 Some(NoiseRemovalReason::Loading)
             }
@@ -1053,6 +1147,7 @@ impl NoiseRemovalControl {
 
     /// Sends the state if it changed since it was last sent; answers it.
     pub(crate) fn publish(&self) -> NoiseRemovalState {
+        self.log_dfn3();
         let state = self.state();
         // The counters ride along; they don't make a change by themselves.
         let key = state.change_key();
@@ -1063,6 +1158,27 @@ impl NoiseRemovalControl {
             let _ = self.inner.events.send(state);
         }
         state
+    }
+
+    /// The INFO lines of the live call's DeepFilterNet3 moments since the last check
+    /// ([`Dfn3Log`]): attached, a step-down and its reason, the retry scheduled, a retry that
+    /// took.
+    fn log_dfn3(&self) {
+        if !self.dfn3_given() {
+            return;
+        }
+        let mut live = lock(&self.inner.live);
+        let Some(l) = live.as_mut() else {
+            return;
+        };
+        let Some(stage) = &l.stage else {
+            return;
+        };
+        let st = stage.stats();
+        let call = l.id;
+        for line in l.dfn3_log.observe(&st) {
+            tracing::info!(call, "{}", line.message());
+        }
     }
 
     /// A call's audio is about to start with `cfg`: builds its stage in the current mode and
@@ -1132,6 +1248,7 @@ impl NoiseRemovalControl {
             stage,
             audio: None,
             phone,
+            dfn3_log: Dfn3Log::default(),
         });
         id
     }
@@ -1231,6 +1348,100 @@ mod tests {
     use super::*;
 
     use std::sync::atomic::AtomicU8 as Flag;
+
+    #[allow(clippy::field_reassign_with_default)]
+    fn stats(state: StrongState, step_downs: u64, blocks: u64) -> StageStats {
+        let mut st = StageStats::default();
+        st.strong_state = state;
+        st.step_downs = step_downs;
+        st.blocks = blocks;
+        st
+    }
+
+    #[test]
+    fn dfn3_moments_make_one_line_each() {
+        let mut log = Dfn3Log::default();
+        // Loading and warming: nothing.
+        assert!(log.observe(&stats(StrongState::Idle, 0, 0)).is_empty());
+        assert!(log.observe(&stats(StrongState::Warming, 0, 50)).is_empty());
+        // Running: attached, once.
+        assert_eq!(
+            log.observe(&stats(StrongState::Running, 0, 100)),
+            vec![Dfn3Line::Attached]
+        );
+        assert!(log.observe(&stats(StrongState::Running, 0, 110)).is_empty());
+        // A step-down: the reason and the retry, once.
+        let mut st = stats(StrongState::SteppedDown, 1, 1_000);
+        st.last_step_down = Some(StepDownReason::SlowWindow);
+        st.retry_at_block = 4_000;
+        assert_eq!(
+            log.observe(&st),
+            vec![
+                Dfn3Line::SteppedDown {
+                    reason: "slow_window",
+                    step_downs: 1
+                },
+                Dfn3Line::RetryIn { ms: 30_000 }
+            ]
+        );
+        st.blocks = 2_000;
+        assert!(log.observe(&st).is_empty());
+        // The retry warms, then takes.
+        assert!(
+            log.observe(&stats(StrongState::Warming, 1, 4_000))
+                .is_empty()
+        );
+        assert_eq!(
+            log.observe(&stats(StrongState::Running, 1, 4_100)),
+            vec![Dfn3Line::RetrySucceeded { step_downs: 1 }]
+        );
+        // A fault: final, no retry.
+        let mut st = stats(StrongState::Retired, 2, 5_000);
+        st.last_step_down = Some(StepDownReason::Fault);
+        assert_eq!(
+            log.observe(&st),
+            vec![
+                Dfn3Line::SteppedDown {
+                    reason: "fault",
+                    step_downs: 2
+                },
+                Dfn3Line::Retired
+            ]
+        );
+        assert!(log.observe(&st).is_empty());
+    }
+
+    #[test]
+    fn dfn3_lines_read_well() {
+        assert_eq!(
+            Dfn3Line::Attached.message(),
+            "noise removal: DeepFilterNet3 attached and running"
+        );
+        assert_eq!(
+            Dfn3Line::SteppedDown {
+                reason: "slow_block",
+                step_downs: 1
+            }
+            .message(),
+            "noise removal: DeepFilterNet3 stepped down to RNNoise (reason slow_block, step-down 1)"
+        );
+        assert_eq!(
+            Dfn3Line::RetryIn { ms: 5_000 }.message(),
+            "noise removal: DeepFilterNet3 retry scheduled in 5.0 s"
+        );
+        assert_eq!(
+            Dfn3Line::RetryIn { ms: 29_990 }.message(),
+            "noise removal: DeepFilterNet3 retry scheduled in 29.9 s"
+        );
+        assert_eq!(
+            Dfn3Line::Retired.message(),
+            "noise removal: DeepFilterNet3 not retried for the rest of the call"
+        );
+        assert_eq!(
+            Dfn3Line::RetrySucceeded { step_downs: 2 }.message(),
+            "noise removal: DeepFilterNet3 retry succeeded (after 2 step-downs)"
+        );
+    }
 
     /// A stage built as `configure` builds one, with its handle.
     fn stage_for(control: &NoiseRemovalControl) -> (Box<dyn CaptureStage>, StageControl) {

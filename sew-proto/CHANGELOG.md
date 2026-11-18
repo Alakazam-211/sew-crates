@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.10.5 (2026-11-18)
+
+### Added
+
+- **Keyring mirror placement and sync alarms.** `mgmt::StatusAlarm` gains
+  `KeysMirrorUnmounted` (`keys_mirror_unmounted`: the `dir` mirror path is missing or not
+  mounted), `KeysMirrorSameDevice` (`keys_mirror_same_device`: it is on the keyring's own
+  filesystem) and `KeysMirrorUnsynced` (`keys_mirror_unsynced`: no full mirror reconcile has
+  succeeded since the server started). Additive: the enum is `#[non_exhaustive]`.
+  `StatusAlarm::Unknown` keeps its 0.10.4 discriminant (41) and the new variants take 42 to
+  44, so every existing variant's number (an `as` cast) is unchanged.
+- **Why a transcript could not be made.** `recording::TranscriptFailure { code, message }`
+  (`#[non_exhaustive]`, built with `TranscriptFailure::new(code)`) and the stored enum
+  `recording::TranscriptFailureCode` (`#[non_exhaustive]`; `audio_gone` 1,
+  `unsupported_language` 2, `transcriber_error` 3, `audio_not_captured` 4, and `Unknown`;
+  `TranscriptFailureCode::message` gives each code's plain words). The server sets it when a
+  transcript ends `failed` or `partial` and it knows why:
+  `Message.transcript_failure` on the record message, beside `recording`, and
+  `MgmtRecordingSummary.transcript_failure`, each skipped when `None`, e.g.
+  `"transcript_failure": {"code": "transcriber_error", "message": "The transcription service
+  could not process the audio."}`. Additive: `Message` and `MgmtRecordingSummary` are
+  `#[non_exhaustive]`. It is not inside `RecordingSummary.transcript`, because
+  `SummaryTranscript` and `RecordingSummary` are not `#[non_exhaustive]` and a new field there
+  would break a struct literal. `DeliveryMessage` (not `#[non_exhaustive]`) does not carry it.
+- **A full mirror reconcile on demand.** `routes::MGMT_KEYS_MIRROR_SYNC`
+  (`POST /mgmt/v1/keys/mirror-sync`) answering `mgmt::KeysMirrorSyncResponse` (`kind`, `ok`,
+  `pushed`, `failed`, `repaired`, `deleted_shredded`, `unknown`, and `error`, `placement`,
+  `last_full_reconcile_ok_at` when set).
+
 ## 0.10.4 (2026-11-17)
 
 - The version follows Sew 0.10.4. No API or behaviour change. The package's metadata and

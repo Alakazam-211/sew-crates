@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `POST /mgmt/v1/keys/mirror-sync`: one full keyring mirror reconcile, run now.",
+  "properties": {
+    "deleted_shredded": {
+      "description": "Mirror entries of shredded keys, deleted.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "error": {
+      "description": "Why the mirror could not be listed; nothing was backfilled.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "failed": {
+      "description": "Pending writes that failed again (they stay pending).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "kind": {
+      "description": "The mirror kind: `dir`, `none`.",
+      "type": "string"
+    },
+    "last_full_reconcile_ok_at": {
+      "description": "The last successful full reconcile since the server started.",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ok": {
+      "description": "The full listing succeeded and every push and repair went through.",
+      "type": "boolean"
+    },
+    "placement": {
+      "description": "A refused `dir` mirror path: `unmounted` or `same_device`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pushed": {
+      "description": "Pending writes pushed.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "repaired": {
+      "description": "Entries missing in the mirror, written there (keys, `FORMAT`, the ledgers).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "unknown": {
+      "description": "Mirror entries that are neither local nor shredded (never deleted).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "kind",
+    "ok",
+    "pushed",
+    "failed",
+    "repaired",
+    "deleted_shredded",
+    "unknown"
+  ],
+  "title": "KeysMirrorSyncResponse",
+  "type": "object"
+}

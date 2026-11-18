@@ -942,6 +942,10 @@ fn message_full() -> Message {
         recording: Some(recording::recording_summary_full()),
         transcript: Some(recording::transcript_turn_full()),
         system: None,
+        // The full summary's transcript is `partial` with gaps.
+        transcript_failure: Some(crate::recording::TranscriptFailure::new(
+            crate::recording::TranscriptFailureCode::AudioNotCaptured,
+        )),
     }
 }
 
@@ -987,6 +991,7 @@ fn message_min() -> Message {
         recording: None,
         transcript: None,
         system: None,
+        transcript_failure: None,
     }
 }
 
@@ -3001,6 +3006,46 @@ impl Example for CursorExpiredDetails {
                 head: 950,
             },
         )]
+    }
+}
+
+impl Example for KeysMirrorSyncResponse {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![
+            (
+                "ok",
+                KeysMirrorSyncResponse {
+                    kind: "dir".into(),
+                    ok: true,
+                    pushed: 1,
+                    failed: 0,
+                    repaired: 12,
+                    deleted_shredded: 0,
+                    unknown: 0,
+                    error: None,
+                    placement: None,
+                    last_full_reconcile_ok_at: Some(t(0)),
+                },
+            ),
+            (
+                // The mount went down after an earlier good reconcile.
+                "full",
+                KeysMirrorSyncResponse {
+                    kind: "dir".into(),
+                    ok: false,
+                    pushed: 0,
+                    failed: 2,
+                    repaired: 0,
+                    deleted_shredded: 0,
+                    unknown: 0,
+                    error: Some(
+                        "keyring mirror path /mnt/sew-keyring-mirror is not a mount point and holds no FORMAT of this install (is the mount down?); nothing written".into(),
+                    ),
+                    placement: Some("unmounted".into()),
+                    last_full_reconcile_ok_at: Some(t(0)),
+                },
+            ),
+        ]
     }
 }
 

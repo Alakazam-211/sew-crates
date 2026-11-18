@@ -4,7 +4,18 @@ tauri-plugin-sew-voice is a Tauri 2 plugin that adds Sew voice calls to a deskto
 
 Sew is Alakazam Labs' self-hosted team chat server. This plugin runs its native voice engine,
 `sew-call-client`, inside your Tauri app's process: end-to-end encrypted audio, TURN relay,
-reconnects, and the `kessel-audio` pipeline on the system's microphone and speakers.
+reconnects, and the `kessel-audio` pipeline on the system's microphone and speakers. You need
+a Sew server to use it.
+
+Two labels appear in these docs:
+
+- **K2** is Alakazam Labs' platform, which can host Sew. `kessel-audio` and `kessel-video`, the
+  audio and video pipelines underneath, are K2's crates (MIT OR Apache-2.0, on crates.io).
+  Nothing here needs K2: the plugin works against any Sew server.
+- **Sew version** ("Sew 0.9.0") is a version of the Sew server. Next to a feature, it is the
+  first server version that has it. In the CHANGELOG's headings, it is the server version that
+  release of this plugin is tested against. A plain version ("0.4.1") next to a feature is the
+  plugin's own version that added it.
 
 The web view only draws the UI. It sends eight commands (`plugin:sew-voice|join`, `leave`,
 `mute`, `devices`, `set_device`, `state`, `consent`, `withdraw_consent`) and listens to six
@@ -19,7 +30,7 @@ Video: fourteen more commands (`video_caps`, `video_devices`, `set_video_device`
 `set_video_codec_preference`) and four events (`sew-voice://video`, `local_video`, `video_devices`,
 `policy`). Each video element gets its frames over its own Tauri raw `Channel` (a 32-byte
 header, then the encoded frame, decrypted in Rust) and decodes them with WebCodecs; keys never
-leave Rust. They are behind the `sew-voice:video` permission set (docs/native-voice-sdk.md §3,
+leave Rust. They are behind the `sew-voice:video` permission set ([native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), section 3,
 Video). The engine's video is wired through `VoiceEngine` and `CallHandle` (module `video`);
 an engine without it answers `video_unsupported`. With the `video-core` feature the real
 engine receives remote video and publishes the camera and the screen share (sew-call-client's
@@ -92,7 +103,7 @@ Not affiliated with or endorsed by LiveKit.
   The app reports the OS's audio session through `VoiceControl` (`session_activated`,
   `session_deactivated`, `suspend`, `resume`, `route_changed`); on iOS the microphone opens
   only after `session_activated`. The plugin never configures the session itself
-  (docs/native-voice-sdk.md §3b).
+  ([native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), section 3b).
 - `audio-core`: the real engine on `kessel-audio`'s null device only, with no system libraries.
 - `video-core` (off by default): the real engine receives the remote cameras and screens
   (decrypted, checked encoded frames for the sinks, decoded by the webview's WebCodecs;
@@ -116,15 +127,15 @@ Not affiliated with or endorsed by LiveKit.
   `VoiceListener::screen_share_changed`; module `screen_ring`). kessel-frame-ring is a
   dependency on iOS only (and Linux, for the tests); elsewhere the feature does nothing.
   Android's screen share needs no feature: the app hands kessel-video its MediaProjection
-  (docs/native-voice-sdk.md §3b).
+  ([native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), section 3b).
 - `keyring-store` (off by default): the device key in the OS credential store. Without it, or
   your own store (`Builder::device_key_store`), the key is a 0600 file under the app's data
   directory. On phones, `Builder::hardware_device_key` keeps it in the Secure Enclave or
-  StrongBox/TEE instead (docs/native-voice-sdk.md §6).
+  StrongBox/TEE instead ([native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), section 6).
 - `builtin-ring-provider` (default): the engine's TLS falls back to ring when you pass no
   rustls crypto provider (`Builder::crypto_provider`) and your app installs no process default
   (`CryptoProvider::install_default`). Without it, that case fails the join (`engine_stopped`,
-  the detail naming `no_crypto_provider`; docs/native-voice-sdk.md §1).
+  the detail naming `no_crypto_provider`; [native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), section 1).
 - `dfn3` (off by default): `standard` noise removal runs DeepFilterNet3's low-latency model,
   with RNNoise as its step-down (sew-call-client's `dfn3`); see "Shipping DeepFilterNet3 in
   your app" below.
@@ -147,16 +158,17 @@ join calls on (see the [sew-crates](https://github.com/Alakazam-211/sew-crates) 
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.8.2"
-# For the example provider below (sew-call-client's README):
-reqwest = { version = "0.12", features = ["json"] }
+tauri-plugin-sew-voice = "0.8.3"
+# For a JoinProvider like sew-call-client's example (its JoinProvider docs):
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
 serde_json = "1"
 ```
 
 `MyJoinProvider` is your app's implementation of `sew_call_client::JoinProvider` (re-exported
 here as `tauri_plugin_sew_voice::JoinProvider`): it asks Sew for the join answer with the app's
-own session. `sew-call-client`'s README has a complete one. The plugin goes on the app's Tauri
+own session. [`sew-call-client`'s `JoinProvider` documentation](https://docs.rs/sew-call-client/latest/sew_call_client/trait.JoinProvider.html)
+says which crates it needs and has a complete one. The plugin goes on the app's Tauri
 builder:
 
 ```rust
@@ -186,13 +198,39 @@ fn main() {
 }
 ```
 
-Allow the plugin in your window's capability (`sew-voice:default` allows all eight commands; one
-permission per command exists too; the two device-key commands, `forget_server` and
-`known_device_keys`, are only in `sew-voice:device-keys` or their own `allow-*`, and the three
-call-detail commands, `call_details`, `ring` and `ring_ended`, in `sew-voice:call-details`), then from the web view (`window.__TAURI__` needs
-`app.withGlobalTauri: true` in `tauri.conf.json`; with a bundler, import `invoke` and `listen`
-from `@tauri-apps/api` instead). `target` is opaque to the plugin: it is handed to your
-`JoinProvider` to say which Sew server (here its host):
+Allow the plugin in your window's capability. `sew-voice:default` allows the eight call
+commands; the other permission sets add the rest (the table under "Commands" below says which
+set holds each command), and every command also has its own `sew-voice:allow-<command>`
+permission (`allow-set-device` for `set_device`). For example,
+`src-tauri/capabilities/default.json` for an app whose main window runs calls with video,
+recording, noise removal settings and the call details:
+
+```json
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window: Sew calls.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "sew-voice:default",
+    "sew-voice:recording",
+    "sew-voice:call-details",
+    "sew-voice:noise-removal",
+    "sew-voice:video"
+  ]
+}
+```
+
+Grant `sew-voice:device-keys` (`forget_server`, `known_device_keys`) only to the window that
+signs the person out. A window that only watches a call can list `sew-voice:allow-state` and
+`sew-voice:allow-devices` instead of `sew-voice:default`. Events need no permission: every
+window gets them.
+
+Then, from the web view (`window.__TAURI__` needs `app.withGlobalTauri: true` in
+`tauri.conf.json`; with a bundler, import `invoke` and `listen` from `@tauri-apps/api`
+instead). `target` is opaque to the plugin: it is handed to your `JoinProvider` to say which
+Sew server (here its host):
 
 ```js
 const { invoke } = window.__TAURI__.core;
@@ -201,6 +239,52 @@ await listen("sew-voice://state", (e) => render(e.payload));
 const { call_id } = await invoke("plugin:sew-voice|join", { target: "chat.example.com", room: channelId });
 await invoke("plugin:sew-voice|mute", { muted: true });
 ```
+
+### Commands
+
+Every command is invoked as `plugin:sew-voice|<name>`. The arguments, answers and error codes
+of each are in the
+[native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md)
+(sections 3, 3a and 3c).
+
+| Command | Permission set | What it does |
+|---|---|---|
+| `join` | `sew-voice:default` | Joins a voice channel or DM call through your `JoinProvider`; answers `{call_id}`. |
+| `leave` | `sew-voice:default` | Leaves the call. |
+| `mute` | `sew-voice:default` | Mutes or deafens this device (`{muted?, deafened?}`). |
+| `devices` | `sew-voice:default` | Lists the microphones and speakers, with the chosen ones. |
+| `set_device` | `sew-voice:default` | Switches the microphone or speaker, during a call too. |
+| `state` | `sew-voice:default` | Answers the call's state now, for a window opened mid-call. |
+| `consent` | `sew-voice:default` | Sends the person's answer to a recording's notice. |
+| `withdraw_consent` | `sew-voice:default` | "Stop recording me". |
+| `start_recording` | `sew-voice:recording` | Starts a recording of the call (Record). |
+| `stop_recording` | `sew-voice:recording` | Stops the call's recording (Stop). |
+| `set_recording_rights` | `sew-voice:recording` | Gives the plugin the person's rights in the room, for servers that don't send recording controls. |
+| `forget_server` | `sew-voice:device-keys` | Deletes the device keys of one Sew install (sign-out). |
+| `known_device_keys` | `sew-voice:device-keys` | Lists the device keys the plugin's store holds. |
+| `call_details` | `sew-voice:call-details` | Answers the key state, quality, roster and ring now. |
+| `ring` | `sew-voice:call-details` | Sets an incoming DM call's ring. |
+| `ring_ended` | `sew-voice:call-details` | Clears that ring. |
+| `video_caps` | `sew-voice:video` | Answers what video this build and device can do. |
+| `video_devices` | `sew-voice:video` | Lists the cameras, the chosen one and the camera and screen permissions. |
+| `set_video_device` | `sew-voice:video` | Chooses the camera, during a call too. |
+| `camera` | `sew-voice:video` | Turns this device's camera on or off in the call. |
+| `screen_sources` | `sew-voice:video` | Lists the displays and windows to share, with thumbnails. |
+| `screen` | `sew-voice:video` | Starts or stops sharing a display or window. |
+| `preview` | `sew-voice:video` | Starts or stops the camera preview before or outside a call. |
+| `video_sink` | `sew-voice:video` | Opens a video element's frame channel for a track. |
+| `video_sink_update` | `sew-voice:video` | Updates a sink's size, visibility, tile and stats. |
+| `video_sink_close` | `sew-voice:video` | Closes a sink. |
+| `request_keyframe` | `sew-voice:video` | Asks the sender for a keyframe after a decoder failure. |
+| `camera_permission` | `sew-voice:video` | Answers the camera permission without prompting. |
+| `request_camera_permission` | `sew-voice:video` | Asks the OS for camera access where it prompts. |
+| `set_video_codec_preference` | `sew-voice:video` | Sets this device's video codec preference. |
+| `set_noise_removal` | `sew-voice:noise-removal` | Sets the microphone's noise removal (`off`, `standard`). |
+| `noise_removal` | `sew-voice:noise-removal` | Answers the noise removal setting and what runs. |
+
+The events (`sew-voice://<name>`): `state`, `participants`, `speaking`, `devices`, `errors`,
+`recording`, `recording_controls`, `security`, `roster`, `quality`, `incoming`, `video`,
+`local_video`, `video_devices`, `policy` and `noise_removal`.
 
 ### Recording consent (Sew 0.7.3)
 
@@ -213,6 +297,9 @@ the person answers:
 await listen("sew-voice://recording", (e) => {
   const r = e.payload;                       // null: no recording
   showBadge(r !== null);
+  // The running time from Sew's start, also for someone who joined mid-recording
+  // (absent while a held join into an auto-record room waits).
+  if (r && r.started_at) startTimer(Date.parse(r.started_at));
   if (r && r.my_consent === "pending") showNotice(r.consent_prompt);
 });
 // The modal's answer (the notice the person saw):
@@ -226,7 +313,8 @@ Your `JoinProvider` forwards `JoinRequest::recording_notice` as the voice join's
 `ProviderError::ConsentRequired` (`ProviderError::from_sew_error` reads Sew's error body), and
 implements `consent` (Sew's `POST /api/v1/recordings/{id}/consent` with the person's session;
 without it the answer is refused `consent_unsupported`). The exact payloads are in
-`tests/native-voice-contract.json` (`recording`).
+[`contracts/native-voice-contract.json`](https://github.com/Alakazam-211/sew-crates/blob/main/tauri-plugin-sew-voice/contracts/native-voice-contract.json)
+(`recording`).
 
 Record and Stop (Sew 0.9.0) are `start_recording` and `stop_recording`, outside
 `sew-voice:default` (permission set `sew-voice:recording`). Your provider's
@@ -270,12 +358,22 @@ low-latency model, by Hendrik Schröter and the DeepFilterNet authors
 inference. Its weights are not in any crate: your app ships them.
 
 ```toml
-tauri-plugin-sew-voice = { version = "…", features = ["dfn3"] }
+tauri-plugin-sew-voice = { version = "0.8.3", features = ["dfn3"] }
 ```
 
-The four files come in the asset `sew-dfn3-<version>.tar.gz` of the Sew release the plugin
-belongs to, on <https://github.com/Alakazam-211/sew-releases> (a `dfn3/` folder holding them;
-the asset's sha256 is in the release's `SHA256SUMS` and `release.json`):
+The four files come in a GitHub release asset of the Sew release the plugin belongs to, on
+<https://github.com/Alakazam-211/sew-releases>, at
+
+```text
+https://github.com/Alakazam-211/sew-releases/releases/download/v<sew-version>/sew-dfn3-<sew-version>.tar.gz
+```
+
+where `<sew-version>` is the Sew version in the heading of this release's CHANGELOG entry.
+For plugin 0.8.3 that is Sew 0.10.5:
+<https://github.com/Alakazam-211/sew-releases/releases/download/v0.10.5/sew-dfn3-0.10.5.tar.gz>
+(sha256 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). Each release's
+`SHA256SUMS` and `release.json` carry the asset's sha256. The tarball holds a `dfn3/` folder
+with these files:
 
 | File | What |
 |---|---|
@@ -283,8 +381,19 @@ the asset's sha256 is in the release's `SHA256SUMS` and `release.json`):
 | `NOTICE` | the model's notice: its copyright, the conversion by Alakazam Labs, the citation |
 | `LICENSE-MIT`, `LICENSE-APACHE` | the model's licence texts |
 
-Put them in a `dfn3/` folder of your app's resources; the plugin looks for
-`<app resource dir>/dfn3/dfn3_ll.nnef.tar` at start. With Tauri's bundler:
+Fetch and check it at build time (the weights are not committed to your repository), for
+example from `src-tauri/`:
+
+```sh
+v=0.10.5
+curl -fLO "https://github.com/Alakazam-211/sew-releases/releases/download/v$v/sew-dfn3-$v.tar.gz"
+echo "153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697  sew-dfn3-$v.tar.gz" | sha256sum -c -
+tar -xzf "sew-dfn3-$v.tar.gz"   # writes dfn3/
+```
+
+The app ships the files as resources: put them in a `dfn3/` folder of your app's resources;
+the plugin looks for `<app resource dir>/dfn3/dfn3_ll.nnef.tar` at start. With Tauri's
+bundler (`tauri.conf.json`):
 
 ```json
 {
@@ -322,7 +431,7 @@ and Linux, `http://ipc.localhost` on Windows and Android (`https://ipc.localhost
 `useHttpsScheme`). The examples use `connect-src ipc: http://ipc.localhost`. A remote page the
 shell loads (a live site, not bundled assets) needs that in its own CSP header, plus a Tauri
 capability whose `remote.urls` names the site's origin, with the plugin's permissions in it
-(docs/native-voice-sdk.md §1 and §4).
+([native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), sections 1 and 4).
 
 ### Signing out (0.4.1)
 
@@ -332,7 +441,7 @@ and answers the removed `DeviceKeyId`s; `VoiceControl::known_device_keys()` list
 store holds. `forget_server` is refused with `in_call` during a call. It works per Sew install,
 not per login: every login on the same Sew shares the install id, so call it only once no
 account in your app still uses that install. The same two are webview
-commands behind `sew-voice:device-keys` (docs/native-voice-sdk.md §6).
+commands behind `sew-voice:device-keys` ([native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), section 6).
 
 ### Call details (0.4.1)
 
@@ -343,7 +452,7 @@ reconnecting) and `incoming` (a DM call that rings) give a call UI what a browse
 `call_details` reads all four for a window opened mid-call; `ring` and `ring_ended` set and clear
 the ring (from Sew's `call_ring`, or a push through `VoiceControl::ring`), and a `join` with the
 ring's `target` and `room` accepts it. Allow them with `sew-voice:call-details`
-(docs/native-voice-sdk.md §3c).
+([native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md), section 3c).
 
 ## Licence
 

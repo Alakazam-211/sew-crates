@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Why a transcript is `failed` or `partial` ([`TranscriptFailure::code`]). Stored in\n`recordings.transcript_failure`. Later releases add codes: show\n[`TranscriptFailure::message`] for a code this build does not know.",
+  "oneOf": [
+    {
+      "const": "audio_gone",
+      "description": "The audio was deleted (expired, purged, or its record message deleted) before it was\ntranscribed.",
+      "type": "string"
+    },
+    {
+      "const": "unsupported_language",
+      "description": "The transcriber does not support the language spoken, even when asked to detect it.",
+      "type": "string"
+    },
+    {
+      "const": "transcriber_error",
+      "description": "The transcriber could not transcribe the audio (it timed out, failed or gave an\nanswer Sew could not read) after its retries.",
+      "type": "string"
+    },
+    {
+      "const": "audio_not_captured",
+      "description": "Part of the call's audio never reached the recording (the recorder restarted or\nreconnected, storage was full, a key was missing, and the like). Only on `partial`.",
+      "type": "string"
+    }
+  ],
+  "title": "TranscriptFailureCode"
+}

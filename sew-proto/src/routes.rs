@@ -409,6 +409,8 @@ pub const MGMT_LOCAL_USERS_GUEST: &str = "/mgmt/v1/local/users/guest";
 pub const MGMT_POLICIES: &str = "/mgmt/v1/policies";
 /// `POST`: start a master-key re-wrap job.
 pub const MGMT_KEYS_ROTATE_MASTER: &str = "/mgmt/v1/keys/rotate-master";
+/// `POST`: reconcile the keyring mirror fully now (push pending, backfill what is missing).
+pub const MGMT_KEYS_MIRROR_SYNC: &str = "/mgmt/v1/keys/mirror-sync";
 /// `POST`: start an audit chain check.
 pub const MGMT_AUDIT_VERIFY: &str = "/mgmt/v1/audit/verify";
 /// `GET`: install secrets' status over mgmt.

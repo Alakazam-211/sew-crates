@@ -259,8 +259,8 @@ async fn an_engine_without_noise_removal_takes_only_off() {
 }
 
 fn fixture() -> Value {
-    let all: Value =
-        serde_json::from_str(include_str!("native-voice-contract.json")).expect("the fixture");
+    let all: Value = serde_json::from_str(include_str!("../contracts/native-voice-contract.json"))
+        .expect("the fixture");
     all["noise_removal"].clone()
 }
 

@@ -59,7 +59,8 @@ fn args(target: &str, room: &str) -> JoinArgs {
 }
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("native-voice-details.json")).expect("the fixture parses")
+    serde_json::from_str(include_str!("../contracts/native-voice-details.json"))
+        .expect("the fixture parses")
 }
 
 fn from<T: DeserializeOwned>(v: &Value) -> T {

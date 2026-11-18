@@ -520,8 +520,9 @@ pub struct RecordingParticipant {
 /// The `recording` event (and the `state` command's `recording`): the call's active recording
 /// as Sew says it, or `null` once none is active (Sew 0.7.3).
 ///
-/// `{"recording_id": "...", "auto": false, "started_by": "...", "my_consent": "pending",
-/// "consent_prompt": {...}, "participants": [...], "recorder_present": true}`. Show the
+/// `{"recording_id": "...", "auto": false, "started_by": "...", "started_at":
+/// "2026-11-02T09:58:00.000Z", "my_consent": "pending", "consent_prompt": {...},
+/// "participants": [...], "recorder_present": true}`. Show the
 /// recording badge while it is non-null; show the consent modal from `consent_prompt` while
 /// `my_consent` is `pending` (it is written only then), and "Stop recording me" while it is
 /// `granted`. This device is recorded only after Sew says `granted`: no answer is never
@@ -533,6 +534,9 @@ pub struct RecordingParticipant {
 /// Plugin 0.6.1 adds `can_record` and `can_stop`: whether Sew would take this person's Record
 /// and Stop now, worked out from the host's [`RecordingRights`] (both `false` until the host
 /// gives them). Each is written only when `true`.
+///
+/// After plugin 0.8.2, `started_at` is added: when the recording started, by Sew's clock, so a person
+/// who joins a call already being recorded shows its real running time.
 ///
 /// Non-exhaustive (Sew 0.9.0): later releases add fields without a breaking change; outside
 /// this crate, read it (or build it from JSON).
@@ -547,6 +551,13 @@ pub struct RecordingInfo {
     /// Who started it (Sew's member id), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_by: Option<String>,
+    /// When it started, by Sew's clock (RFC 3339 in UTC with milliseconds, e.g.
+    /// `2026-11-02T09:58:00.000Z`; added after plugin 0.8.2). Someone who joins a call already being
+    /// recorded shows the recording's real running time from it, not from their own join.
+    /// Absent while a held join waits and Sew has sent no recording yet (an auto-record
+    /// room's first join, `recording_id` `auto`), and from an older plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     /// This person's answer ([`consent`]).
     pub my_consent: String,
     /// The notice (Sew's `ConsentPrompt`, unchanged) while `my_consent` is `pending`.
@@ -759,6 +770,7 @@ impl RecordingInfo {
             recording_id: r.recording_id.clone(),
             auto: r.auto,
             started_by: r.started_by.clone(),
+            started_at: r.started_at.map(sew_proto::time::Timestamp::to_wire),
             my_consent: consent::of(r.my_consent).to_owned(),
             consent_prompt: r.consent_prompt.clone(),
             participants: r
@@ -1694,4 +1706,39 @@ pub mod video_reason {
     pub const SOURCE_CLOSED: &str = "source_closed";
     /// The room's policy turned video off (`off`).
     pub const VIDEO_DISABLED: &str = "video_disabled";
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+
+    fn sew_recording() -> sew_proto::recording::Recording {
+        serde_json::from_value(serde_json::json!({
+            "id": "77", "channel_id": "2002", "state": "recording", "started_by": "1001",
+            "started_at": "2026-11-02T09:58:00Z", "auto": false, "message_id": "88",
+            "mixed": false, "audio_keep_days": 30, "max_duration_ms": 14_400_000u64,
+            "participants": []
+        }))
+        .unwrap()
+    }
+
+    /// The recording's start (Sew's clock) reaches the `recording` event as RFC 3339, beside
+    /// who started it; a payload without it still reads, and writes no `started_at`.
+    #[test]
+    fn the_recording_event_carries_the_start_clock() {
+        let engine = sew_call_client::CallRecording::from_sew(&sew_recording());
+        let info = RecordingInfo::from_engine(&engine, true);
+        assert_eq!(info.started_by.as_deref(), Some("1001"));
+        assert_eq!(info.started_at.as_deref(), Some("2026-11-02T09:58:00.000Z"));
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["started_at"], "2026-11-02T09:58:00.000Z");
+        let back: RecordingInfo = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(back, info);
+
+        let mut old = v;
+        old.as_object_mut().unwrap().remove("started_at");
+        let read: RecordingInfo = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(read.started_at, None);
+        assert_eq!(serde_json::to_value(&read).unwrap(), old);
+    }
 }

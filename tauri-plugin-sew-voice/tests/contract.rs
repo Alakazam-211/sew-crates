@@ -133,9 +133,10 @@ fn participant_speak_denied_is_its_own_flag() {
     }));
 }
 
-/// The contract fixture K2 tests against (tests/native-voice-contract.json, Sew 0.7.2).
+/// The contract fixture K2 tests against (contracts/native-voice-contract.json, Sew 0.7.2).
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("native-voice-contract.json")).expect("the fixture")
+    serde_json::from_str(include_str!("../contracts/native-voice-contract.json"))
+        .expect("the fixture")
 }
 
 #[test]

@@ -2,6 +2,21 @@
 
 sew-call-client is the native voice engine for Sew, a self-hosted team chat server: it joins a Sew voice call from a desktop app, with end-to-end encrypted audio, TURN relay and reconnects.
 
+Sew is a self-hosted chat and calls server from Alakazam Labs. A company runs it on its own
+Linux server for channels, threads, direct messages and voice and video calls; people reach it
+from a browser or from apps built on its client API. This crate is Sew's native call client: a
+desktop or phone app links it to join a Sew call from its own process, with the media encrypted
+end to end between the people in the call. You need a Sew server to use it.
+
+Two labels appear in these docs:
+
+- **K2** is Alakazam Labs' platform, which can host Sew. `kessel-audio` and `kessel-video`, the
+  audio and video pipelines this crate uses, are K2's crates (MIT OR Apache-2.0, on crates.io).
+  Nothing here needs K2: the crate works against any Sew server.
+- **Sew version** ("Sew 0.9.0") is a version of the Sew server. Next to a feature, it is the
+  first server version that has it. In the
+  CHANGELOG's headings, it is the server version that release of this crate is tested against.
+
 Everything below the user interface for one call:
 
 - signalling against Sew's media server over the LiveKit client protocol (through
@@ -36,6 +51,26 @@ Not affiliated with or endorsed by LiveKit.
 - MSRV: Rust 1.95.
 
 ## Features
+
+Which cargo features build where. Every iOS and Android build needs `mobile` (or
+`rust-crypto`); the crate refuses to compile for a phone without it.
+
+| Feature | Linux | macOS | Windows | iOS | Android |
+|---|---|---|---|---|---|
+| `audio` (default) | yes (ALSA development files) | yes | yes | yes (OS voice processing) | yes (OS voice processing) |
+| `audio-core` | yes | yes | yes | yes | yes |
+| `builtin-ring-provider` (default) | yes | yes | yes | yes | yes |
+| `rust-crypto` | yes | yes | yes | yes (required) | yes (required) |
+| `mobile` | not used | not used | not used | yes (required) | yes (required) |
+| `keyring-store` | yes (Secret Service) | yes (Keychain) | yes (Credential Manager) | no | no |
+| `dfn3` | yes | yes | yes | yes | yes |
+| `noise-bench` | debug builds | debug builds | debug builds | debug builds | debug builds |
+| `video-core` | yes | yes | yes | yes | yes |
+| `video` | yes (VP8 only; screens need the xdg portal or libpipewire) | yes | yes | yes | yes |
+| `testing` | tests only | tests only | tests only | tests only | tests only |
+| `sim-software-key` | no | no | no | simulator only | x86 emulator only |
+
+What each one does:
 
 - `audio` (default): the `kessel-audio` bridge on the system's audio devices (cpal: CoreAudio,
   WASAPI, ALSA; Linux builds need ALSA's development files).
@@ -89,7 +124,7 @@ Not affiliated with or endorsed by LiveKit.
   and its busy moments (the session activating, a route change, a device switch, a camera
   starting, and the app's lifecycle through `NoiseRemovalControl::app_scene_changed`) open a
   grace window in which the stage keeps the model through the load. Which files to ship and
-  where: tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app".
+  where: [tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app"](https://github.com/Alakazam-211/sew-crates/tree/main/tauri-plugin-sew-voice#shipping-deepfilternet3-in-your-app).
 - `noise-bench` (debug builds only, never in `default`): `noise_bench::run`, the stage on the
   device's microphone for a while, reported as JSON.
 - `video-core` and `video` (off by default): `kessel-video`, K2's cameras, screen capture and
@@ -135,7 +170,20 @@ needs a Sew server to join calls on (see the
 
 ```toml
 [dependencies]
-sew-call-client = "0.8.2"
+sew-call-client = "0.8.3"
+```
+
+An app also needs, for its `JoinProvider` and to run a call:
+
+```toml
+# The engine runs on Tokio: call `CallClient::join` from inside a Tokio runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# `JoinAnswer::from_json` takes Sew's client API base as a `url::Url`.
+url = "2"
+# Only for the example provider below, which calls Sew over HTTP with reqwest. Any HTTP
+# client works: the provider only has to return the body of Sew's join answer.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
 ```
 
 The engine's WebRTC stack is `sew-str0m`, Alakazam Labs' fork of `str0m` 0.25 (library name
@@ -239,6 +287,37 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### `CallClient::with_mls` or `CallClient::new`
+
+Both build the engine; they differ in who builds the call keys.
+
+- `CallClient::with_mls(config)` is the one to use in an app. It builds Sew's MLS call keys
+  (`e2ee::MlsKeys`) from the config: the device key where `ClientConfig` says (a 0600 file by
+  default, your store with `ClientConfig::with_device_key_store`, a hardware key with
+  `ClientConfig::with_hardware_device_key`) and the platform the device enrols as.
+- `CallClient::new(config, keys)` takes any `e2ee::E2eeProvider` you built. Use it when you
+  configure `MlsKeys` yourself, for example to set the device name Sew shows in the person's
+  device list (`MlsKeys::with_label`), or in tests with the `testing` feature's `StaticKeys`.
+  There is no provider that turns encryption off.
+
+```rust
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use sew_call_client::e2ee::MlsKeys;
+use sew_call_client::{CallClient, ClientConfig};
+
+let data_dir = PathBuf::from("/var/lib/example-app/sew-voice");
+let config = ClientConfig::new("com.example.app", data_dir);
+// What an app needs: Sew's MLS call keys, from the config.
+let _client = CallClient::with_mls(config.clone());
+// The same keys built by hand, with the device name Sew shows.
+let keys = MlsKeys::new(config.device_store.clone())
+    .with_platform(config.device_platform)
+    .with_label("Example app on Linux");
+let _client = CallClient::new(config, Arc::new(keys));
+```
+
 ### Recording consent (Sew 0.7.3)
 
 A recorded call never records this device without the person's yes, and no answer is never a
@@ -264,6 +343,9 @@ device's key to the recorder only while Sew says `granted`.
   nothing (`recording_unsupported`). `CallRecording::trigger` says what started a recording
   and `CallRecording::required` whether the room requires it (Stop is then refused
   `recording_required` while two or more people are in the room).
+  `CallRecording::started_by` and `CallRecording::started_at` say who started it and when, by
+  Sew's clock: count the running time from `started_at`, so someone who joins a call already
+  being recorded sees the real time (`None` while a held join into an auto-record room waits).
 - `Participant::recorder` marks the recorder in the roster.
 
 ### Network changes (phones)
@@ -271,8 +353,8 @@ device's key to the recorder only while Sew says `granted`.
 Call `call.network_changed()` from your path monitor (`NWPathMonitor` on iOS,
 `ConnectivityManager.NetworkCallback` on Android) when the default network changes. The engine
 resumes at once on a fresh TURN allocation over the new network and restarts ICE, instead of
-waiting for the old connections to time out; the state is `reconnecting` until it's done. It
-is cheap and safe to repeat.
+waiting for the old connections to time out; the state is `reconnecting` until it's done.
+Calling it again for the same change does no harm.
 
 ### The phone's audio session
 
@@ -296,7 +378,8 @@ then the record and the pins) and answers the removed `DeviceKeyId`s; it is refu
 directory holds a record of (`device::forget_install` and `device::known_device_keys` take a
 `VaultConfig` or a directory directly).
 
-For a Tauri 2 app, `tauri-plugin-sew-voice` wraps this engine in eight commands and six events.
+For a Tauri 2 app, [`tauri-plugin-sew-voice`](https://docs.rs/tauri-plugin-sew-voice) wraps
+this engine in Tauri commands and events (its README lists them).
 
 ## Licence
 

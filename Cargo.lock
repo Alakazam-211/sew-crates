@@ -5416,7 +5416,7 @@ dependencies = [
 
 [[package]]
 name = "sew-call-client"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -5460,7 +5460,7 @@ dependencies = [
 
 [[package]]
 name = "sew-e2ee"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes-gcm 0.10.3",
  "ed25519-dalek",
@@ -5485,7 +5485,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lk-compat"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes-gcm 0.10.3",
  "aws-lc-rs",
@@ -5505,7 +5505,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lkproto"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -5515,7 +5515,7 @@ dependencies = [
 
 [[package]]
 name = "sew-mls-crypto"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes-gcm 0.10.3",
  "chacha20poly1305 0.10.1",
@@ -5538,7 +5538,7 @@ dependencies = [
 
 [[package]]
 name = "sew-noise"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "nnnoiseless",
  "realfft",
@@ -5547,7 +5547,7 @@ dependencies = [
 
 [[package]]
 name = "sew-proto"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -6271,7 +6271,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-app"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -6296,7 +6296,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-voice"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "base64 0.22.1",
  "cpal",

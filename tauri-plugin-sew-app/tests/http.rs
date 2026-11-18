@@ -280,10 +280,13 @@ async fn an_oversized_answer_and_a_dead_port_are_errors_without_a_body() {
         .await
         .unwrap_err();
     assert!(e.0.contains("too large"), "{e}");
-    // Nothing listens on this port any more.
-    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = l.local_addr().unwrap().port();
-    drop(l);
+    // Nothing listens on this port: bound but not listening, and held, so connects are refused
+    // and no other test can be handed the port meanwhile.
+    let refusing = tokio::net::TcpSocket::new_v4().unwrap();
+    refusing
+        .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .unwrap();
+    let port = refusing.local_addr().unwrap().port();
     let dead = Origin::parse(&format!("http://127.0.0.1:{port}"), true).unwrap();
     let e = transport()
         .send(

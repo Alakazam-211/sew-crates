@@ -255,6 +255,8 @@ unit_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
     #[non_exhaustive]
     pub enum StatusAlarm {
+        // `Unknown` keeps the discriminant it had in 0.10.4; later variants take explicit ones.
+        @unknown = 41;
         /// `db.ok = false`.
         DbDown = "db_down",
         /// `jobs.dead > 0`.
@@ -343,6 +345,16 @@ unit_enum! {
         /// cannot run (the recorder is not installed, `recording.enabled` is off, or the
         /// governing App has `uploads: false`) in the last hour.
         RecordingRequiredFailed = "recording_required_failed",
+        /// The `dir` keyring mirror path is not mounted: it is missing, or a plain directory
+        /// that holds no mirror of this install. Nothing is written there; key writes wait.
+        KeysMirrorUnmounted = "keys_mirror_unmounted" @ 42,
+        /// The `dir` keyring mirror path is on the keyring's own filesystem. Nothing is
+        /// written there; key writes wait.
+        KeysMirrorSameDevice = "keys_mirror_same_device" @ 43,
+        /// No full keyring mirror reconcile has succeeded since the server started (it runs
+        /// one at start), so the mirror is not known to hold every key; `keys.mirror_ok` is
+        /// `false` meanwhile.
+        KeysMirrorUnsynced = "keys_mirror_unsynced" @ 44,
     }
 }
 
@@ -1956,6 +1968,34 @@ pub struct DeliveriesPage {
     /// The install's `sync_epoch` (opaque; changes on restore).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_epoch: Option<String>,
+}
+
+/// Response of `POST /mgmt/v1/keys/mirror-sync`: one full keyring mirror reconcile, run now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct KeysMirrorSyncResponse {
+    /// The mirror kind: `dir`, `none`.
+    pub kind: String,
+    /// The full listing succeeded and every push and repair went through.
+    pub ok: bool,
+    /// Pending writes pushed.
+    pub pushed: u64,
+    /// Pending writes that failed again (they stay pending).
+    pub failed: u64,
+    /// Entries missing in the mirror, written there (keys, `FORMAT`, the ledgers).
+    pub repaired: u64,
+    /// Mirror entries of shredded keys, deleted.
+    pub deleted_shredded: u64,
+    /// Mirror entries that are neither local nor shredded (never deleted).
+    pub unknown: u64,
+    /// Why the mirror could not be listed; nothing was backfilled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// A refused `dir` mirror path: `unmounted` or `same_device`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<String>,
+    /// The last successful full reconcile since the server started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_full_reconcile_ok_at: Option<Timestamp>,
 }
 
 // ---- jobs ----

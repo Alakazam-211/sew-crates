@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.8.3 (2026-11-18, Sew 0.10.5)
+
+Additive: one new field and clearer logs; no other change to the API or its behaviour.
+
+### Added
+
+- **The recording's real start time.** `CallRecording.started_at:
+  Option<sew_proto::time::Timestamp>`: when the recording started, by Sew's clock (Sew's
+  `Recording.started_at`, which every recording Sew sends carries), so a person who joins a
+  call already being recorded shows its real running time. `None` while a held join waits and
+  Sew has sent no recording yet (an auto-record room's first join); left out of the
+  serialised form then. `started_by` is filled from the same recording, as before.
+  `CallRecording` is `#[non_exhaustive]`, so the field is additive.
+
+### Changed
+
+- The call's log says at INFO when DeepFilterNet3 attaches and runs, when it steps down to
+  RNNoise and why (`slow_block`, `slow_window`, `heavy`, `fault`), when a retry is scheduled and
+  in how long (or that none follows), and when a retry succeeds: one line per moment, read from
+  the stage's counters when the state is checked, never per block.
+
+### Documentation
+
+- The README says what Sew is, what the "K2" and "Sew version" labels mean, which cargo
+  features build on Linux, macOS, Windows, iOS and Android (a table), and which crates an
+  app adds beside this one (Tokio, `url`, and an HTTP client for its `JoinProvider`).
+- `JoinProvider`'s documentation lists the crates and features an implementation needs and
+  has a short example that compiles, beside the complete one.
+- `CallClient` says when to use `CallClient::with_mls` (an app) and when `CallClient::new`
+  (keys the host builds itself, such as a custom device label, or tests), with an example;
+  so does the README.
+- Older entries no longer tell a host to add `[patch]` rows for kessel-audio: every
+  dependency comes from crates.io. Plain wording throughout.
+
+### Dependencies
+
+- Requires the Sew crates at 0.10.5.
+
 ## 0.8.2 (2026-11-17, Sew 0.10.4)
 
 - Published on crates.io, as every crate it depends on is: a dependency line is all it
@@ -161,7 +199,7 @@
 
 ### Dependencies
 
-- **Updates the WebRTC dependencies (str0m fork updates); recommended for everyone.**
+- **Updates the WebRTC dependencies (str0m fork updates).**
   `sew-str0m` 0.25.3 and `sew-str0m-is` 0.12.2, now from crates.io (until now from the fork's
   git repository), with upstream str0m fixes for TWCC feedback runs (PR #1150), video-layers-allocation
   resolutions of 65536 (PR #1153), ICE candidates and STUN messages from port 0 or an
@@ -218,7 +256,7 @@
 
 ### Dependencies
 
-- **Updates the WebRTC dependencies (str0m fork updates); recommended for everyone.**
+- **Updates the WebRTC dependencies (str0m fork updates).**
   Includes upstream str0m fixes for TWCC feedback handling (PRs #1151 and #1152), and the
   earlier upstream TWCC fixes from str0m PRs #1143 and #1144.
   `sew-str0m` 0.25.2, the same release as on crates.io, taken from the fork's git repository
@@ -261,7 +299,7 @@
 
 ### Dependencies
 
-- Updates the WebRTC dependencies (str0m fork updates); recommended for everyone.
+- Updates the WebRTC dependencies (str0m fork updates).
 - kessel-video 0.1.6 (from 0.1.5; no API change): a VideoToolbox H.264 session counts as
   hardware only when the session or VideoToolbox's encoder list says so, never because the
   session was asked for hardware (an ask with low-latency rate control could be handed the
@@ -322,7 +360,7 @@ Additions only: nothing in 0.5.0's API changes or goes away.
 ### Fixed
 
 - Updates the WebRTC dependencies to current upstream releases (dimpl 0.9, upstream str0m
-  fixes); recommended for everyone. A host that repeats the `[patch.crates-io]` rows moves the
+  fixes). A host that repeats the `[patch.crates-io]` rows moves the
   str0m rows to `907e050bfa212a23394f4482110acef04cba8fc6` and drops the dimpl row: dimpl 0.9.0
   comes from crates.io.
 - A publication no longer drops the media server's keyframe request for a layer whose last
@@ -592,9 +630,8 @@ Additive.
   `builtin-ring-provider`. The choice is logged at info once per change: `tls provider: <name>
   (caller | process default | built-in)`. `sew_call_client::rustls` re-exports rustls. ring
   stays a rustls feature; DTLS and SRTP are unchanged.
-- The phone audio backend. kessel-audio moves to K2's public repository at
-  aad16f76b8768ae090d3060033d473e87c736be4 (its phone backends); repeat the new
-  `[patch.crates-io]` row. Feature `mobile` now also turns on kessel-audio's `os-voice` when an
+- The phone audio backend, from kessel-audio's phone backends (kessel-audio comes from
+  crates.io since 0.5.0; no `[patch]` row is needed). Feature `mobile` now also turns on kessel-audio's `os-voice` when an
   audio feature is on. `platform_audio_config(input, output)` (feature `audio`) is the call's
   kessel-audio config for this platform: on iOS and Android with `mobile`,
   `Backend::OsVoiceProcessing` (iOS's VoiceProcessingIO unit, Android's AAudio with the

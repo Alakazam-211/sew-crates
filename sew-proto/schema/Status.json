@@ -332,6 +332,21 @@
           "const": "recording_required_failed",
           "description": "A room that must record every call with two or more people could not: three\nrequired starts failed in 10 min for one channel, or recording is required where it\ncannot run (the recorder is not installed, `recording.enabled` is off, or the\ngoverning App has `uploads: false`) in the last hour.",
           "type": "string"
+        },
+        {
+          "const": "keys_mirror_unmounted",
+          "description": "The `dir` keyring mirror path is not mounted: it is missing, or a plain directory\nthat holds no mirror of this install. Nothing is written there; key writes wait.",
+          "type": "string"
+        },
+        {
+          "const": "keys_mirror_same_device",
+          "description": "The `dir` keyring mirror path is on the keyring's own filesystem. Nothing is\nwritten there; key writes wait.",
+          "type": "string"
+        },
+        {
+          "const": "keys_mirror_unsynced",
+          "description": "No full keyring mirror reconcile has succeeded since the server started (it runs\none at start), so the mirror is not known to hold every key; `keys.mirror_ok` is\n`false` meanwhile.",
+          "type": "string"
         }
       ]
     },

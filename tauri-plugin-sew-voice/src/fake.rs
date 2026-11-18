@@ -1555,6 +1555,8 @@ impl FakeCall {
                     recording_id: FAKE_RECORDING_ID.to_owned(),
                     auto: false,
                     started_by: Some(me.clone()),
+                    // The fake's Sew keeps no clock for its recording.
+                    started_at: None,
                     my_consent: crate::wire::consent::GRANTED.to_owned(),
                     consent_prompt: None,
                     participants: vec![RecordingParticipant {
@@ -2160,7 +2162,7 @@ impl EventSink for RecordingSink {
 }
 
 /// Records every [`VoiceListener`] call as one `{"<method>": <argument as JSON>}` object, in
-/// order (the shape of `tests/sew-native-voice-listener.json`), for tests of a native shim.
+/// order (the shape of `contracts/sew-native-voice-listener.json`), for tests of a native shim.
 #[derive(Debug, Default)]
 pub struct RecordingListener {
     calls: Mutex<Vec<serde_json::Value>>,

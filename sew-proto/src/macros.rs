@@ -5,20 +5,25 @@
 //! at each call site so the registry test can see it in the source.
 
 /// Defines a wire unit enum whose JSON form is a string.
+///
+/// An enum already published with `Unknown` at a given discriminant may pin it with a leading
+/// `@unknown = N;` and give the variants added after it explicit discriminants
+/// (`Variant = "wire" @ N`), so adding a variant does not move `Unknown`'s number.
 macro_rules! unit_enum {
     (
         $(#[$meta:meta])*
         pub enum $name:ident {
-            $( $(#[$vmeta:meta])* $variant:ident = $wire:literal ),+ $(,)?
+            $(@unknown = $udisc:literal;)?
+            $( $(#[$vmeta:meta])* $variant:ident = $wire:literal $(@ $disc:literal)? ),+ $(,)?
         }
     ) => {
         $(#[$meta])*
         pub enum $name {
-            $( $(#[$vmeta])* #[serde(rename = $wire)] $variant, )+
+            $( $(#[$vmeta])* #[serde(rename = $wire)] $variant $(= $disc)?, )+
             /// A value this build does not know, sent by a newer peer. The server never sends it.
             #[serde(other, rename = "unknown")]
             #[schemars(skip)]
-            Unknown,
+            Unknown $(= $udisc)?,
         }
 
         impl $name {

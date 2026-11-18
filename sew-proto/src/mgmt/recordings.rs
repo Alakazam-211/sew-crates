@@ -39,7 +39,7 @@ use crate::id::Id;
 use crate::policy::RECORDING_AUDIO_DAYS_LIMIT;
 use crate::recording::{
     AudioState, Consent, RecordingEventKind, RecordingRule, RecordingStartLevel, RecordingState,
-    RecordingTrigger, StopReason, TranscriptState,
+    RecordingTrigger, StopReason, TranscriptFailure, TranscriptState,
 };
 use crate::time::Timestamp;
 
@@ -273,6 +273,10 @@ pub struct MgmtRecordingSummary {
     pub record_message_id: Id,
     /// The transcript.
     pub transcript_state: TranscriptState,
+    /// Why the transcript is `failed` or `partial`, as a stable code and plain words; absent
+    /// otherwise, when no cause is known, and from servers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_failure: Option<TranscriptFailure>,
     /// The audio (never served to an App).
     pub audio_state: AudioState,
     /// Audio keep days (0 = until the transcript is final).
@@ -303,6 +307,7 @@ impl MgmtRecordingSummary {
             stop_reason: None,
             record_message_id,
             transcript_state: TranscriptState::Pending,
+            transcript_failure: None,
             audio_state: AudioState::Available,
             audio_keep_days: 0,
             participants: Vec::new(),

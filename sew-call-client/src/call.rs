@@ -196,6 +196,12 @@ pub struct CallRecording {
     pub auto: bool,
     /// Who started it (Sew's member id), when known.
     pub started_by: Option<String>,
+    /// When it started, by Sew's clock: a person who joins a call already being recorded
+    /// shows the recording's real running time from it. `None` while a held join waits for an
+    /// answer and Sew has not sent the recording itself (an auto-record room's first join).
+    /// Left out of the serialised form when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<sew_proto::time::Timestamp>,
     /// This person's answer.
     pub my_consent: RecordingConsent,
     /// The notice to show while this person has not answered (`pending`), with its
@@ -285,6 +291,7 @@ impl CallRecording {
             recording_id: r.id.to_string(),
             auto: r.auto,
             started_by: Some(r.started_by.to_string()),
+            started_at: Some(r.started_at),
             my_consent: RecordingConsent::from_sew(r.my_consent),
             consent_prompt: r.consent_prompt.clone(),
             participants: r
@@ -327,6 +334,7 @@ impl CallRecording {
                         .started_by
                         .as_ref()
                         .map(|m| m.member_id.to_string()),
+                    started_at: None,
                     my_consent: RecordingConsent::Pending,
                     consent_prompt: Some(c.consent_prompt.clone()),
                     participants: Vec::new(),
@@ -742,6 +750,36 @@ pub(crate) enum Cmd {
 }
 
 /// The engine of one app: at most one live call.
+///
+/// Two constructors; they differ in who builds the call keys:
+///
+/// - [`CallClient::with_mls`] is the one to use in an app. It builds Sew's MLS call keys
+///   ([`crate::e2ee::MlsKeys`]) from the [`ClientConfig`]: the device key where
+///   [`ClientConfig::device_store`] says (a 0600 file by default, the host's store with
+///   [`ClientConfig::with_device_key_store`], a hardware key with
+///   [`ClientConfig::with_hardware_device_key`]) and the platform the device enrols as.
+/// - [`CallClient::new`] takes any [`E2eeProvider`] the host built. Use it to configure
+///   [`crate::e2ee::MlsKeys`] yourself, for example the device name Sew shows in the person's
+///   device list ([`crate::e2ee::MlsKeys::with_label`]), or in tests with the `testing`
+///   feature's `StaticKeys`. No provider turns encryption off.
+///
+/// ```
+/// use std::path::PathBuf;
+/// use std::sync::Arc;
+///
+/// use sew_call_client::e2ee::MlsKeys;
+/// use sew_call_client::{CallClient, ClientConfig};
+///
+/// let data_dir = PathBuf::from("/var/lib/example-app/sew-voice");
+/// let config = ClientConfig::new("com.example.app", data_dir);
+/// // What an app needs: Sew's MLS call keys, from the config.
+/// let _client = CallClient::with_mls(config.clone());
+/// // The same keys built by hand, with the device name Sew shows.
+/// let keys = MlsKeys::new(config.device_store.clone())
+///     .with_platform(config.device_platform)
+///     .with_label("Example app on Linux");
+/// let _client = CallClient::new(config, Arc::new(keys));
+/// ```
 pub struct CallClient {
     cfg: ClientConfig,
     e2ee: Arc<dyn E2eeProvider>,
@@ -761,6 +799,10 @@ impl std::fmt::Debug for CallClient {
 impl CallClient {
     /// An engine with `cfg` whose call keys come from `e2ee` (the `sew-e2ee` key session;
     /// there is no plaintext alternative).
+    ///
+    /// For keys the host configured itself ([`crate::e2ee::MlsKeys`] with its own label, or
+    /// the `testing` feature's `StaticKeys`). An app that needs no such setting uses
+    /// [`CallClient::with_mls`], which builds the MLS keys from `cfg` (see [`CallClient`]).
     pub fn new(cfg: ClientConfig, e2ee: Arc<dyn E2eeProvider>) -> CallClient {
         CallClient {
             cfg,
@@ -808,7 +850,8 @@ impl CallClient {
     /// where `cfg.device_store` says (by default a 0600 file; the host's own store with
     /// [`ClientConfig::with_device_key_store`], a hardware key with
     /// [`ClientConfig::with_hardware_device_key`]), enrolled as `cfg.device_platform`: the
-    /// production constructor.
+    /// production constructor, the one an app uses. [`CallClient::new`] is for keys the host
+    /// builds itself (see [`CallClient`]).
     pub fn with_mls(cfg: ClientConfig) -> CallClient {
         let keys =
             crate::e2ee::MlsKeys::new(cfg.device_store.clone()).with_platform(cfg.device_platform);

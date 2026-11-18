@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.3 (2026-11-18, Sew 0.10.5)
+
+Additive: one new optional field in the `recording` event; no other change to the API, the
+commands or their JSON.
+
+### Added
+
+- **The recording's real start time.** `RecordingInfo.started_at` (the `recording` event and
+  the `state` command's `recording`): when the recording started, by Sew's clock, as RFC 3339
+  in UTC with milliseconds (`"started_at": "2026-11-02T09:58:00.000Z"`). Someone who joins a
+  call already being recorded shows the recording's running time from it instead of from
+  their own join. Absent while a held join waits and Sew has sent no recording yet (an
+  auto-record room's first join, `recording_id` `auto`); a host reads its absence as
+  "unknown". `RecordingInfo` is `#[non_exhaustive]`, so the field is additive.
+
+### Documentation
+
+- The JSON contracts move from `tests/` to `contracts/` in the package:
+  `contracts/native-voice-contract.json`, `contracts/native-voice-details.json` and
+  `contracts/sew-native-voice-listener.json`. The tests read them from there.
+  `native-voice-details.json` and `sew-native-voice-listener.json` are unchanged;
+  `native-voice-contract.json` gains `started_at` in the `recording` event's granted and
+  withdrawn examples and in the recording-controls granted payload, and a sentence on it in the
+  `recording` event's description.
+- The README lists every command with its permission set and a one-line description, has a
+  capability file example (`src-tauri/capabilities/default.json`), and says what the "K2" and
+  "Sew version" labels mean.
+- "Shipping DeepFilterNet3 in your app" gives the release asset's download URL
+  (`sew-dfn3-<sew-version>.tar.gz` on Alakazam-211/sew-releases), this release's URL and
+  sha256, and a fetch-and-check example; the dependency line names the real version.
+- Links to the native voice SDK guide, the contracts and sew-call-client's documentation are
+  absolute, so they work on crates.io and docs.rs.
+- An older entry no longer tells a host to add a `[patch]` row for kessel-audio: every
+  dependency comes from crates.io. Plain wording throughout.
+
+### Dependencies
+
+- Requires sew-call-client 0.8.3 (`CallRecording.started_at`) and sew-proto 0.10.5.
+
 ## 0.8.2 (2026-11-17, Sew 0.10.4)
 
 - Published on crates.io, with `sew-call-client` and every crate they depend on: a dependency
@@ -107,8 +146,7 @@
 
 ### Dependencies
 
-- Through sew-call-client, updates the WebRTC dependencies (str0m fork updates); recommended
-  for everyone. `sew-str0m` 0.25.3 and `sew-str0m-is` 0.12.2 now come from crates.io, with
+- Through sew-call-client, updates the WebRTC dependencies (str0m fork updates). `sew-str0m` 0.25.3 and `sew-str0m-is` 0.12.2 now come from crates.io, with
   upstream str0m fixes for TWCC feedback runs (PR #1150), video-layers-allocation
   resolutions of 65536 (PR #1153), ICE candidates and STUN messages from port 0 or an
   unspecified address (PR #1148), and conflicting payload types in a remote SDP description
@@ -162,8 +200,8 @@
 
 ### Dependencies
 
-- Through sew-call-client 0.7.0, updates the WebRTC dependencies (str0m fork updates);
-  recommended for everyone. Includes upstream str0m fixes for TWCC feedback handling (PRs
+- Through sew-call-client 0.7.0, updates the WebRTC dependencies (str0m fork
+  updates). Includes upstream str0m fixes for TWCC feedback handling (PRs
   #1151 and #1152).
 
 ## 0.6.2 (2026-11-12, Sew 0.9.3)
@@ -195,8 +233,7 @@
 
 ### Dependencies
 
-- Through sew-call-client, updates the WebRTC dependencies (str0m fork updates); recommended
-  for everyone.
+- Through sew-call-client, updates the WebRTC dependencies (str0m fork updates).
 - kessel-video 0.1.6 (from 0.1.5), here and through sew-call-client: on macOS and iOS an H.264
   session counts as hardware only when VideoToolbox confirms it (the software low-latency
   encoder no longer reports hardware); sew-call-client's hardware-name guard stays.
@@ -266,7 +303,7 @@ Additions only: nothing in 0.5.0's API changes or goes away.
 ### Fixed
 
 - Updates the WebRTC dependencies to current upstream releases (dimpl 0.9, upstream str0m
-  fixes); recommended for everyone. A host that repeats the `[patch.crates-io]` rows moves the
+  fixes). A host that repeats the `[patch.crates-io]` rows moves the
   str0m rows to `907e050bfa212a23394f4482110acef04cba8fc6` and drops the dimpl row: dimpl 0.9.0
   comes from crates.io.
 - After a leave, a join is never refused `already_in_call` by the plugin's own engine. The
@@ -549,8 +586,7 @@ Additive. Needs sew-call-client 0.4.1 and sew-proto 0.8.1.
   call's audio is kessel-audio's OS voice processing (VoiceProcessingIO; AAudio's
   voice-communication preset) with the OS's echo cancellation and noise suppression on;
   desktop keeps cpal. `real::system_audio()` is sew-call-client's `platform_audio_config`.
-  kessel-audio's `[patch.crates-io]` row moves to K2 rev
-  aad16f76b8768ae090d3060033d473e87c736be4.
+  (kessel-audio comes from crates.io since 0.5.0; no `[patch]` row is needed.)
 - `VoiceControl`'s `session_activated`, `session_deactivated`, `suspend`, `resume` and
   `route_changed` now reach kessel-audio (they did nothing before): the real engine keeps one
   `AudioSession` for the app, so an event before the call applies when its audio starts, and

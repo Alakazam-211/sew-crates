@@ -871,7 +871,8 @@ async fn no_token_reaches_the_webview() {
 
 /// The contract fixture K2 tests against.
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("native-voice-contract.json")).expect("the fixture")
+    serde_json::from_str(include_str!("../contracts/native-voice-contract.json"))
+        .expect("the fixture")
 }
 
 /// Every end reason in the fixture, through the fake engine: the plugin's `state` event is the

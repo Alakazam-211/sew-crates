@@ -325,6 +325,7 @@ pub const NESTED: &[&str] = &[
     "PromptTranscript",
     "SummaryAudio",
     "SummaryTranscript",
+    "TranscriptFailure",
     "TurnPiece",
     "MixedPart",
     "AudioTrack",
@@ -980,6 +981,12 @@ pub fn all() -> Vec<WireType> {
             "mgmt",
             StartJobResponse,
             "POST /mgmt/v1/backup, /export, /keys/rotate-master"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            KeysMirrorSyncResponse,
+            "POST /mgmt/v1/keys/mirror-sync"
         ),
         wire!(Enum, "mgmt", JobState, ""),
         wire!(Response, "mgmt", JobStatus, "GET /mgmt/v1/jobs/{id}"),
@@ -3227,6 +3234,12 @@ pub fn all() -> Vec<WireType> {
             "RecordingSummary.transcript.state"
         ),
         wire!(Enum, "recording", GapReason, "recording gaps"),
+        wire!(
+            Enum,
+            "recording",
+            TranscriptFailureCode,
+            "Message.transcript_failure.code, MgmtRecordingSummary.transcript_failure.code"
+        ),
         wire!(Enum, "recording", Playback, "RecordingAudio.playback"),
         wire!(Enum, "recording", DownloadWhat, "DownloadRequest.what"),
         wire!(

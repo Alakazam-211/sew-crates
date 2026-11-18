@@ -18,18 +18,35 @@
 //!   [`Call::withdraw_consent`] is "Stop recording me". Consent travels through the host's
 //!   [`JoinProvider`] with the person's own session.
 //!
+//! Sew is a self-hosted chat and calls server from Alakazam Labs; this crate is its native call
+//! client. It needs a Sew server to join calls on.
+//!
 //! ```text
-//! let client = CallClient::new(ClientConfig::new("com.example.app", data_dir), keys);
+//! let client = CallClient::with_mls(ClientConfig::new("com.example.app", data_dir));
 //! let call = client.join(provider, JoinRequest { target, room, muted: false, deafened: false, rejoin: None, recording_notice: None }).await?;
 //! let audio = AudioBridge::start(&call, kessel_audio::EngineConfig::default())?; // feature `audio`
 //! let mut events = call.events();
 //! ```
 //!
+//! The host implements [`JoinProvider`] (its documentation says which crates that needs and has
+//! a complete example). The engine runs on Tokio: call [`CallClient::join`] from inside a Tokio
+//! runtime.
+//!
 //! The E2EE layer plugs in through [`e2ee::E2eeProvider`]; `CallClient` cannot be built without
 //! one. The real one, and the default ([`CallClient::with_mls`]), is [`e2ee::MlsKeys`]: MLS
 //! through `sew-e2ee`, the call socket ([`gateway`]), the device store ([`device`]), the
 //! mandatory checks and sew-lk-compat's LkGcm. The only other provider is the test-only
-//! `StaticKeys` (feature `testing`).
+//! `StaticKeys` (feature `testing`). [`CallClient`] says when to use `with_mls` and when
+//! [`CallClient::new`].
+//!
+//! Two labels in these docs: **K2** is Alakazam Labs' platform, which can host Sew
+//! (`kessel-audio` and `kessel-video`, the audio and video pipelines used here, are K2's crates;
+//! nothing here needs K2). A **Sew version** ("Sew 0.7.3") is a version of the Sew server: next
+//! to a feature, the first server version that has it; in the CHANGELOG's headings, the server
+//! version that release of this crate is tested against.
+//!
+//! The [README](https://github.com/Alakazam-211/sew-crates/tree/main/sew-call-client#features)
+//! has the cargo features and the platforms each one builds on.
 // Test code may unwrap and expect: the packaged crate has no clippy.toml (whose
 // allow-unwrap-in-tests and allow-expect-in-tests say so in this repository).
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]

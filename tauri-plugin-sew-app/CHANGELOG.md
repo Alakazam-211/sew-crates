@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 (2026-11-18, Sew 0.10.5)
+
+- No API or behaviour change. Requires tauri-plugin-sew-voice 0.8.3.
+
 ## 0.5.1 (2026-11-17, Sew 0.10.4)
 
 ### Dependencies

@@ -388,6 +388,13 @@ pub struct Message {
     /// on tombstones. A system message's `body` is empty, and it cannot be edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<MessageKind>,
+    /// On a record message (`recording` set) whose transcript is `failed` or `partial`: why,
+    /// as a stable code and plain words for the person
+    /// (`{"code": "transcriber_error", "message": "..."}`). Absent otherwise, when no cause is
+    /// known, and from servers that predate it. It sits beside `recording`, not inside
+    /// `recording.transcript`, so the field is additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_failure: Option<crate::recording::TranscriptFailure>,
 }
 
 /// What a system message records (`Message.system`), tagged by `kind`. A client shows a kind
@@ -449,6 +456,7 @@ impl Message {
             recording: None,
             transcript: None,
             system: None,
+            transcript_failure: None,
         }
     }
 }

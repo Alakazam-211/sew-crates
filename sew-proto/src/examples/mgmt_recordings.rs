@@ -143,7 +143,10 @@ fn summary_full() -> MgmtRecordingSummary {
         stopped_at: Some(t(1_800_000)),
         stop_reason: Some(StopReason::MgmtStopped),
         record_message_id: ID_MESSAGE,
-        transcript_state: TranscriptState::Done,
+        transcript_state: TranscriptState::Failed,
+        transcript_failure: Some(crate::recording::TranscriptFailure::new(
+            crate::recording::TranscriptFailureCode::TranscriberError,
+        )),
         audio_state: AudioState::Available,
         audio_keep_days: 30,
         participants: participants(),
@@ -158,6 +161,7 @@ fn summary_min() -> MgmtRecordingSummary {
         stopped_at: None,
         stop_reason: None,
         transcript_state: TranscriptState::Pending,
+        transcript_failure: None,
         audio_keep_days: 0,
         participants: vec![],
         ..summary_full()

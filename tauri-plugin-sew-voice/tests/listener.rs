@@ -1,5 +1,5 @@
 //! The native listener and control (0.3.0): every scenario of
-//! `tests/sew-native-voice-listener.json`, driven through `VoiceControl` against the fake
+//! `contracts/sew-native-voice-listener.json`, driven through `VoiceControl` against the fake
 //! engine, gives exactly the fixture's listener calls; every argument round-trips through the
 //! wire types; the listener sees what the webview sees, in the same order; and the control's
 //! own rules (leave twice, `not_in_call`, the network and audio-session pass-through).
@@ -71,7 +71,8 @@ async fn settle() {
 }
 
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("sew-native-voice-listener.json")).expect("the fixture")
+    serde_json::from_str(include_str!("../contracts/sew-native-voice-listener.json"))
+        .expect("the fixture")
 }
 
 fn from<T: DeserializeOwned>(v: &Value, what: &str) -> T {

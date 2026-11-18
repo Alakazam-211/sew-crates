@@ -319,6 +319,71 @@ coded_enum! {
     }
 }
 
+coded_enum! {
+    /// Why a transcript is `failed` or `partial` ([`TranscriptFailure::code`]). Stored in
+    /// `recordings.transcript_failure`. Later releases add codes: show
+    /// [`TranscriptFailure::message`] for a code this build does not know.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+    #[non_exhaustive]
+    pub enum TranscriptFailureCode {
+        /// The audio was deleted (expired, purged, or its record message deleted) before it was
+        /// transcribed.
+        AudioGone = "audio_gone" => 1,
+        /// The transcriber does not support the language spoken, even when asked to detect it.
+        UnsupportedLanguage = "unsupported_language" => 2,
+        /// The transcriber could not transcribe the audio (it timed out, failed or gave an
+        /// answer Sew could not read) after its retries.
+        TranscriberError = "transcriber_error" => 3,
+        /// Part of the call's audio never reached the recording (the recorder restarted or
+        /// reconnected, storage was full, a key was missing, and the like). Only on `partial`.
+        AudioNotCaptured = "audio_not_captured" => 4,
+    }
+}
+
+impl TranscriptFailureCode {
+    /// The plain words a client shows for the code, the same as [`TranscriptFailure::message`].
+    pub const fn message(self) -> &'static str {
+        match self {
+            TranscriptFailureCode::AudioGone => {
+                "The audio was deleted before it could be transcribed."
+            }
+            TranscriptFailureCode::UnsupportedLanguage => {
+                "The language spoken in the call is not supported for transcripts."
+            }
+            TranscriptFailureCode::TranscriberError => {
+                "The transcription service could not process the audio."
+            }
+            TranscriptFailureCode::AudioNotCaptured => {
+                "Some of the call's audio was not captured, so the transcript has gaps."
+            }
+            TranscriptFailureCode::Unknown => "The transcript could not be completed.",
+        }
+    }
+}
+
+/// Why a recording's transcript could not be made (`failed`) or is incomplete (`partial`):
+/// `{"code": "transcriber_error", "message": "The transcription service could not process the
+/// audio."}`. `message` is plain words for the person, written by the server; `code` is stable
+/// for a client that picks its own words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct TranscriptFailure {
+    /// The cause.
+    pub code: TranscriptFailureCode,
+    /// Plain words for the person.
+    pub message: String,
+}
+
+impl TranscriptFailure {
+    /// The failure for `code`, with its plain words.
+    pub fn new(code: TranscriptFailureCode) -> TranscriptFailure {
+        TranscriptFailure {
+            code,
+            message: code.message().to_owned(),
+        }
+    }
+}
+
 unit_enum! {
     /// Whether the audio listing hands out keys.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

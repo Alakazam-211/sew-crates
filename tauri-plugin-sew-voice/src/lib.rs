@@ -18,7 +18,20 @@
 //! [`fake::FakeEngine`] stands in for it in tests. Without the `tauri` feature the crate is the
 //! plugin's core ([`VoiceService`], the JSON shapes in [`wire`], the engine interface in
 //! [`engine`], the real and the fake engine), which builds and tests without Tauri's system
-//! libraries. The crate's README is the guide.
+//! libraries. The crate's
+//! [README](https://github.com/Alakazam-211/sew-crates/tree/main/tauri-plugin-sew-voice#readme)
+//! is the guide: setup, the capability file, every command with its permission set, and
+//! shipping DeepFilterNet3's weights. The
+//! [native voice SDK guide](https://github.com/Alakazam-211/sew-crates/blob/main/docs/native-voice-sdk.md)
+//! has each command's arguments, answers and errors; the exact JSON is pinned in the package's
+//! `contracts/` folder.
+//!
+//! Sew is Alakazam Labs' self-hosted chat and calls server; the plugin needs one to join calls
+//! on. **K2** is Alakazam Labs' platform, which can host Sew (the audio and video pipelines
+//! `kessel-audio` and `kessel-video` are K2's crates; nothing here needs K2). A **Sew version**
+//! ("Sew 0.9.0") is a version of the Sew server: next to a feature, the first server version
+//! that has it; in the CHANGELOG's headings, the server version that release of this plugin is
+//! tested against. A plain version ("0.4.1") is the plugin's own.
 //!
 //! **Call details (0.4.1).** Beside the frozen eight, the `call_details`, `ring` and
 //! `ring_ended` commands (permission set `sew-voice:call-details`) and the `security`, `roster`,
