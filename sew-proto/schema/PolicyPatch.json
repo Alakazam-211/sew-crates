@@ -270,6 +270,13 @@
         "null"
       ]
     },
+    "dm.read_receipts": {
+      "description": "`dm.read_receipts`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "emoji.max_per_space": {
       "description": "`emoji.max_per_space`.",
       "format": "uint32",

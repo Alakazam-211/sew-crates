@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.3 (2026-11-19, Sew 0.10.6)
+
+No API or behaviour change.
+
+### Dependencies
+
+- Through tauri-plugin-sew-voice and sew-call-client, updates the WebRTC dependencies
+  (`sew-str0m` 0.25.6); see sew-call-client's CHANGELOG.
+- Requires tauri-plugin-sew-voice 0.8.4.
+
 ## 0.5.2 (2026-11-18, Sew 0.10.5)
 
 - No API or behaviour change. Requires tauri-plugin-sew-voice 0.8.3.

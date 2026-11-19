@@ -122,6 +122,11 @@ unit_enum! {
 /// Feature flag (since 0.10.0): the policy `agents.dm_with_box_people`.
 pub const FEATURE_AGENTS_DM_WITH_BOX_PEOPLE: &str = "agents_dm_with_box_people";
 
+/// The policy key `dm.read_receipts` (read receipts in DMs; flag `dm_read_receipts`). It is a
+/// key of [`Policies`] and [`PolicyPatch`]; [`PolicyKey`] has no variant for it (that enum is not
+/// `#[non_exhaustive]`).
+pub const DM_READ_RECEIPTS: &str = "dm.read_receipts";
+
 unit_enum! {
     /// A profile field `identity.managed_fields` may give to K2. A listed field changes only
     /// through mgmt (`/mgmt/v1/principals/*`); a client write naming it answers `403
@@ -330,6 +335,11 @@ pub struct Policies {
     /// `agents.allowed_in_dms` only. Old payloads read `true`.
     #[serde(rename = "agents.dm_with_box_people", default = "default_true")]
     pub agents_dm_with_box_people: bool,
+    /// Read receipts in DMs and group DMs (`dm.read_receipts`, flag `dm_read_receipts`): on,
+    /// members who share them see each other's seen positions; off, none are kept or shown,
+    /// and turning it off deletes every kept one. Old payloads read `true`.
+    #[serde(rename = "dm.read_receipts", default = "default_true")]
+    pub dm_read_receipts: bool,
     /// Strip GPS and other location EXIF/XMP from JPEG, PNG, WebP and HEIC originals when an
     /// upload finishes; orientation and colour profile stay.
     #[serde(rename = "files.strip_image_location", default = "default_true")]
@@ -528,6 +538,7 @@ impl Default for Policies {
             digest_enabled: false,
             agents_allowed_in_dms: true,
             agents_dm_with_box_people: true,
+            dm_read_receipts: true,
             files_strip_image_location: true,
             messages_deleted_purge_days: DEFAULT_DELETED_PURGE_DAYS,
             guests_enabled: true,
@@ -605,6 +616,7 @@ impl Policies {
             digest_enabled,
             agents_allowed_in_dms,
             agents_dm_with_box_people,
+            dm_read_receipts,
             files_strip_image_location,
             messages_deleted_purge_days,
             guests_enabled,
@@ -797,6 +809,13 @@ pub struct PolicyPatch {
         skip_serializing_if = "Option::is_none"
     )]
     pub agents_dm_with_box_people: Option<bool>,
+    /// `dm.read_receipts`.
+    #[serde(
+        rename = "dm.read_receipts",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dm_read_receipts: Option<bool>,
     /// `files.strip_image_location`.
     #[serde(
         rename = "files.strip_image_location",

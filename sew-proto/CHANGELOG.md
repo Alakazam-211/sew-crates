@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.10.6 (2026-11-19)
+
+### Added
+
+- **Read receipts in DMs and group DMs.** A DM member's seen position (the highest message id
+  of their channel acks there; it only moves forward, and mark unread never lowers it) is shown
+  to the other members when the install policy `dm.read_receipts` is on and both sides share
+  their read receipts. The new module `api::read_receipts`:
+  - `DmSeen {channel_id, member_id, seen_id?, seen_at?}` (`#[non_exhaustive]`; `DmSeen::new`,
+    `DmSeen::removed`): the body of the event `dm_seen`, sent to the DM's other members, never
+    the reader's own sessions, e.g. `{"channel_id": "…", "member_id": "…", "seen_id": "…",
+    "seen_at": "2026-11-18T12:01:00.123Z"}`. A copy without `seen_id` and `seen_at` removes the
+    member's position (they stopped sharing).
+  - `DmReadReceipts {channel_id, active, items}` (`#[non_exhaustive]`) for
+    `routes::CHANNEL_READ_RECEIPTS` (`GET /api/v1/channels/{id}/read_receipts`); a space
+    channel answers `422 invalid_state` with `reasons::NOT_A_DM` (`not_a_dm`).
+  - `ReadReceiptSettings {share_read_receipts, install_enabled}` (`#[non_exhaustive]`;
+    `active()`) for `routes::ME_READ_RECEIPTS` (`GET /api/v1/me/read_receipts`) and
+    `routes::ME_READ_RECEIPTS_SET` (`POST /api/v1/me/read_receipts/set` with
+    `SetReadReceiptsRequest {share_read_receipts}`), and the event
+    `read_receipt_settings_updated` to the member's own sessions. Sharing is on by default and
+    reciprocal: off, the member's positions are neither kept nor shown, and they see nobody's.
+  - `ReadReceiptsPolicyUpdated {enabled}`, the event `read_receipts_policy_updated` to every
+    session when the policy changes.
+  - `FEATURE_DM_READ_RECEIPTS` (`dm_read_receipts`) in `mgmt::FEATURES`.
+- **A person's notification level and mute per channel or DM over mgmt.**
+  `routes::MGMT_PERSON_CHANNEL_NOTIFY` (`GET /mgmt/v1/people/{external_id}/channels/{id}/notify`)
+  and `routes::MGMT_PERSON_CHANNEL_NOTIFY_SET` (`POST …/notify/set`) answer and take the person's
+  own route's types, `api::notify::ChannelNotifyPrefs` and `SetChannelNotifyRequest`, with the
+  same rules. `audit::Action::NotifyPrefsSet` (`notify.prefs_set`, install class; additive:
+  `Action::Unknown` keeps its 0.10.5 discriminant, 211, and the new action takes 212) and
+  `mgmt::FEATURE_PERSON_CHANNEL_NOTIFY` (`person_channel_notify`) in `mgmt::FEATURES`.
+- `routes::MGMT_PERSON_NOTIFICATIONS_HEAD` (`GET /mgmt/v1/people/{external_id}/notifications/head`)
+  and `mgmt::PersonNotificationsHead {head}` (`#[non_exhaustive]`; `PersonNotificationsHead::new`):
+  the person's member-log head, where a new feed consumer starts (`after = head`);
+  `mgmt::FEATURE_FEED_HEAD` (`feed_head`) in `mgmt::FEATURES`.
+- `EventName::DmSeen`, `ReadReceiptSettingsUpdated` and `ReadReceiptsPolicyUpdated` (68–70)
+  and their `Event` variants. Additive: both enums are `#[non_exhaustive]`, and
+  `EventName::Unknown` keeps its 0.10.5 discriminant (67).
+- `ReadyChannel.dm_seen` (the other members' positions in a DM, skipped when empty) and
+  `ReadyInstall.read_receipts` (`Option<ReadReceiptSettings>`, skipped when `None`; absent
+  from an older server). Both structs are `#[non_exhaustive]`. `Ready`, `ReadState` and
+  `MeSync` are not, so they gain nothing: an agent without a socket reads the positions from
+  the GET.
+- The policy `dm.read_receipts` (default `true`; old payloads read `true`):
+  `Policies.dm_read_receipts` and `PolicyPatch.dm_read_receipts` (both `#[non_exhaustive]`).
+  `PolicyKey` is not `#[non_exhaustive]`, so it gains no variant in this release; the key is
+  `policy::DM_READ_RECEIPTS`. `PolicyDigest` is unchanged (not `#[non_exhaustive]`); clients
+  read the policy from `ReadyInstall.read_receipts.install_enabled`.
+- **Export minor 14.** Full exports carry `dm_seen.ndjson` (`export::DmSeenRecord`) and
+  `read_receipt_prefs.ndjson` (`export::ReadReceiptPrefRecord`), both `#[non_exhaustive]`
+  with constructors. `EXPORT_FORMAT_MINOR` is 14.
+
 ## 0.10.5 (2026-11-18)
 
 ### Added

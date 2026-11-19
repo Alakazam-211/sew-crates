@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `GET /mgmt/v1/people/{external_id}/notifications/head`: the person's member-log\nhead now, so a new consumer can start the feed there (`after = head`) and push only what\ncomes next.",
+  "properties": {
+    "head": {
+      "description": "The member-log head seq (`0` for an empty log).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "head"
+  ],
+  "title": "PersonNotificationsHead",
+  "type": "object"
+}

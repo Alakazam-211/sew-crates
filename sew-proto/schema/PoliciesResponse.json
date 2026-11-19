@@ -173,6 +173,11 @@
           "description": "Email digest on/off.",
           "type": "boolean"
         },
+        "dm.read_receipts": {
+          "default": true,
+          "description": "Read receipts in DMs and group DMs (`dm.read_receipts`, flag `dm_read_receipts`): on,\nmembers who share them see each other's seen positions; off, none are kept or shown,\nand turning it off deletes every kept one. Old payloads read `true`.",
+          "type": "boolean"
+        },
         "emoji.max_per_space": {
           "description": "Custom emoji per space.",
           "format": "uint32",

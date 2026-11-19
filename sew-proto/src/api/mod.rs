@@ -20,6 +20,7 @@ pub mod moderation;
 pub mod notify;
 pub mod overwrites;
 pub mod people;
+pub mod read_receipts;
 pub mod read_state;
 pub mod resolve;
 pub mod roles;

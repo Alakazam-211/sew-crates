@@ -336,6 +336,21 @@
       "const": "recording_controls_updated",
       "description": "The receiver's own Record and Stop in the room they are in changed (body\n`RecordingControlsUpdated`, to the member's own sessions only).",
       "type": "string"
+    },
+    {
+      "const": "dm_seen",
+      "description": "Another member's seen position in a DM or group DM moved, or was removed (body\n`DmSeen`, to the DM's other members who may see it, never the reader's own\nsessions).",
+      "type": "string"
+    },
+    {
+      "const": "read_receipt_settings_updated",
+      "description": "The receiver's own read-receipt settings changed (body `ReadReceiptSettings`, to\nthe member's own sessions).",
+      "type": "string"
+    },
+    {
+      "const": "read_receipts_policy_updated",
+      "description": "The install policy `dm.read_receipts` changed (body `ReadReceiptsPolicyUpdated`,\nto every session).",
+      "type": "string"
     }
   ],
   "title": "EventName"

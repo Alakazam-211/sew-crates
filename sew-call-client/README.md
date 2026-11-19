@@ -170,7 +170,7 @@ needs a Sew server to join calls on (see the
 
 ```toml
 [dependencies]
-sew-call-client = "0.8.3"
+sew-call-client = "0.8.4"
 ```
 
 An app also needs, for its `JoinProvider` and to run a call:
@@ -188,7 +188,7 @@ serde_json = "1"
 
 The engine's WebRTC stack is `sew-str0m`, Alakazam Labs' fork of `str0m` 0.25 (library name
 `str0m`), which carries Sew's fixes (among them one to the bandwidth estimate at the start of a
-call). This release uses `sew-str0m` 0.25.5 from crates.io.
+call). This release uses `sew-str0m` 0.25.6 from crates.io.
 
 Your app implements `JoinProvider`: it asks Sew for the join answer with the app's own
 session and returns it. A minimal one, and a call through it (the same code is compiled as the
@@ -346,6 +346,9 @@ device's key to the recorder only while Sew says `granted`.
   `CallRecording::started_by` and `CallRecording::started_at` say who started it and when, by
   Sew's clock: count the running time from `started_at`, so someone who joins a call already
   being recorded sees the real time (`None` while a held join into an auto-record room waits).
+  `CallRecording::audio_keep_days` says how many days Sew keeps the audio (0: deleted once the
+  transcript is final), also after the person answered the notice; a held join into an
+  auto-record room takes it from the notice.
 - `Participant::recorder` marks the recorder in the roster.
 
 ### Network changes (phones)

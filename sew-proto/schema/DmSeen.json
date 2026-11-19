@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One member's seen position in a DM: the body of `dm_seen`, an item of\n[`DmReadReceipts`] and of `ReadyChannel.dm_seen`.",
+  "properties": {
+    "channel_id": {
+      "description": "The DM or group DM.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "member_id": {
+      "description": "The member whose position this is (never the receiver).",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "seen_at": {
+      "description": "When the position last moved; absent with `seen_id`.",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "seen_id": {
+      "description": "Every message with an id at or below this one was seen (a comparator: the message\nitself may since have been deleted). Always set in READY and\n`GET /api/v1/channels/{id}/read_receipts`; absent only in a `dm_seen` event that\nremoves the member's position (they stopped sharing their read receipts).",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "channel_id",
+    "member_id"
+  ],
+  "title": "DmSeen",
+  "type": "object"
+}

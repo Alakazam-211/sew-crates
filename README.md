@@ -61,15 +61,15 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.10.5 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.10.5 | Apache-2.0 |
-| `sew-mls-crypto` | 0.10.5 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.10.5 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.10.5 | Apache-2.0 |
-| `sew-noise` | 0.10.5 | MIT OR Apache-2.0 |
-| `sew-call-client` | 0.8.3 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.8.3 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-app` | 0.5.2 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.10.6 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.10.6 | Apache-2.0 |
+| `sew-mls-crypto` | 0.10.6 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.10.6 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.10.6 | Apache-2.0 |
+| `sew-noise` | 0.10.6 | MIT OR Apache-2.0 |
+| `sew-call-client` | 0.8.4 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.8.4 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-app` | 0.5.3 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is
@@ -109,7 +109,7 @@ sew-noise = { path = "third_party/sew-crates/sew-noise" }
 ```
 
 The voice engine's WebRTC stack is `sew-str0m`, Alakazam Labs' public fork of `str0m` 0.25
-(library name `str0m`). It comes from crates.io (`sew-str0m` 0.25.5), with its own fork of
+(library name `str0m`). It comes from crates.io (`sew-str0m` 0.25.6), with its own fork of
 `is`, `sew-str0m-is`, so it needs no row; the other str0m crates and its DTLS, `dimpl`,
 come from crates.io too.
 

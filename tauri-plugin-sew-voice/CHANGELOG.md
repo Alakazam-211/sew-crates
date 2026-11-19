@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.4 (2026-11-19, Sew 0.10.6)
+
+Additive: one new field in the `recording` event; no other change to the API, the commands
+or their JSON.
+
+### Added
+
+- **How long the audio is kept.** `RecordingInfo.audio_keep_days` (the `recording` event and
+  the `state` command's `recording`): how many days Sew keeps the recording's audio, by the
+  room's policy (`"audio_keep_days": 30`; 0 means the audio is deleted once the transcript is
+  final). Sent with every recording, also after the person answered and `consent_prompt` is
+  gone, so the call can still say how long the audio is kept. While a held join waits for an
+  auto-record room's recording (`recording_id` `auto`) it is the notice's. Absent only from
+  an older plugin; a host reads its absence as "unknown", never as 0. `RecordingInfo` is
+  `#[non_exhaustive]`, so the field is additive. `contracts/native-voice-contract.json` and
+  `contracts/sew-native-voice-listener.json` show it.
+
+### Dependencies
+
+- Through sew-call-client, updates the WebRTC dependencies (`sew-str0m` 0.25.6); see
+  sew-call-client's CHANGELOG.
+- Requires sew-call-client 0.8.4 (`CallRecording.audio_keep_days`) and sew-proto 0.10.6.
+
 ## 0.8.3 (2026-11-18, Sew 0.10.5)
 
 Additive: one new optional field in the `recording` event; no other change to the API, the

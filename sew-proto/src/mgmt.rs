@@ -74,10 +74,11 @@ pub use member_channels::{
     MgmtMemberChannelsResponse, MgmtMemberChannelsSkip,
 };
 pub use notifications::{
-    CursorExpiredDetails, FEATURE_PERSON_NOTIFICATIONS, PERSON_NOTIFICATION_PREVIEW_MAX_CHARS,
+    CursorExpiredDetails, FEATURE_FEED_HEAD, FEATURE_PERSON_CHANNEL_NOTIFY,
+    FEATURE_PERSON_NOTIFICATIONS, PERSON_NOTIFICATION_PREVIEW_MAX_CHARS,
     PERSON_NOTIFICATIONS_LIMIT_DEFAULT, PERSON_NOTIFICATIONS_LIMIT_MAX,
     PERSON_NOTIFICATIONS_WAIT_MAX_S, PersonNotification, PersonNotificationKind,
-    PersonNotificationsPage, PersonNotificationsQuery, preview_of,
+    PersonNotificationsHead, PersonNotificationsPage, PersonNotificationsQuery, preview_of,
 };
 pub use ops::{
     AuditVerifyMode, AuditVerifyReport, AuditVerifyRequest, EXPORT_RECIPIENTS_MAX, ExportRequest,
@@ -813,7 +814,12 @@ pub const FEATURES: &[&str] = &[
     crate::api::channels::FEATURE_CHANNEL_MEMBERS_CAN_LEAVE,
     // Since 0.9.2: the DMs by latest activity (`GET /api/v1/me/channels?order=activity`).
     crate::api::channels::FEATURE_DM_ORDER_ACTIVITY,
+    // Read receipts in DMs: the seen positions, `share_read_receipts`, the policy
+    // `dm.read_receipts` and their events.
+    crate::api::read_receipts::FEATURE_DM_READ_RECEIPTS,
     // Since 0.9.2: group DM names (the update's `name` on a group DM, the rename notice).
+    // `GET /mgmt/v1/people/{external_id}/notifications/head` (the person feed's start).
+    FEATURE_FEED_HEAD,
     crate::api::channels::FEATURE_GROUP_DM_NAMES,
     // `/mgmt/v1/home-client` and `hidden_from_home`.
     FEATURE_HOME_CLIENT,
@@ -834,6 +840,9 @@ pub const FEATURES: &[&str] = &[
     FEATURE_MGMT_RECORDING_READS,
     // `voice/states` and the `voice/changes` feed over mgmt.
     FEATURE_MGMT_VOICE_STATES,
+    // `GET`/`POST /mgmt/v1/people/{external_id}/channels/{id}/notify[/set]`: a person's level
+    // and mute per channel or DM over mgmt.
+    FEATURE_PERSON_CHANNEL_NOTIFY,
     // `GET /mgmt/v1/people/{external_id}/notifications`.
     FEATURE_PERSON_NOTIFICATIONS,
     // `principals/erase`, its status and list routes, and the `erased:` tombstone id.

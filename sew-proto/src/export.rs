@@ -1321,6 +1321,59 @@ pub struct ThreadReadRecord {
     pub updated_at: Timestamp,
 }
 
+/// `dm_seen.ndjson` (full exports only, since minor 14): the seen positions of DM members
+/// (read receipts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct DmSeenRecord {
+    /// The DM or group DM.
+    pub channel_id: Id,
+    /// The member.
+    pub member_id: Id,
+    /// Seen up to here (a comparator).
+    pub seen_id: Id,
+    /// Last move.
+    pub seen_at: Timestamp,
+}
+
+impl DmSeenRecord {
+    /// A record.
+    pub fn new(channel_id: Id, member_id: Id, seen_id: Id, seen_at: Timestamp) -> Self {
+        DmSeenRecord {
+            channel_id,
+            member_id,
+            seen_id,
+            seen_at,
+        }
+    }
+}
+
+/// `read_receipt_prefs.ndjson` (full exports only, since minor 14): members' read-receipt
+/// settings. Only members who set it have a record; no record means `share: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ReadReceiptPrefRecord {
+    /// The member.
+    pub member_id: Id,
+    /// The member shares their read receipts.
+    pub share: bool,
+    /// Last change.
+    pub updated_at: Timestamp,
+}
+
+impl ReadReceiptPrefRecord {
+    /// A record.
+    pub fn new(member_id: Id, share: bool, updated_at: Timestamp) -> Self {
+        ReadReceiptPrefRecord {
+            member_id,
+            share,
+            updated_at,
+        }
+    }
+}
+
 /// `mentions.ndjson`: the mention inbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

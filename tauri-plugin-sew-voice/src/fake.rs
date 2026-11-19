@@ -1557,6 +1557,8 @@ impl FakeCall {
                     started_by: Some(me.clone()),
                     // The fake's Sew keeps no clock for its recording.
                     started_at: None,
+                    // The fake room's policy keeps audio 30 days, as its notice says.
+                    audio_keep_days: Some(30),
                     my_consent: crate::wire::consent::GRANTED.to_owned(),
                     consent_prompt: None,
                     participants: vec![RecordingParticipant {

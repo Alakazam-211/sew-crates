@@ -202,6 +202,12 @@ pub struct CallRecording {
     /// Left out of the serialised form when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<sew_proto::time::Timestamp>,
+    /// How many days Sew keeps the recording's audio, by the room's policy (0: the audio is
+    /// deleted once the transcript is final). From Sew's recording; while a held join waits
+    /// and Sew has not sent the recording itself (an auto-record room's first join), from the
+    /// notice the person answers, which carries the same policy. Always known, so a person who
+    /// already answered the notice can still show how long the audio is kept.
+    pub audio_keep_days: u16,
     /// This person's answer.
     pub my_consent: RecordingConsent,
     /// The notice to show while this person has not answered (`pending`), with its
@@ -292,6 +298,7 @@ impl CallRecording {
             auto: r.auto,
             started_by: Some(r.started_by.to_string()),
             started_at: Some(r.started_at),
+            audio_keep_days: r.audio_keep_days,
             my_consent: RecordingConsent::from_sew(r.my_consent),
             consent_prompt: r.consent_prompt.clone(),
             participants: r
@@ -335,6 +342,7 @@ impl CallRecording {
                         .as_ref()
                         .map(|m| m.member_id.to_string()),
                     started_at: None,
+                    audio_keep_days: c.consent_prompt.audio_keep_days,
                     my_consent: RecordingConsent::Pending,
                     consent_prompt: Some(c.consent_prompt.clone()),
                     participants: Vec::new(),

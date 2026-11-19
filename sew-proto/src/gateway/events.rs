@@ -39,6 +39,8 @@ unit_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
     #[non_exhaustive]
     pub enum EventName {
+        // `Unknown` keeps the discriminant it had in 0.10.5; later variants take explicit ones.
+        @unknown = 67;
         /// The boot snapshot after IDENTIFY.
         Ready = "ready",
         /// Replay after RESUME finished.
@@ -184,6 +186,16 @@ unit_enum! {
         /// The receiver's own Record and Stop in the room they are in changed (body
         /// `RecordingControlsUpdated`, to the member's own sessions only).
         RecordingControlsUpdated = "recording_controls_updated",
+        /// Another member's seen position in a DM or group DM moved, or was removed (body
+        /// `DmSeen`, to the DM's other members who may see it, never the reader's own
+        /// sessions).
+        DmSeen = "dm_seen" @ 68,
+        /// The receiver's own read-receipt settings changed (body `ReadReceiptSettings`, to
+        /// the member's own sessions).
+        ReadReceiptSettingsUpdated = "read_receipt_settings_updated" @ 69,
+        /// The install policy `dm.read_receipts` changed (body `ReadReceiptsPolicyUpdated`,
+        /// to every session).
+        ReadReceiptsPolicyUpdated = "read_receipts_policy_updated" @ 70,
     }
 }
 
@@ -576,6 +588,12 @@ pub enum Event {
     MeetingAdmission(Box<crate::api::meetings::MeetingAdmission>),
     /// `recording_controls_updated`.
     RecordingControlsUpdated(Box<crate::recording::RecordingControlsUpdated>),
+    /// `dm_seen`.
+    DmSeen(Box<crate::api::read_receipts::DmSeen>),
+    /// `read_receipt_settings_updated`.
+    ReadReceiptSettingsUpdated(crate::api::read_receipts::ReadReceiptSettings),
+    /// `read_receipts_policy_updated`.
+    ReadReceiptsPolicyUpdated(crate::api::read_receipts::ReadReceiptsPolicyUpdated),
     /// A name this build has no body for (unknown, or registered without a body yet).
     Unknown {
         /// The event name.
@@ -656,6 +674,9 @@ impl Event {
             Event::MeetingLobbyUpdated(_) => EventName::MeetingLobbyUpdated,
             Event::MeetingAdmission(_) => EventName::MeetingAdmission,
             Event::RecordingControlsUpdated(_) => EventName::RecordingControlsUpdated,
+            Event::DmSeen(_) => EventName::DmSeen,
+            Event::ReadReceiptSettingsUpdated(_) => EventName::ReadReceiptSettingsUpdated,
+            Event::ReadReceiptsPolicyUpdated(_) => EventName::ReadReceiptsPolicyUpdated,
             Event::Unknown { t, .. } => EventName::from_wire(t).unwrap_or(EventName::Unknown),
         }
     }
@@ -733,6 +754,11 @@ impl Event {
             Event::MeetingLobbyUpdated(b) => to_value_or_panic("MeetingLobbyUpdated", b),
             Event::MeetingAdmission(b) => to_value_or_panic("MeetingAdmission", b),
             Event::RecordingControlsUpdated(b) => to_value_or_panic("RecordingControlsUpdated", b),
+            Event::DmSeen(b) => to_value_or_panic("DmSeen", b),
+            Event::ReadReceiptSettingsUpdated(b) => to_value_or_panic("ReadReceiptSettings", b),
+            Event::ReadReceiptsPolicyUpdated(b) => {
+                to_value_or_panic("ReadReceiptsPolicyUpdated", b)
+            }
             Event::Unknown { t, d } => return (t.clone(), d.clone()),
         };
         (name, d)
@@ -883,6 +909,13 @@ impl Event {
             }
             EventName::RecordingControlsUpdated => {
                 Event::RecordingControlsUpdated(Box::new(serde_json::from_value(d)?))
+            }
+            EventName::DmSeen => Event::DmSeen(Box::new(serde_json::from_value(d)?)),
+            EventName::ReadReceiptSettingsUpdated => {
+                Event::ReadReceiptSettingsUpdated(serde_json::from_value(d)?)
+            }
+            EventName::ReadReceiptsPolicyUpdated => {
+                Event::ReadReceiptsPolicyUpdated(serde_json::from_value(d)?)
             }
             EventName::Unknown => Event::Unknown { t: t.to_owned(), d },
         })

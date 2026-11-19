@@ -861,6 +861,51 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_carries_its_audio_keep_days() {
+        use crate::call::{CallRecording, RecordingConsent};
+        let rec = |days: u16| {
+            serde_json::json!({
+                "id": "77", "channel_id": "2002", "state": "recording", "started_by": "1001",
+                "started_at": "2026-11-02T09:58:00Z", "auto": false, "message_id": "88",
+                "mixed": false, "audio_keep_days": days, "max_duration_ms": 14_400_000u64,
+                "participants": [], "my_consent": "granted"
+            })
+        };
+        // Sew's recording, after the person answered: the keep days stay with it.
+        let r: Recording = serde_json::from_value(rec(7)).unwrap();
+        let v = CallRecording::from_sew(&r);
+        assert_eq!(v.audio_keep_days, 7);
+        assert_eq!(v.my_consent, RecordingConsent::Granted);
+        assert!(v.consent_prompt.is_none(), "answered: no notice");
+        assert_eq!(serde_json::to_value(&v).unwrap()["audio_keep_days"], 7);
+        // 0 (deleted once the transcript is final) is a real value and is written.
+        let r: Recording = serde_json::from_value(rec(0)).unwrap();
+        let v = CallRecording::from_sew(&r);
+        assert_eq!(v.audio_keep_days, 0);
+        assert_eq!(serde_json::to_value(&v).unwrap()["audio_keep_days"], 0);
+        // A held join into a call already being recorded: the recording's.
+        let mut p = prompt();
+        p["audio_keep_days"] = serde_json::json!(7);
+        let c = ConsentRequired::from_details(&serde_json::json!({
+            "recording": rec(7), "auto": false, "consent_prompt": p
+        }))
+        .unwrap();
+        assert_eq!(CallRecording::from_consent_required(&c).audio_keep_days, 7);
+        // An auto-record room's first join: no recording yet, so the notice's.
+        let mut p = prompt();
+        p["recording_id"] = serde_json::json!("auto");
+        p["audio_keep_days"] = serde_json::json!(14);
+        let c = ConsentRequired::from_details(&serde_json::json!({
+            "recording": null, "auto": true, "consent_prompt": p
+        }))
+        .unwrap();
+        let v = CallRecording::from_consent_required(&c);
+        assert_eq!(v.recording_id, "auto");
+        assert_eq!(v.audio_keep_days, 14);
+        assert_eq!(serde_json::to_value(&v).unwrap()["audio_keep_days"], 14);
+    }
+
+    #[test]
     fn recording_requests_name_sews_routes() {
         let ch = Id::new(2002).unwrap();
         let start = RecordingRequest::start("acme", "2002", ch);

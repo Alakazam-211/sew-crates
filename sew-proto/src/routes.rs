@@ -78,6 +78,12 @@ pub const ME_THREADS: &str = "/api/v1/me/threads";
 pub const ME_THREADS_SUMMARY: &str = "/api/v1/me/threads/summary";
 /// `GET`: READY's sync section over HTTP.
 pub const ME_SYNC: &str = "/api/v1/me/sync";
+/// `GET`: the other members' seen positions in a DM or group DM (read receipts).
+pub const CHANNEL_READ_RECEIPTS: &str = "/api/v1/channels/{id}/read_receipts";
+/// `GET`: the caller's read-receipt settings.
+pub const ME_READ_RECEIPTS: &str = "/api/v1/me/read_receipts";
+/// `POST`: share or stop sharing the caller's read receipts.
+pub const ME_READ_RECEIPTS_SET: &str = "/api/v1/me/read_receipts/set";
 
 /// `GET` read, `POST` set: install org policies.
 pub const INSTALL_POLICIES: &str = "/api/v1/install/policies";
@@ -379,6 +385,15 @@ pub const MGMT_AGENT_DELIVERIES: &str = "/mgmt/v1/agents/{member_id}/deliveries"
 /// `GET`: the person notification feed (rings, missed calls, mentions, DMs, replies),
 /// long-polled by K2 for App push.
 pub const MGMT_PERSON_NOTIFICATIONS: &str = "/mgmt/v1/people/{external_id}/notifications";
+/// `GET`: the person's member-log head, where a new feed consumer starts (`after = head`).
+pub const MGMT_PERSON_NOTIFICATIONS_HEAD: &str = "/mgmt/v1/people/{external_id}/notifications/head";
+/// `GET`: a person's notification level and mute in one channel or DM, as the person's own
+/// `GET /api/v1/channels/{id}/notify` answers it.
+pub const MGMT_PERSON_CHANNEL_NOTIFY: &str = "/mgmt/v1/people/{external_id}/channels/{id}/notify";
+/// `POST`: set a person's notification level or mute in one channel or DM, as the person's own
+/// `POST /api/v1/channels/{id}/notify/set` does.
+pub const MGMT_PERSON_CHANNEL_NOTIFY_SET: &str =
+    "/mgmt/v1/people/{external_id}/channels/{id}/notify/set";
 /// `POST`: start a backup job.
 pub const MGMT_BACKUP: &str = "/mgmt/v1/backup";
 /// `GET`: the complete bundles, newest first.

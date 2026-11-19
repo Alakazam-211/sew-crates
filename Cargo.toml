@@ -5,7 +5,7 @@ members = ["sew-proto", "sew-lkproto", "sew-mls-crypto", "sew-e2ee", "sew-lk-com
 
 # The nine crates depend on each other by version; inside this workspace each one is the
 # member of that name. sew-str0m, the str0m fork, is public (MIT / Apache-2.0) and comes
-# from crates.io (sew-str0m 0.25.5), so it needs no row here.
+# from crates.io (sew-str0m 0.25.6), so it needs no row here.
 # A [patch] applies only from the workspace root: a consumer repeats these rows in its own
 # root Cargo.toml (see README.md).
 [patch.crates-io]

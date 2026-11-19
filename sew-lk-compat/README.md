@@ -39,8 +39,8 @@ The protobuf types come from `sew-lkproto`.
 
 ```toml
 [dependencies]
-sew-lk-compat = "0.10.5"
-sew-lkproto = "0.10.5"
+sew-lk-compat = "0.10.6"
+sew-lkproto = "0.10.6"
 prost = "0.14"
 ```
 

@@ -9,6 +9,10 @@
 //!   [`CursorExpiredDetails`].
 //! - Persons only: an agent's external id is `404` (agents keep
 //!   `GET /mgmt/v1/agents/{member_id}/deliveries`).
+//! - `GET /mgmt/v1/people/{external_id}/channels/{id}/notify` and `POST …/notify/set`: the
+//!   person's level and mute in one channel or DM, with the person's own route's types
+//!   ([`crate::api::notify::ChannelNotifyPrefs`], [`crate::api::notify::SetChannelNotifyRequest`])
+//!   and rules (flag [`FEATURE_PERSON_CHANNEL_NOTIFY`]).
 //! - No message text unless the install policy `notifications.mgmt_preview` is on; then a
 //!   message item carries `preview`, at most [`PERSON_NOTIFICATION_PREVIEW_MAX_CHARS`] chars.
 
@@ -21,6 +25,12 @@ use crate::time::Timestamp;
 
 /// The feature flag of this feed (`features` in `GET /mgmt/v1/status`).
 pub const FEATURE_PERSON_NOTIFICATIONS: &str = "person_notifications";
+/// The feature flag of `GET /mgmt/v1/people/{external_id}/notifications/head` (where a new feed
+/// consumer starts).
+pub const FEATURE_FEED_HEAD: &str = "feed_head";
+/// The feature flag of `GET /mgmt/v1/people/{external_id}/channels/{id}/notify` and
+/// `POST …/notify/set`: a person's level and mute per channel or DM, read and set over mgmt.
+pub const FEATURE_PERSON_CHANNEL_NOTIFY: &str = "person_channel_notify";
 /// The longest long-poll, in seconds.
 pub const PERSON_NOTIFICATIONS_WAIT_MAX_S: u32 = 30;
 /// The default page size.
@@ -139,6 +149,23 @@ pub struct PersonNotificationsPage {
     /// The next `after`: the seq of the last log row looked at (returned or skipped). Equal
     /// to `after` while DND holds the feed.
     pub next: u64,
+}
+
+/// Response of `GET /mgmt/v1/people/{external_id}/notifications/head`: the person's member-log
+/// head now, so a new consumer can start the feed there (`after = head`) and push only what
+/// comes next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct PersonNotificationsHead {
+    /// The member-log head seq (`0` for an empty log).
+    pub head: u64,
+}
+
+impl PersonNotificationsHead {
+    /// A head answer.
+    pub fn new(head: u64) -> Self {
+        PersonNotificationsHead { head }
+    }
 }
 
 /// Details of `410 cursor_expired`: the entries after the cursor were pruned.

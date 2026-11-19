@@ -5416,7 +5416,7 @@ dependencies = [
 
 [[package]]
 name = "sew-call-client"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -5460,7 +5460,7 @@ dependencies = [
 
 [[package]]
 name = "sew-e2ee"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "aes-gcm 0.10.3",
  "ed25519-dalek",
@@ -5485,7 +5485,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lk-compat"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "aes-gcm 0.10.3",
  "aws-lc-rs",
@@ -5505,7 +5505,7 @@ dependencies = [
 
 [[package]]
 name = "sew-lkproto"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -5515,7 +5515,7 @@ dependencies = [
 
 [[package]]
 name = "sew-mls-crypto"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "aes-gcm 0.10.3",
  "chacha20poly1305 0.10.1",
@@ -5538,7 +5538,7 @@ dependencies = [
 
 [[package]]
 name = "sew-noise"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "nnnoiseless",
  "realfft",
@@ -5547,7 +5547,7 @@ dependencies = [
 
 [[package]]
 name = "sew-proto"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5557,9 +5557,9 @@ dependencies = [
 
 [[package]]
 name = "sew-str0m"
-version = "0.25.5"
+version = "0.25.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94bff30d9f4099611473df4168f8c95095b31e382bd19db61b71276f6cd6b552"
+checksum = "011c4ff154db157e8cad7f7fb25fe979772693ed69664ff76cbc18045c2f78d3"
 dependencies = [
  "arrayvec",
  "base64ct",
@@ -6047,9 +6047,9 @@ dependencies = [
 
 [[package]]
 name = "tao"
-version = "0.37.2"
+version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5777b06fe6435126ae8d816eba269e050e1e10d302cf5461e9c49eccabc3548"
+checksum = "02ca9c0ce2a2fd70dc4ef4449ca5e8d30e6fa0db111cd8008594602a06a68371"
 dependencies = [
  "bitflags 2.13.2",
  "block2",
@@ -6271,7 +6271,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-app"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -6296,7 +6296,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-sew-voice"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "base64 0.22.1",
  "cpal",
@@ -7755,9 +7755,9 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "wry"
-version = "0.57.2"
+version = "0.57.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a490119196d02a51d0871df7b9119a1f3e46d75b7e90053a801454d5c6b3491c"
+checksum = "ceb43f824178e8110e3181bfd478359c43b041452a9560d321bd8d121e468f86"
 dependencies = [
  "base64 0.23.1",
  "block2",

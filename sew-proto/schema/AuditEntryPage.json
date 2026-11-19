@@ -1057,6 +1057,11 @@
           "const": "space.app_unlink",
           "description": "Sew 0.8.0: K2 removed a participant App's link (`details {app_id,\ngoverning_app_id, k2_actor}`).",
           "type": "string"
+        },
+        {
+          "const": "notify.prefs_set",
+          "description": "K2 set a person's notification level or mute in one channel or DM over mgmt\n(`details {channel_id, level, muted, muted_until}`, the values after the write; the\ntarget is the person).",
+          "type": "string"
         }
       ]
     },

@@ -38,6 +38,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "pending",
                 "consent_prompt": {
                   "recording_id": "48831765147549720",
@@ -119,6 +120,7 @@
             "recording_id": "48831765147549720",
             "auto": false,
             "started_by": "1001",
+            "audio_keep_days": 30,
             "my_consent": "granted",
             "participants": [
               {
@@ -142,6 +144,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "granted",
                 "participants": [
                   {
@@ -220,6 +223,7 @@
             "recording_id": "48831765147549720",
             "auto": false,
             "started_by": "1001",
+            "audio_keep_days": 30,
             "my_consent": "pending",
             "consent_prompt": {
               "recording_id": "48831765147549720",
@@ -271,6 +275,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "pending",
                 "consent_prompt": {
                   "recording_id": "48831765147549720",
@@ -331,6 +336,7 @@
             "recording_id": "48831765147549720",
             "auto": false,
             "started_by": "1001",
+            "audio_keep_days": 30,
             "my_consent": "granted",
             "participants": [
               {
@@ -354,6 +360,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "granted",
                 "participants": [
                   {
@@ -384,6 +391,7 @@
             "recording_id": "48831765147549720",
             "auto": false,
             "started_by": "1001",
+            "audio_keep_days": 30,
             "my_consent": "withdrawn",
             "participants": [
               {
@@ -407,6 +415,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "withdrawn",
                 "participants": [
                   {
@@ -485,6 +494,7 @@
             "recording_id": "48831765147549720",
             "auto": false,
             "started_by": "1001",
+            "audio_keep_days": 30,
             "my_consent": "pending",
             "consent_prompt": {
               "recording_id": "48831765147549720",
@@ -536,6 +546,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "pending",
                 "consent_prompt": {
                   "recording_id": "48831765147549720",
@@ -596,6 +607,7 @@
             "recording_id": "48831765147549720",
             "auto": false,
             "started_by": "1001",
+            "audio_keep_days": 30,
             "my_consent": "declined",
             "participants": [
               {
@@ -619,6 +631,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "declined",
                 "participants": [
                   {
@@ -1030,6 +1043,7 @@
             "recording_id": "48831765147549720",
             "auto": false,
             "started_by": "1001",
+            "audio_keep_days": 30,
             "my_consent": "granted",
             "participants": [
               {
@@ -1053,6 +1067,7 @@
                 "recording_id": "48831765147549720",
                 "auto": false,
                 "started_by": "1001",
+                "audio_keep_days": 30,
                 "my_consent": "granted",
                 "participants": [
                   {

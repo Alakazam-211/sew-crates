@@ -363,6 +363,7 @@ pub fn all() -> Vec<WireType> {
     use crate::api::notify::*;
     use crate::api::overwrites::*;
     use crate::api::people::*;
+    use crate::api::read_receipts::*;
     use crate::api::read_state::*;
     use crate::api::resolve::*;
     use crate::api::roles::*;
@@ -656,6 +657,38 @@ pub fn all() -> Vec<WireType> {
         ),
         wire!(Record, "api/read_state", SyncChannel, "GET /api/v1/me/sync"),
         wire!(Response, "api/read_state", MeSync, "GET /api/v1/me/sync"),
+        // api/read_receipts
+        wire!(
+            Event,
+            "api/read_receipts",
+            DmSeen,
+            "event dm_seen, DmReadReceipts.items, ReadyChannel.dm_seen"
+        ),
+        wire!(
+            Response,
+            "api/read_receipts",
+            DmReadReceipts,
+            "GET /api/v1/channels/{id}/read_receipts"
+        ),
+        wire!(
+            Response,
+            "api/read_receipts",
+            ReadReceiptSettings,
+            "GET /api/v1/me/read_receipts, POST /api/v1/me/read_receipts/set, \
+             ReadyInstall.read_receipts, event read_receipt_settings_updated"
+        ),
+        wire!(
+            Request,
+            "api/read_receipts",
+            SetReadReceiptsRequest,
+            "POST /api/v1/me/read_receipts/set"
+        ),
+        wire!(
+            Event,
+            "api/read_receipts",
+            ReadReceiptsPolicyUpdated,
+            "event read_receipts_policy_updated"
+        ),
         wire!(
             Request,
             "api/messages",
@@ -969,6 +1002,12 @@ pub fn all() -> Vec<WireType> {
             "mgmt",
             PersonNotificationsPage,
             "GET /mgmt/v1/people/{external_id}/notifications"
+        ),
+        wire!(
+            Response,
+            "mgmt",
+            PersonNotificationsHead,
+            "GET /mgmt/v1/people/{external_id}/notifications/head"
         ),
         wire!(
             Enum,
@@ -2576,13 +2615,13 @@ pub fn all() -> Vec<WireType> {
             Response,
             "api/notify",
             ChannelNotifyPrefs,
-            "GET/POST /api/v1/channels/{id}/notify[/set]"
+            "GET/POST /api/v1/channels/{id}/notify[/set], GET/POST /mgmt/v1/people/{external_id}/channels/{id}/notify[/set]"
         ),
         wire!(
             Request,
             "api/notify",
             SetChannelNotifyRequest,
-            "POST /api/v1/channels/{id}/notify/set"
+            "POST /api/v1/channels/{id}/notify/set, POST /mgmt/v1/people/{external_id}/channels/{id}/notify/set"
         ),
         wire!(
             Response,
@@ -2782,6 +2821,13 @@ pub fn all() -> Vec<WireType> {
         ),
         wire!(Record, "export", ReadStateRecord, "read_states.ndjson"),
         wire!(Record, "export", ThreadReadRecord, "thread_reads.ndjson"),
+        wire!(Record, "export", DmSeenRecord, "dm_seen.ndjson"),
+        wire!(
+            Record,
+            "export",
+            ReadReceiptPrefRecord,
+            "read_receipt_prefs.ndjson"
+        ),
         wire!(Record, "export", MentionRecord, "mentions.ndjson"),
         wire!(Record, "export", SavedItemRecord, "saved_items.ndjson"),
         wire!(Record, "export", ReminderRecord, "reminders.ndjson"),

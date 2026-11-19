@@ -18,13 +18,13 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.8.3"
+tauri-plugin-sew-voice = "0.8.4"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
 `sew-proto`, `sew-e2ee`, `sew-mls-crypto`), and through it on K2's `kessel-audio` and
 `kessel-video` (both from crates.io) and Alakazam Labs' fork of str0m, `sew-str0m` (the other
-str0m crates and dimpl come from crates.io). The engine takes `sew-str0m` 0.25.5 from crates.io
+str0m crates and dimpl come from crates.io). The engine takes `sew-str0m` 0.25.6 from crates.io
 at an exact version. The plugin, the engine and the Sew crates they depend on are all on
 crates.io, so an app needs no `[patch]` row; the read-only `sew-crates` repository
 (`scripts/package-public-crates.sh`) holds the same sources, and its README lists the
@@ -282,7 +282,7 @@ Events go to every window as `sew-voice://<name>`:
 | `sew-voice://speaking` | `[{member_id, level}]`, `level` 0–1, at most 10 a second, your own member included |
 | `sew-voice://devices` | the `devices` answer, on hot-plug, a default change or a `set_device` |
 | `sew-voice://errors` | `{code, detail}` |
-| `sew-voice://recording` | `{recording_id, auto, started_by?, started_at?, my_consent, consent_prompt?, participants: [{member_id, consent, recorded}], recorder_present, trigger, required, can_record?, can_stop?}`, or `null` once no recording is active (Sew 0.7.3, §3a; `trigger` and `required` Sew 0.9.0; `can_record` and `can_stop` plugin 0.6.1, each only when `true`; `started_at` after plugin 0.8.2: when the recording started by Sew's clock, RFC 3339 UTC with milliseconds, so a late joiner shows the real running time; absent for the held `auto` placeholder) |
+| `sew-voice://recording` | `{recording_id, auto, started_by?, started_at?, audio_keep_days?, my_consent, consent_prompt?, participants: [{member_id, consent, recorded}], recorder_present, trigger, required, can_record?, can_stop?}`, or `null` once no recording is active (Sew 0.7.3, §3a; `trigger` and `required` Sew 0.9.0; `can_record` and `can_stop` plugin 0.6.1, each only when `true`; `started_at` after plugin 0.8.2: when the recording started by Sew's clock, RFC 3339 UTC with milliseconds, so a late joiner shows the real running time; absent for the held `auto` placeholder; `audio_keep_days` plugin 0.8.4: how many days Sew keeps the audio, 0 = until the transcript is final, on every recording including the held `auto` placeholder (the notice's), absent only from an older plugin) |
 | `sew-voice://recording_controls` | `{can_record, can_stop, record_unavailable?, source?}`: whether Sew would take a Record or a Stop from this person now, sent when any of them changes (plugin 0.6.1, §3a, Which buttons). `source` (plugin 0.7.0) is `sew` when the Sew server computed them and absent (meaning `host`) when the plugin worked them out from `set_recording_rights`; `record_unavailable` (plugin 0.7.0, from Sew only) is `recording_capacity` or `recorder_unavailable` while `can_record` is `true` but a Record would be refused for now |
 
 **States.**
@@ -663,6 +663,12 @@ command's error with Sew's reason. In Rust they are `Call::start_recording` and
   someone who joins a call already being recorded sees the real time, not the time since their
   own join. `started_at` is absent only while a held join into an auto-record room waits
   (`recording_id` `auto`); in Rust it is `CallRecording::started_at`.
+- **How long the audio is kept.** The `recording` event carries `audio_keep_days`: how many
+  days Sew keeps the recording's audio by the room's policy (0: deleted once the transcript is
+  final). It stays after the person answered and `consent_prompt` is gone, so the call can
+  still say it; while a held join into an auto-record room waits it is the notice's. Read it
+  absent (an older plugin) as unknown, never as 0. In Rust it is
+  `CallRecording::audio_keep_days` (always present).
 
 Without the recording route your provider keeps `recording`'s default and both commands
 reject `recording_unsupported`.

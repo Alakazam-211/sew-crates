@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The caller's read-receipt settings: `GET /api/v1/me/read_receipts`, the answer of\n`POST /api/v1/me/read_receipts/set`, `ReadyInstall.read_receipts` and the event\n`read_receipt_settings_updated`.",
+  "properties": {
+    "install_enabled": {
+      "description": "The install policy `dm.read_receipts` (default `true`). Off, nobody's are kept or shown.",
+      "type": "boolean"
+    },
+    "share_read_receipts": {
+      "description": "The member shares their seen positions (default `true`). Off, their positions are\nneither kept nor shown, and they see nobody's.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "share_read_receipts",
+    "install_enabled"
+  ],
+  "title": "ReadReceiptSettings",
+  "type": "object"
+}

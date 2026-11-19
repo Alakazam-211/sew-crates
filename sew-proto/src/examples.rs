@@ -50,6 +50,7 @@ mod retention;
 // Drafts, saved, scheduled, reminders, polls, bookmarks.
 mod extras;
 // Read state, changes and sync types.
+mod read_receipts;
 mod read_state;
 // Search.
 mod search;
@@ -1900,6 +1901,7 @@ fn ready_full() -> Ready {
             video_enabled: true,
             media: Some(calls::media_policy_full()),
             recording_controls: true,
+            read_receipts: Some(read_receipts::settings_full()),
         },
         spaces: vec![ReadySpace {
             id: ID_SPACE,
@@ -1954,6 +1956,7 @@ fn ready_full() -> Ready {
                 recording_required: None,
                 recording_rule: crate::recording::RecordingRule::None,
                 members_can_leave: true,
+                dm_seen: vec![],
             },
             ReadyChannel {
                 id: ID_DM,
@@ -1979,6 +1982,7 @@ fn ready_full() -> Ready {
                 recording_required: None,
                 recording_rule: crate::recording::RecordingRule::None,
                 members_can_leave: false,
+                dm_seen: vec![read_receipts::dm_seen_full()],
             },
             // An auto-record voice channel.
             ReadyChannel {
@@ -2005,6 +2009,7 @@ fn ready_full() -> Ready {
                 recording_required: Some(true),
                 recording_rule: crate::recording::RecordingRule::Auto,
                 members_can_leave: false,
+                dm_seen: vec![],
             },
         ],
         read_states: vec![read_state::ready_read_state()],
@@ -2997,6 +3002,12 @@ impl Example for PersonNotificationsPage {
     }
 }
 
+impl Example for PersonNotificationsHead {
+    fn examples() -> Vec<(&'static str, Self)> {
+        vec![("full", PersonNotificationsHead::new(812))]
+    }
+}
+
 impl Example for CursorExpiredDetails {
     fn examples() -> Vec<(&'static str, Self)> {
         vec![(
@@ -3398,6 +3409,7 @@ fn policy_patch_full() -> PolicyPatch {
         digest_enabled: Some(true),
         agents_allowed_in_dms: Some(false),
         agents_dm_with_box_people: Some(false),
+        dm_read_receipts: Some(false),
         files_strip_image_location: Some(false),
         messages_deleted_purge_days: Some(30),
         guests_enabled: Some(false),

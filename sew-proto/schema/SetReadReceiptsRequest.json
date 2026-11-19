@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Body of `POST /api/v1/me/read_receipts/set`. Returns [`ReadReceiptSettings`].",
+  "properties": {
+    "share_read_receipts": {
+      "description": "Share read receipts. `false` also deletes the member's stored positions.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "share_read_receipts"
+  ],
+  "title": "SetReadReceiptsRequest",
+  "type": "object"
+}

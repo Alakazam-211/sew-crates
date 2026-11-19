@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Body of `read_receipts_policy_updated`, sent to every session when the install policy\n`dm.read_receipts` changes. Off: drop every seen position. On: none are kept yet; they\narrive as `dm_seen` when members read.",
+  "properties": {
+    "enabled": {
+      "description": "The policy's new value.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "enabled"
+  ],
+  "title": "ReadReceiptsPolicyUpdated",
+  "type": "object"
+}

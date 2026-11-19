@@ -121,6 +121,11 @@ pub struct ReadyInstall {
     /// Absent means `false` (an older server).
     #[serde(default, skip_serializing_if = "is_false")]
     pub recording_controls: bool,
+    /// The member's read-receipt settings in DMs: their own `share_read_receipts` and the
+    /// install policy `dm.read_receipts`. Absent from servers without read receipts (flag
+    /// `dm_read_receipts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_receipts: Option<crate::api::read_receipts::ReadReceiptSettings>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -142,6 +147,7 @@ impl ReadyInstall {
             video_enabled: false,
             media: None,
             recording_controls: false,
+            read_receipts: None,
         }
     }
 }
@@ -300,6 +306,10 @@ pub struct ReadyChannel {
     /// Since 0.10.0: `Channel.members_can_leave` (absent when `false`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub members_can_leave: bool,
+    /// DMs and group DMs: the other members' seen positions the member may see (read
+    /// receipts, flag `dm_read_receipts`), ascending member id; absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dm_seen: Vec<crate::api::read_receipts::DmSeen>,
 }
 
 impl ReadyChannel {
@@ -330,6 +340,7 @@ impl ReadyChannel {
             recording_required: None,
             recording_rule: crate::recording::RecordingRule::None,
             members_can_leave: false,
+            dm_seen: Vec::new(),
         }
     }
 }

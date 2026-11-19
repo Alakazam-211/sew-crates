@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.4 (2026-11-19, Sew 0.10.6)
+
+Additive: one new field and updated WebRTC dependencies; no other change to the API.
+
+### Added
+
+- **How long the audio is kept.** `CallRecording.audio_keep_days: u16`: how many days Sew
+  keeps the recording's audio, by the room's policy (0: deleted once the transcript is
+  final), from Sew's `Recording.audio_keep_days`, so a person who already answered the notice
+  (and no longer has `consent_prompt`) still knows it. While a held join waits and Sew has
+  sent no recording yet (an auto-record room's first join), it is the notice's
+  `audio_keep_days`, the same policy. Always present: every recording and every notice Sew
+  sends carries it. `CallRecording` is `#[non_exhaustive]`, so the field is additive.
+
+### Dependencies
+
+- Updates the WebRTC dependencies: `sew-str0m` 0.25.6 (with `sew-str0m-is` 0.12.3, unchanged).
+  The delay-based bandwidth estimator now backs off from the delivered rate when the
+  acknowledged rate lags, and a burst the link spreads out counts as link-limited.
+- Requires the Sew crates at 0.10.6.
+
 ## 0.8.3 (2026-11-18, Sew 0.10.5)
 
 Additive: one new field and clearer logs; no other change to the API or its behaviour.

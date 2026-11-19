@@ -521,8 +521,8 @@ pub struct RecordingParticipant {
 /// as Sew says it, or `null` once none is active (Sew 0.7.3).
 ///
 /// `{"recording_id": "...", "auto": false, "started_by": "...", "started_at":
-/// "2026-11-02T09:58:00.000Z", "my_consent": "pending", "consent_prompt": {...},
-/// "participants": [...], "recorder_present": true}`. Show the
+/// "2026-11-02T09:58:00.000Z", "audio_keep_days": 30, "my_consent": "pending",
+/// "consent_prompt": {...}, "participants": [...], "recorder_present": true}`. Show the
 /// recording badge while it is non-null; show the consent modal from `consent_prompt` while
 /// `my_consent` is `pending` (it is written only then), and "Stop recording me" while it is
 /// `granted`. This device is recorded only after Sew says `granted`: no answer is never
@@ -536,7 +536,8 @@ pub struct RecordingParticipant {
 /// gives them). Each is written only when `true`.
 ///
 /// After plugin 0.8.2, `started_at` is added: when the recording started, by Sew's clock, so a person
-/// who joins a call already being recorded shows its real running time.
+/// who joins a call already being recorded shows its real running time; and `audio_keep_days`:
+/// how long Sew keeps the audio, so a person who already answered the notice still knows it.
 ///
 /// Non-exhaustive (Sew 0.9.0): later releases add fields without a breaking change; outside
 /// this crate, read it (or build it from JSON).
@@ -558,6 +559,13 @@ pub struct RecordingInfo {
     /// room's first join, `recording_id` `auto`), and from an older plugin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    /// How many days Sew keeps the recording's audio, by the room's policy (0: the audio is
+    /// deleted once the transcript is final; added in plugin 0.8.4). Sent with every
+    /// recording, also after the person answered and `consent_prompt` is gone; while a held
+    /// join waits for an auto-record room's recording (`recording_id` `auto`) it is the
+    /// notice's. Absent only from an older plugin: read absent as "unknown", never as 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_keep_days: Option<u16>,
     /// This person's answer ([`consent`]).
     pub my_consent: String,
     /// The notice (Sew's `ConsentPrompt`, unchanged) while `my_consent` is `pending`.
@@ -771,6 +779,7 @@ impl RecordingInfo {
             auto: r.auto,
             started_by: r.started_by.clone(),
             started_at: r.started_at.map(sew_proto::time::Timestamp::to_wire),
+            audio_keep_days: Some(r.audio_keep_days),
             my_consent: consent::of(r.my_consent).to_owned(),
             consent_prompt: r.consent_prompt.clone(),
             participants: r
@@ -1740,5 +1749,55 @@ mod recording_tests {
         let read: RecordingInfo = serde_json::from_value(old.clone()).unwrap();
         assert_eq!(read.started_at, None);
         assert_eq!(serde_json::to_value(&read).unwrap(), old);
+    }
+
+    /// The audio keep days reach the `recording` event from Sew's recording, also once the
+    /// person answered (no `consent_prompt`); 0 is written as 0; a held auto-record join takes
+    /// the notice's; a payload without it (an older plugin) reads as unknown and writes none.
+    #[test]
+    fn the_recording_event_carries_the_audio_keep_days() {
+        let engine = sew_call_client::CallRecording::from_sew(&sew_recording());
+        let info = RecordingInfo::from_engine(&engine, true);
+        assert!(info.consent_prompt.is_none(), "answered: no notice");
+        assert_eq!(info.audio_keep_days, Some(30));
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["audio_keep_days"], 30);
+        let back: RecordingInfo = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(back, info);
+
+        let mut zero = sew_recording();
+        zero.audio_keep_days = 0;
+        let info0 =
+            RecordingInfo::from_engine(&sew_call_client::CallRecording::from_sew(&zero), true);
+        assert_eq!(info0.audio_keep_days, Some(0));
+        assert_eq!(serde_json::to_value(&info0).unwrap()["audio_keep_days"], 0);
+
+        let held = crate::fake::held_recording(&auto_consent_required(14));
+        assert_eq!(held.recording_id, "auto");
+        assert_eq!(held.audio_keep_days, Some(14));
+
+        let mut old = v;
+        old.as_object_mut().unwrap().remove("audio_keep_days");
+        let read: RecordingInfo = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(read.audio_keep_days, None);
+        assert_eq!(serde_json::to_value(&read).unwrap(), old);
+    }
+
+    /// Sew's 409 for an auto-record room's first join, its notice keeping audio `days`.
+    fn auto_consent_required(days: u16) -> sew_call_client::ConsentRequired {
+        sew_call_client::ConsentRequired::from_details(&serde_json::json!({
+            "recording": null,
+            "auto": true,
+            "consent_prompt": {
+                "recording_id": "auto", "notice_version": 7, "recorder_name": "Sew Notes",
+                "feature_label": "Sew Notes", "started_by": null,
+                "room": {"channel_id": "2002", "kind": "voice", "name": "lounge"},
+                "audio_keep_days": days,
+                "transcript": {"posted_to_channel": true, "readable_by": ["channel_members"],
+                               "e2ee": false},
+                "admin_download": true, "decline_mode": "join_unrecorded", "recorded_now": []
+            }
+        }))
+        .expect("the auto notice parses")
     }
 }

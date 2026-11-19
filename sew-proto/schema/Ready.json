@@ -574,6 +574,42 @@
         }
       ]
     },
+    "DmSeen": {
+      "description": "One member's seen position in a DM: the body of `dm_seen`, an item of\n[`DmReadReceipts`] and of `ReadyChannel.dm_seen`.",
+      "properties": {
+        "channel_id": {
+          "description": "The DM or group DM.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "member_id": {
+          "description": "The member whose position this is (never the receiver).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "seen_at": {
+          "description": "When the position last moved; absent with `seen_id`.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seen_id": {
+          "description": "Every message with an id at or below this one was seen (a comparator: the message\nitself may since have been deleted). Always set in READY and\n`GET /api/v1/channels/{id}/read_receipts`; absent only in a `dm_seen` event that\nremoves the member's position (they stopped sharing their read receipts).",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "channel_id",
+        "member_id"
+      ],
+      "type": "object"
+    },
     "DndDay": {
       "description": "A weekday of a DND rule.",
       "oneOf": [
@@ -1541,6 +1577,24 @@
       ],
       "type": "object"
     },
+    "ReadReceiptSettings": {
+      "description": "The caller's read-receipt settings: `GET /api/v1/me/read_receipts`, the answer of\n`POST /api/v1/me/read_receipts/set`, `ReadyInstall.read_receipts` and the event\n`read_receipt_settings_updated`.",
+      "properties": {
+        "install_enabled": {
+          "description": "The install policy `dm.read_receipts` (default `true`). Off, nobody's are kept or shown.",
+          "type": "boolean"
+        },
+        "share_read_receipts": {
+          "description": "The member shares their seen positions (default `true`). Off, their positions are\nneither kept nor shown, and they see nobody's.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "share_read_receipts",
+        "install_enabled"
+      ],
+      "type": "object"
+    },
     "ReadState": {
       "description": "A member's read state in one channel.",
       "properties": {
@@ -1708,6 +1762,13 @@
             "description": "A Sew id: a decimal string of a 64-bit time-sortable id (1 to 9223372036854775807).",
             "pattern": "^[1-9][0-9]{0,18}$",
             "type": "string"
+          },
+          "type": "array"
+        },
+        "dm_seen": {
+          "description": "DMs and group DMs: the other members' seen positions the member may see (read\nreceipts, flag `dm_read_receipts`), ascending member id; absent when there are none.",
+          "items": {
+            "$ref": "#/$defs/DmSeen"
           },
           "type": "array"
         },
@@ -1884,6 +1945,17 @@
             "string",
             "null"
           ]
+        },
+        "read_receipts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadReceiptSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The member's read-receipt settings in DMs: their own `share_read_receipts` and the\ninstall policy `dm.read_receipts`. Absent from servers without read receipts (flag\n`dm_read_receipts`)."
         },
         "recording_controls": {
           "description": "The server computes each person's Record and Stop (`recording_controls_updated`,\n`Recording.my_controls`): a client takes them from there rather than working them out.\nAbsent means `false` (an older server).",

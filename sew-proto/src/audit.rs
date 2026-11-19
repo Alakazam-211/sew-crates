@@ -45,6 +45,8 @@ unit_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
     #[non_exhaustive]
     pub enum Action {
+        // `Unknown` keeps the discriminant it had in 0.10.5; later variants take explicit ones.
+        @unknown = 211;
         /// A session was created.
         SessionCreate = "session.create",
         /// A session was renewed.
@@ -500,6 +502,10 @@ unit_enum! {
         /// Sew 0.8.0: K2 removed a participant App's link (`details {app_id,
         /// governing_app_id, k2_actor}`).
         SpaceAppUnlink = "space.app_unlink",
+        /// K2 set a person's notification level or mute in one channel or DM over mgmt
+        /// (`details {channel_id, level, muted, muted_until}`, the values after the write; the
+        /// target is the person).
+        NotifyPrefsSet = "notify.prefs_set" @ 212,
     }
 }
 
@@ -632,6 +638,7 @@ impl Action {
             | A::GuestRestoreAll
             | A::MailTest
             | A::NotifyDigestUnsubscribe
+            | A::NotifyPrefsSet
             | A::VoiceConfig
             | A::VoiceKeysRotate
             | A::VoiceMediaPath
