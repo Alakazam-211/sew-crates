@@ -133,7 +133,6 @@ unit_enum! {
 unit_enum! {
     /// Why a message was deleted.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum DeleteKind {
         /// Its author deleted it.
         Own = "own",
@@ -151,7 +150,6 @@ unit_enum! {
 unit_enum! {
     /// Why an attachment was removed.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum RemoveKind {
         /// Its uploader removed it.
         Own = "own",
@@ -303,6 +301,7 @@ pub struct SourceRef {
 /// `install.ndjson`: one record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct InstallRecord {
     /// The install id.
     pub install_id: Id,
@@ -321,9 +320,25 @@ pub struct InstallRecord {
     pub identity_switched_at: Option<Timestamp>,
 }
 
+impl InstallRecord {
+    /// An `InstallRecord` with its required fields: every count 0, every list empty and
+    /// every optional field unset.
+    pub fn new(install_id: Id, name: impl Into<String>, created_at: Timestamp) -> Self {
+        InstallRecord {
+            install_id,
+            name: name.into(),
+            created_at,
+            policies: BTreeMap::new(),
+            id_hwm_ms: 0,
+            identity_switched_at: None,
+        }
+    }
+}
+
 /// `profile_fields.ndjson`: a custom profile field definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ProfileFieldRecord {
     /// The field id.
     pub id: Id,
@@ -354,9 +369,41 @@ pub struct ProfileFieldRecord {
     pub source: Option<SourceRef>,
 }
 
+impl ProfileFieldRecord {
+    /// A `ProfileFieldRecord` with its required fields: every count 0 and every optional
+    /// field unset.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Id,
+        key: impl Into<String>,
+        label: impl Into<String>,
+        kind: impl Into<String>,
+        managed_by: impl Into<String>,
+        visibility: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        ProfileFieldRecord {
+            id,
+            key: key.into(),
+            label: label.into(),
+            kind: kind.into(),
+            options: None,
+            managed_by: managed_by.into(),
+            visibility: visibility.into(),
+            position: 0,
+            created_at,
+            updated_at,
+            deleted_at: None,
+            source: None,
+        }
+    }
+}
+
 /// A member's status in `members.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct StatusRecord {
     /// The status text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -371,9 +418,22 @@ pub struct StatusRecord {
     pub set_at: Timestamp,
 }
 
+impl StatusRecord {
+    /// A `StatusRecord` with its required fields: every optional field unset.
+    pub fn new(set_at: Timestamp) -> Self {
+        StatusRecord {
+            text: None,
+            emoji: None,
+            expires_at: None,
+            set_at,
+        }
+    }
+}
+
 /// A member's avatar in `members.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct AvatarRecord {
     /// The image (`files/<file>`; also the avatar link id).
     pub file: Id,
@@ -383,9 +443,21 @@ pub struct AvatarRecord {
     pub source: String,
 }
 
+impl AvatarRecord {
+    /// A `AvatarRecord` from all its fields.
+    pub fn new(file: Id, avatar_id: Id, source: impl Into<String>) -> Self {
+        AvatarRecord {
+            file,
+            avatar_id,
+            source: source.into(),
+        }
+    }
+}
+
 /// `members.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MemberRecord {
     /// The member id.
     pub id: Id,
@@ -461,9 +533,53 @@ pub struct MemberRecord {
     pub source: Option<SourceRef>,
 }
 
+impl MemberRecord {
+    /// A `MemberRecord` with its required fields: every flag `false`, every list empty and
+    /// every optional field unset.
+    pub fn new(
+        id: Id,
+        external_id: impl Into<String>,
+        kind: MemberKind,
+        install_role: InstallRole,
+        username: impl Into<String>,
+        display_name: impl Into<String>,
+        created_at: Timestamp,
+    ) -> Self {
+        MemberRecord {
+            id,
+            external_id: external_id.into(),
+            kind,
+            agent_kind: None,
+            assistant_of: None,
+            pinned_at: None,
+            install_role,
+            compliance: false,
+            compliance_set_at: None,
+            compliance_set_by: None,
+            username: username.into(),
+            display_name: display_name.into(),
+            email: None,
+            title: None,
+            pronouns: None,
+            timezone: None,
+            fields: BTreeMap::new(),
+            status: None,
+            avatar: None,
+            created_at,
+            deactivated_at: None,
+            relinked_from: None,
+            erased_at: None,
+            erase_mode: None,
+            head_seq: None,
+            source: None,
+        }
+    }
+}
+
 /// `presence_settings.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct PresenceSettingsRecord {
     /// The member.
     pub member_id: Id,
@@ -480,6 +596,20 @@ pub struct PresenceSettingsRecord {
     pub dnd_skip_until: Option<Timestamp>,
     /// Last change.
     pub updated_at: Timestamp,
+}
+
+impl PresenceSettingsRecord {
+    /// A `PresenceSettingsRecord` with its required fields: every optional field unset.
+    pub fn new(member_id: Id, manual: impl Into<String>, updated_at: Timestamp) -> Self {
+        PresenceSettingsRecord {
+            member_id,
+            manual: manual.into(),
+            manual_until: None,
+            dnd_schedule: None,
+            dnd_skip_until: None,
+            updated_at,
+        }
+    }
 }
 
 // ---------------------------------------------------------------- structure
@@ -588,6 +718,7 @@ impl SpaceRecord {
 /// A space icon in `spaces.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct IconRecord {
     /// The image (`files/<file>`).
     pub file: Id,
@@ -597,9 +728,21 @@ pub struct IconRecord {
     pub icon_id: Id,
 }
 
+impl IconRecord {
+    /// A `IconRecord` from all its fields.
+    pub fn new(file: Id, link_id: Id, icon_id: Id) -> Self {
+        IconRecord {
+            file,
+            link_id,
+            icon_id,
+        }
+    }
+}
+
 /// `roles.ndjson` (the `@everyone` role has the space's id).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RoleRecord {
     /// The role id.
     pub id: Id,
@@ -628,9 +771,37 @@ pub struct RoleRecord {
     pub managed: Option<crate::api::spaces::SpaceLevel>,
 }
 
+impl RoleRecord {
+    /// A `RoleRecord` with its required fields: every count 0, every flag `false` and every
+    /// optional field unset.
+    pub fn new(
+        id: Id,
+        space_id: Id,
+        name: impl Into<String>,
+        perms: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        RoleRecord {
+            id,
+            space_id,
+            name: name.into(),
+            position: 0,
+            perms: perms.into(),
+            color: None,
+            mentionable: false,
+            hoist: false,
+            created_at,
+            updated_at,
+            managed: None,
+        }
+    }
+}
+
 /// `space_members.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SpaceMemberRecord {
     /// The space.
     pub space_id: Id,
@@ -649,9 +820,25 @@ pub struct SpaceMemberRecord {
     pub timeout_until: Option<Timestamp>,
 }
 
+impl SpaceMemberRecord {
+    /// A `SpaceMemberRecord` with its required fields: every list empty and every optional
+    /// field unset.
+    pub fn new(space_id: Id, member_id: Id, joined_at: Timestamp) -> Self {
+        SpaceMemberRecord {
+            space_id,
+            member_id,
+            joined_at,
+            added_by: None,
+            role_ids: Vec::new(),
+            timeout_until: None,
+        }
+    }
+}
+
 /// `user_groups.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct UserGroupRecord {
     /// The group id.
     pub id: Id,
@@ -682,9 +869,36 @@ pub struct UserGroupRecord {
     pub deleted_at: Option<Timestamp>,
 }
 
+impl UserGroupRecord {
+    /// A `UserGroupRecord` with its required fields: every flag `false`, every list empty
+    /// and every optional field unset.
+    pub fn new(
+        id: Id,
+        handle: impl Into<String>,
+        name: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        UserGroupRecord {
+            id,
+            space_id: None,
+            handle: handle.into(),
+            name: name.into(),
+            description: None,
+            mentionable: false,
+            member_ids: Vec::new(),
+            created_by: None,
+            created_at,
+            updated_at,
+            deleted_at: None,
+        }
+    }
+}
+
 /// A permission overwrite on a category or channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct OverwriteRecord {
     /// `role` or `member`.
     pub target_kind: String,
@@ -696,9 +910,27 @@ pub struct OverwriteRecord {
     pub deny: String,
 }
 
+impl OverwriteRecord {
+    /// A `OverwriteRecord` from all its fields.
+    pub fn new(
+        target_kind: impl Into<String>,
+        target_id: Id,
+        allow: impl Into<String>,
+        deny: impl Into<String>,
+    ) -> Self {
+        OverwriteRecord {
+            target_kind: target_kind.into(),
+            target_id,
+            allow: allow.into(),
+            deny: deny.into(),
+        }
+    }
+}
+
 /// `categories.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CategoryRecord {
     /// The category id.
     pub id: Id,
@@ -713,6 +945,20 @@ pub struct CategoryRecord {
     pub overwrites: Vec<OverwriteRecord>,
     /// Created.
     pub created_at: Timestamp,
+}
+
+impl CategoryRecord {
+    /// A `CategoryRecord` with its required fields: every count 0 and every list empty.
+    pub fn new(id: Id, space_id: Id, name: impl Into<String>, created_at: Timestamp) -> Self {
+        CategoryRecord {
+            id,
+            space_id,
+            name: name.into(),
+            position: 0,
+            overwrites: Vec::new(),
+            created_at,
+        }
+    }
 }
 
 /// `channels.ndjson`.
@@ -836,6 +1082,7 @@ impl ChannelRecord {
 /// `channel_members.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ChannelMemberRecord {
     /// The channel.
     pub channel_id: Id,
@@ -848,9 +1095,22 @@ pub struct ChannelMemberRecord {
     pub added_by: Option<Id>,
 }
 
+impl ChannelMemberRecord {
+    /// A `ChannelMemberRecord` with its required fields: every optional field unset.
+    pub fn new(channel_id: Id, member_id: Id, joined_at: Timestamp) -> Self {
+        ChannelMemberRecord {
+            channel_id,
+            member_id,
+            joined_at,
+            added_by: None,
+        }
+    }
+}
+
 /// `channel_past_members.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ChannelPastMemberRecord {
     /// The channel.
     pub channel_id: Id,
@@ -860,10 +1120,22 @@ pub struct ChannelPastMemberRecord {
     pub left_at: Timestamp,
 }
 
+impl ChannelPastMemberRecord {
+    /// A `ChannelPastMemberRecord` from all its fields.
+    pub fn new(channel_id: Id, member_id: Id, left_at: Timestamp) -> Self {
+        ChannelPastMemberRecord {
+            channel_id,
+            member_id,
+            left_at,
+        }
+    }
+}
+
 /// `space_bans.ndjson` (full exports only): one space ban. The archive is
 /// decrypted content, so `reason` is plain text inside the age-encrypted archive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SpaceBanRecord {
     /// The space.
     pub space_id: Id,
@@ -881,10 +1153,26 @@ pub struct SpaceBanRecord {
     pub delete_window_s: u32,
 }
 
+impl SpaceBanRecord {
+    /// A `SpaceBanRecord` with its required fields: every count 0 and every optional field
+    /// unset.
+    pub fn new(space_id: Id, member_id: Id, banned_at: Timestamp) -> Self {
+        SpaceBanRecord {
+            space_id,
+            member_id,
+            banned_at,
+            banned_by: None,
+            reason: None,
+            delete_window_s: 0,
+        }
+    }
+}
+
 /// `space_timeout_carry.ndjson` (full exports only): a running timeout of a
 /// member who is not in the space, restored if they return before it ends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TimeoutCarryRecord {
     /// The space.
     pub space_id: Id,
@@ -894,9 +1182,21 @@ pub struct TimeoutCarryRecord {
     pub timeout_until: Timestamp,
 }
 
+impl TimeoutCarryRecord {
+    /// A `TimeoutCarryRecord` from all its fields.
+    pub fn new(space_id: Id, member_id: Id, timeout_until: Timestamp) -> Self {
+        TimeoutCarryRecord {
+            space_id,
+            member_id,
+            timeout_until,
+        }
+    }
+}
+
 /// `emoji.ndjson`: custom emoji (deleted ones keep their row so old tokens render).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct EmojiRecord {
     /// The emoji id.
     pub id: Id,
@@ -934,11 +1234,41 @@ pub struct EmojiRecord {
     pub deleted_by: Option<Id>,
 }
 
+impl EmojiRecord {
+    /// An `EmojiRecord` with its required fields: every count 0, every flag `false`, every
+    /// list empty and every optional field unset.
+    pub fn new(
+        id: Id,
+        space_id: Id,
+        name: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        EmojiRecord {
+            id,
+            space_id,
+            name: name.into(),
+            aliases: Vec::new(),
+            animated: false,
+            width: 0,
+            height: 0,
+            file: None,
+            link_id: None,
+            created_by: None,
+            created_at,
+            updated_at,
+            deleted_at: None,
+            deleted_by: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------- messages
 
 /// A message's reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ReferenceRecord {
     /// Reply, quote or forward.
     pub kind: ReferenceKind,
@@ -960,9 +1290,26 @@ pub struct ReferenceRecord {
     pub forward_unreadable: bool,
 }
 
+impl ReferenceRecord {
+    /// A `ReferenceRecord` with its required fields: every flag `false` and every optional
+    /// field unset.
+    pub fn new(kind: ReferenceKind, message_id: Id, channel_id: Id) -> Self {
+        ReferenceRecord {
+            kind,
+            message_id,
+            channel_id,
+            forward_author_id: None,
+            forward_created_at: None,
+            forward_body: None,
+            forward_unreadable: false,
+        }
+    }
+}
+
 /// Who a message (or revision) mentions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MentionsRecord {
     /// Members.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -995,6 +1342,7 @@ impl MentionsRecord {
 /// A message's deletion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct DeletedRecord {
     /// When.
     pub at: Timestamp,
@@ -1005,9 +1353,17 @@ pub struct DeletedRecord {
     pub kind: DeleteKind,
 }
 
+impl DeletedRecord {
+    /// A `DeletedRecord` with its required fields: every optional field unset.
+    pub fn new(at: Timestamp, kind: DeleteKind) -> Self {
+        DeletedRecord { at, by: None, kind }
+    }
+}
+
 /// A pin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct PinRecord {
     /// Who pinned.
     pub by: Id,
@@ -1015,9 +1371,17 @@ pub struct PinRecord {
     pub at: Timestamp,
 }
 
+impl PinRecord {
+    /// A `PinRecord` from all its fields.
+    pub fn new(by: Id, at: Timestamp) -> Self {
+        PinRecord { by, at }
+    }
+}
+
 /// One emoji's reactions (current state).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ReactionRecord {
     /// The emoji key: `u:<unicode>` or `c:<custom emoji id>`.
     pub emoji: String,
@@ -1027,9 +1391,21 @@ pub struct ReactionRecord {
     pub at: Vec<Timestamp>,
 }
 
+impl ReactionRecord {
+    /// A `ReactionRecord` with its required fields: every list empty.
+    pub fn new(emoji: impl Into<String>) -> Self {
+        ReactionRecord {
+            emoji: emoji.into(),
+            member_ids: Vec::new(),
+            at: Vec::new(),
+        }
+    }
+}
+
 /// An attachment's removal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RemovedRecord {
     /// When.
     pub at: Timestamp,
@@ -1040,9 +1416,17 @@ pub struct RemovedRecord {
     pub kind: RemoveKind,
 }
 
+impl RemovedRecord {
+    /// A `RemovedRecord` with its required fields: every optional field unset.
+    pub fn new(at: Timestamp, kind: RemoveKind) -> Self {
+        RemovedRecord { at, by: None, kind }
+    }
+}
+
 /// An attachment (its id is also its file link id).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct AttachmentRecord {
     /// The attachment id.
     pub id: Id,
@@ -1089,9 +1473,42 @@ pub struct AttachmentRecord {
     pub file: Option<Id>,
 }
 
+impl AttachmentRecord {
+    /// An `AttachmentRecord` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(
+        id: Id,
+        uploader_id: Id,
+        content_type: impl Into<String>,
+        kind: FileKind,
+        created_at: Timestamp,
+    ) -> Self {
+        AttachmentRecord {
+            id,
+            position: 0,
+            uploader_id,
+            filename: None,
+            unreadable: false,
+            content_type: content_type.into(),
+            kind,
+            inline: false,
+            size: 0,
+            width: None,
+            height: None,
+            animated: false,
+            source_attachment_id: None,
+            created_at,
+            removed: None,
+            purged_at: None,
+            file: None,
+        }
+    }
+}
+
 /// A poll option.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct PollOptionRecord {
     /// The option row id.
     pub id: Id,
@@ -1110,9 +1527,25 @@ pub struct PollOptionRecord {
     pub count: u64,
 }
 
+impl PollOptionRecord {
+    /// A `PollOptionRecord` with its required fields: every count 0, every list empty and
+    /// every optional field unset.
+    pub fn new(id: Id) -> Self {
+        PollOptionRecord {
+            id,
+            index: 0,
+            text: None,
+            voter_ids: Vec::new(),
+            voted_at: Vec::new(),
+            count: 0,
+        }
+    }
+}
+
 /// A poll on its message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct PollRecord {
     /// The question (absent when purged or unreadable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1141,9 +1574,29 @@ pub struct PollRecord {
     pub created_at: Timestamp,
 }
 
+impl PollRecord {
+    /// A `PollRecord` with its required fields: every count 0, every flag `false`, every
+    /// list empty and every optional field unset.
+    pub fn new(results_visibility: impl Into<String>, created_at: Timestamp) -> Self {
+        PollRecord {
+            question: None,
+            unreadable: false,
+            options: Vec::new(),
+            max_choices: 0,
+            anonymous: false,
+            results_visibility: results_visibility.into(),
+            closes_at: None,
+            closed_at: None,
+            closed_by: None,
+            created_at,
+        }
+    }
+}
+
 /// `messages/<channel_id>/<part>.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MessageRecord {
     /// The message id (`id_to_time(id) == created_at`).
     pub id: Id,
@@ -1221,9 +1674,45 @@ pub struct MessageRecord {
     pub source: Option<SourceRef>,
 }
 
+impl MessageRecord {
+    /// A `MessageRecord` with its required fields: every count 0, every flag `false`, every
+    /// list empty and every optional field unset.
+    pub fn new(id: Id, channel_id: Id, author_id: Id, created_at: Timestamp) -> Self {
+        MessageRecord {
+            id,
+            channel_id,
+            author_id,
+            on_behalf_of: None,
+            on_behalf_approval: None,
+            thread_root_id: None,
+            also_in_channel: false,
+            reference: None,
+            body: None,
+            version: 0,
+            seq: None,
+            mentions: None,
+            custom_emoji_ids: Vec::new(),
+            previews_suppressed: false,
+            created_at,
+            edited_at: None,
+            deleted: None,
+            purged_at: None,
+            unreadable: false,
+            pin: None,
+            reactions: Vec::new(),
+            attachments: Vec::new(),
+            poll: None,
+            context: false,
+            matched: false,
+            source: None,
+        }
+    }
+}
+
 /// `revisions/<channel_id>/<part>.ndjson`: edit history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RevisionRecord {
     /// The revision row id.
     pub id: Id,
@@ -1251,9 +1740,35 @@ pub struct RevisionRecord {
     pub unreadable: bool,
 }
 
+impl RevisionRecord {
+    /// A `RevisionRecord` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(
+        id: Id,
+        message_id: Id,
+        channel_id: Id,
+        created_at: Timestamp,
+        replaced_at: Timestamp,
+    ) -> Self {
+        RevisionRecord {
+            id,
+            message_id,
+            channel_id,
+            version: 0,
+            body: None,
+            mentions: None,
+            created_at,
+            replaced_at,
+            purged: false,
+            unreadable: false,
+        }
+    }
+}
+
 /// `bookmarks.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct BookmarkRecord {
     /// The bookmark id.
     pub id: Id,
@@ -1272,9 +1787,32 @@ pub struct BookmarkRecord {
     pub updated_at: Timestamp,
 }
 
+impl BookmarkRecord {
+    /// A `BookmarkRecord` with its required fields: every count 0 and every optional field
+    /// unset.
+    pub fn new(
+        id: Id,
+        channel_id: Id,
+        created_by: Id,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        BookmarkRecord {
+            id,
+            channel_id,
+            position: 0,
+            data: None,
+            created_by,
+            created_at,
+            updated_at,
+        }
+    }
+}
+
 /// `thread_follows.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ThreadFollowRecord {
     /// The member.
     pub member_id: Id,
@@ -1290,9 +1828,31 @@ pub struct ThreadFollowRecord {
     pub followed_at: Timestamp,
 }
 
+impl ThreadFollowRecord {
+    /// A `ThreadFollowRecord` from all its fields.
+    pub fn new(
+        member_id: Id,
+        root_id: Id,
+        channel_id: Id,
+        state: impl Into<String>,
+        reason: impl Into<String>,
+        followed_at: Timestamp,
+    ) -> Self {
+        ThreadFollowRecord {
+            member_id,
+            root_id,
+            channel_id,
+            state: state.into(),
+            reason: reason.into(),
+            followed_at,
+        }
+    }
+}
+
 /// `read_states.ndjson` (full exports only): the channel read cursors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ReadStateRecord {
     /// The member.
     pub member_id: Id,
@@ -1305,9 +1865,22 @@ pub struct ReadStateRecord {
     pub updated_at: Timestamp,
 }
 
+impl ReadStateRecord {
+    /// A `ReadStateRecord` with its required fields: every optional field unset.
+    pub fn new(member_id: Id, channel_id: Id, updated_at: Timestamp) -> Self {
+        ReadStateRecord {
+            member_id,
+            channel_id,
+            last_read_id: None,
+            updated_at,
+        }
+    }
+}
+
 /// `thread_reads.ndjson` (full exports only): the thread read cursors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ThreadReadRecord {
     /// The member.
     pub member_id: Id,
@@ -1319,6 +1892,25 @@ pub struct ThreadReadRecord {
     pub last_read_id: Id,
     /// Last move.
     pub updated_at: Timestamp,
+}
+
+impl ThreadReadRecord {
+    /// A `ThreadReadRecord` from all its fields.
+    pub fn new(
+        member_id: Id,
+        root_id: Id,
+        channel_id: Id,
+        last_read_id: Id,
+        updated_at: Timestamp,
+    ) -> Self {
+        ThreadReadRecord {
+            member_id,
+            root_id,
+            channel_id,
+            last_read_id,
+            updated_at,
+        }
+    }
 }
 
 /// `dm_seen.ndjson` (full exports only, since minor 14): the seen positions of DM members
@@ -1377,6 +1969,7 @@ impl ReadReceiptPrefRecord {
 /// `mentions.ndjson`: the mention inbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MentionRecord {
     /// The member.
     pub member_id: Id,
@@ -1393,9 +1986,25 @@ pub struct MentionRecord {
     pub created_at: Timestamp,
 }
 
+impl MentionRecord {
+    /// A `MentionRecord` with its required fields: every count 0 and every optional field
+    /// unset.
+    pub fn new(member_id: Id, channel_id: Id, message_id: Id, created_at: Timestamp) -> Self {
+        MentionRecord {
+            member_id,
+            channel_id,
+            message_id,
+            root_id: None,
+            reason: 0,
+            created_at,
+        }
+    }
+}
+
 /// `saved_items.ndjson` (full exports only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SavedItemRecord {
     /// The saved item id.
     pub id: Id,
@@ -1418,9 +2027,37 @@ pub struct SavedItemRecord {
     pub state_changed_at: Timestamp,
 }
 
+impl SavedItemRecord {
+    /// A `SavedItemRecord` with its required fields: every optional field unset.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Id,
+        member_id: Id,
+        message_id: Id,
+        channel_id: Id,
+        state: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+        state_changed_at: Timestamp,
+    ) -> Self {
+        SavedItemRecord {
+            id,
+            member_id,
+            message_id,
+            channel_id,
+            state: state.into(),
+            note: None,
+            created_at,
+            updated_at,
+            state_changed_at,
+        }
+    }
+}
+
 /// `reminders.ndjson` (full exports only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ReminderRecord {
     /// The reminder id.
     pub id: Id,
@@ -1458,9 +2095,40 @@ pub struct ReminderRecord {
     pub updated_at: Timestamp,
 }
 
+impl ReminderRecord {
+    /// A `ReminderRecord` with its required fields: every count 0 and every optional field
+    /// unset.
+    pub fn new(
+        id: Id,
+        member_id: Id,
+        at: Timestamp,
+        state: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        ReminderRecord {
+            id,
+            member_id,
+            message_id: None,
+            channel_id: None,
+            note: None,
+            at,
+            timezone: None,
+            state: state.into(),
+            fired_at: None,
+            done_at: None,
+            snooze_count: 0,
+            version: 0,
+            created_at,
+            updated_at,
+        }
+    }
+}
+
 /// `drafts.ndjson` (full exports only; drafts holding only pending uploads are not carried).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct DraftRecord {
     /// The draft id.
     pub id: Id,
@@ -1484,9 +2152,35 @@ pub struct DraftRecord {
     pub updated_at: Timestamp,
 }
 
+impl DraftRecord {
+    /// A `DraftRecord` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(
+        id: Id,
+        member_id: Id,
+        channel_id: Id,
+        body: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        DraftRecord {
+            id,
+            member_id,
+            channel_id,
+            thread_root_id: None,
+            also_send_to_channel: false,
+            body: body.into(),
+            rev: 0,
+            created_at,
+            updated_at,
+        }
+    }
+}
+
 /// `scheduled.ndjson`: pending and failed scheduled messages (full exports only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ScheduledRecord {
     /// The scheduled message id.
     pub id: Id,
@@ -1524,10 +2218,42 @@ pub struct ScheduledRecord {
     pub updated_at: Timestamp,
 }
 
+impl ScheduledRecord {
+    /// A `ScheduledRecord` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(
+        id: Id,
+        member_id: Id,
+        channel_id: Id,
+        send_at: Timestamp,
+        state: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        ScheduledRecord {
+            id,
+            member_id,
+            channel_id,
+            thread_root_id: None,
+            also_send_to_channel: false,
+            body: None,
+            send_at,
+            timezone: None,
+            state: state.into(),
+            fail_reason: None,
+            failed_at: None,
+            version: 0,
+            created_at,
+            updated_at,
+        }
+    }
+}
+
 /// `notify_prefs.ndjson`: one record per member with notification settings or explicit
 /// channel or space prefs. DND lives in `presence_settings.ndjson`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct NotifyPrefsRecord {
     /// The member.
     pub member_id: Id,
@@ -1542,9 +2268,23 @@ pub struct NotifyPrefsRecord {
     pub space_prefs: Vec<NotifySpacePrefRecord>,
 }
 
+impl NotifyPrefsRecord {
+    /// A `NotifyPrefsRecord` with its required fields: every list empty and every optional
+    /// field unset.
+    pub fn new(member_id: Id) -> Self {
+        NotifyPrefsRecord {
+            member_id,
+            settings: None,
+            channel_prefs: Vec::new(),
+            space_prefs: Vec::new(),
+        }
+    }
+}
+
 /// A member's notification settings (`notify_prefs.settings`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct NotifySettingsRecord {
     /// `all`, `mentions` or `none` (absent: inherit the install default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1566,9 +2306,27 @@ pub struct NotifySettingsRecord {
     pub updated_at: Timestamp,
 }
 
+impl NotifySettingsRecord {
+    /// A `NotifySettingsRecord` with its required fields: every count 0, every flag
+    /// `false`, every list empty and every optional field unset.
+    pub fn new(digest_interval: impl Into<String>, updated_at: Timestamp) -> Self {
+        NotifySettingsRecord {
+            default_level: None,
+            thread_replies: false,
+            broad_mentions: false,
+            mute_lets_mentions: false,
+            digest_interval: digest_interval.into(),
+            keywords: Vec::new(),
+            rev: 0,
+            updated_at,
+        }
+    }
+}
+
 /// One explicit channel or DM pref (`notify_prefs.channel_prefs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct NotifyChannelPrefRecord {
     /// The channel.
     pub channel_id: Id,
@@ -1585,9 +2343,24 @@ pub struct NotifyChannelPrefRecord {
     pub updated_at: Timestamp,
 }
 
+impl NotifyChannelPrefRecord {
+    /// A `NotifyChannelPrefRecord` with its required fields: every flag `false` and every
+    /// optional field unset.
+    pub fn new(channel_id: Id, updated_at: Timestamp) -> Self {
+        NotifyChannelPrefRecord {
+            channel_id,
+            level: None,
+            muted: false,
+            muted_until: None,
+            updated_at,
+        }
+    }
+}
+
 /// One explicit space level (`notify_prefs.space_prefs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct NotifySpacePrefRecord {
     /// The space.
     pub space_id: Id,
@@ -1597,9 +2370,21 @@ pub struct NotifySpacePrefRecord {
     pub updated_at: Timestamp,
 }
 
+impl NotifySpacePrefRecord {
+    /// A `NotifySpacePrefRecord` from all its fields.
+    pub fn new(space_id: Id, level: impl Into<String>, updated_at: Timestamp) -> Self {
+        NotifySpacePrefRecord {
+            space_id,
+            level: level.into(),
+            updated_at,
+        }
+    }
+}
+
 /// `audit.ndjson`: one audit row, or (`pending`) one outbox row not chained at the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct AuditRecord {
     /// The chain position (absent for pending rows).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1615,6 +2400,20 @@ pub struct AuditRecord {
     pub pending: bool,
     /// The exact canonical event string that was hashed.
     pub event_json: String,
+}
+
+impl AuditRecord {
+    /// An `AuditRecord` with its required fields: every flag `false` and every optional
+    /// field unset.
+    pub fn new(event_json: impl Into<String>) -> Self {
+        AuditRecord {
+            chain_seq: None,
+            prev_hash: None,
+            hash: None,
+            pending: false,
+            event_json: event_json.into(),
+        }
+    }
 }
 
 /// `retention_policies.ndjson` (the retention API's wire shape).
@@ -1696,6 +2495,7 @@ coded_enum! {
 /// One participant's consent record (`recording_participants`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingParticipantRecord {
     /// The member.
     pub member_id: Id,
@@ -1731,9 +2531,36 @@ pub struct RecordingParticipantRecord {
     pub surface: Option<crate::recording::ConsentSurface>,
 }
 
+impl RecordingParticipantRecord {
+    /// A `RecordingParticipantRecord` with its required fields: every flag `false` and
+    /// every optional field unset.
+    pub fn new(
+        member_id: Id,
+        consent: crate::recording::Consent,
+        first_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        RecordingParticipantRecord {
+            member_id,
+            consent,
+            via: None,
+            capture: None,
+            capture_reason: None,
+            first_at,
+            answered_at: None,
+            updated_at,
+            in_room: false,
+            ever_granted: false,
+            notice_version: None,
+            surface: None,
+        }
+    }
+}
+
 /// One recorder run (`recording_runs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingRunRecord {
     /// From 1.
     pub run: u16,
@@ -1750,9 +2577,24 @@ pub struct RecordingRunRecord {
     pub end_reason: Option<RunEnd>,
 }
 
+impl RecordingRunRecord {
+    /// A `RecordingRunRecord` with its required fields: every count 0 and every optional
+    /// field unset.
+    pub fn new(started_at: Timestamp) -> Self {
+        RecordingRunRecord {
+            run: 0,
+            started_at,
+            joined_at: None,
+            ended_at: None,
+            end_reason: None,
+        }
+    }
+}
+
 /// One speaker's track progress (`recording_tracks`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingTrackRecord {
     /// The speaker.
     pub member_id: Id,
@@ -1766,9 +2608,23 @@ pub struct RecordingTrackRecord {
     pub last_progress_at: Option<Timestamp>,
 }
 
+impl RecordingTrackRecord {
+    /// A `RecordingTrackRecord` with its required fields: every count 0, every flag `false`
+    /// and every optional field unset.
+    pub fn new(member_id: Id) -> Self {
+        RecordingTrackRecord {
+            member_id,
+            through_ms: 0,
+            open: false,
+            last_progress_at: None,
+        }
+    }
+}
+
 /// One missing span (`recording_gaps`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingGapRecord {
     /// The speaker (absent: everyone).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1781,11 +2637,25 @@ pub struct RecordingGapRecord {
     pub reason: crate::recording::GapReason,
 }
 
+impl RecordingGapRecord {
+    /// A `RecordingGapRecord` with its required fields: every count 0 and every optional
+    /// field unset.
+    pub fn new(reason: crate::recording::GapReason) -> Self {
+        RecordingGapRecord {
+            member_id: None,
+            from_ms: 0,
+            to_ms: 0,
+            reason,
+        }
+    }
+}
+
 /// One stored segment's metadata (`recording_segments`, without `result_ct`). Its audio is
 /// `files/<file>`: the **recorder-sealed** Ogg (the encrypted file stream format under the segment
 /// key derived from the recording's `content_key`, run, `join_id` and `seq`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingSegmentRecord {
     /// The segment.
     pub id: Id,
@@ -1833,10 +2703,45 @@ pub struct RecordingSegmentRecord {
     pub created_at: Timestamp,
 }
 
+impl RecordingSegmentRecord {
+    /// A `RecordingSegmentRecord` with its required fields: every count 0 and every
+    /// optional field unset.
+    pub fn new(
+        id: Id,
+        member_id: Id,
+        join_id: impl Into<String>,
+        state: SegmentState,
+        created_at: Timestamp,
+    ) -> Self {
+        RecordingSegmentRecord {
+            id,
+            member_id,
+            run: 0,
+            join_id: join_id.into(),
+            seq: 0,
+            start_ms: 0,
+            duration_ms: 0,
+            speech_ms: 0,
+            level_dbov: 0.0,
+            file: None,
+            bytes: 0,
+            plain_bytes: 0,
+            state,
+            attempts: 0,
+            error: None,
+            lang: None,
+            lang_prob: None,
+            posted_through_ms: 0,
+            created_at,
+        }
+    }
+}
+
 /// One mixed part (`recording_mixes`); its audio is `files/<file>`, recorder-sealed under the
 /// part key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RecordingMixRecord {
     /// From 1.
     pub part: u16,
@@ -1854,6 +2759,7 @@ pub struct RecordingMixRecord {
 /// One transcript turn's timing (`transcript_turns`; the text is its message's body).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TranscriptTurnRecord {
     /// The turn message.
     pub message_id: Id,
@@ -1870,6 +2776,27 @@ pub struct TranscriptTurnRecord {
     pub lang: Option<String>,
     /// The pieces (numbers only).
     pub pieces: serde_json::Value,
+}
+
+impl TranscriptTurnRecord {
+    /// A `TranscriptTurnRecord` with its required fields: every count 0 and every optional
+    /// field unset.
+    pub fn new(
+        message_id: Id,
+        speaker_id: Id,
+        spoken_at: Timestamp,
+        pieces: serde_json::Value,
+    ) -> Self {
+        TranscriptTurnRecord {
+            message_id,
+            speaker_id,
+            start_ms: 0,
+            end_ms: 0,
+            spoken_at,
+            lang: None,
+            pieces,
+        }
+    }
 }
 
 /// `recordings.ndjson`: one call recording with its consent record, runs,

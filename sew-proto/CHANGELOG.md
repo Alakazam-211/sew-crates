@@ -1,5 +1,274 @@
 # Changelog
 
+## 0.11.0 (2026-11-19)
+
+### Breaking
+
+- **chrono is no longer a dependency, under any feature.** The time types are the crate's own,
+  there is no `chrono` feature, and `schemars` is built without its `chrono04` feature. The
+  wire forms do not change.
+  - `Timestamp` holds Unix milliseconds itself, with the same range (the years -262143 to
+    262142, now `Timestamp::MIN` and `Timestamp::MAX`) and the same RFC 3339 input and output.
+    `Timestamp::from_datetime` and `Timestamp::as_datetime` are removed, and there is no `From`
+    between `Timestamp` and `chrono::DateTime<Utc>`. `from_unix_ms`,
+    `from_unix_ms_saturating` and `unix_ms` are `const fn`. Its `Debug` output is
+    `Timestamp(2026-09-27T12:00:00.123Z)`.
+  - New `time::Date` (a calendar day, `YYYY-MM-DD`, years 0–9999: `from_ymd`, `parse`,
+    `year`, `month`, `day`, `succ`) and `time::LocalDateTime` (a wall-clock minute,
+    `YYYY-MM-DDTHH:MM`: `new`, `parse`, `date`, `hour`, `minute`), with no chrono conversions
+    (no `to_naive_date`, `from_naive_date` or `to_naive_date_time`, and no `From` into
+    `NaiveDate` or `NaiveDateTime`).
+  - `search::query::DateFilter`'s `on`, `before` and `after`, `DateFilter::allows` and
+    `search::query::parse_date` use `time::Date` instead of `chrono::NaiveDate`.
+  - `When::local_date_time` returns `Option<time::LocalDateTime>` instead of
+    `Option<chrono::NaiveDateTime>`. It reads only the strict `YYYY-MM-DDTHH:MM` (four-digit
+    year, two-digit fields), the form `When::validate` documents.
+  - Migrating: convert through Unix milliseconds and the calendar fields, with chrono, jiff or
+    any other time crate. With chrono:
+
+    ```rust,ignore
+    // Timestamp -> DateTime<Utc> (None only outside chrono's range)
+    let dt = chrono::DateTime::from_timestamp_millis(ts.unix_ms());
+    // DateTime<Utc> -> Timestamp (truncated to milliseconds)
+    let ts = sew_proto::Timestamp::from_unix_ms(dt.timestamp_millis());
+    // Date -> NaiveDate, and back
+    let nd = chrono::NaiveDate::from_ymd_opt(d.year(), d.month(), d.day());
+    let d = sew_proto::time::Date::from_ymd(nd.year(), nd.month(), nd.day());
+    // LocalDateTime -> NaiveDateTime
+    let ndt = nd.and_hms_opt(t.hour(), t.minute(), 0);
+    ```
+
+- **`Unknown` has one fixed discriminant.** In every wire unit enum, `Unknown` (the fallback for
+  a value this build does not know) is now `registry::UNKNOWN_DISCRIMINANT` (`0xFFFF`), far
+  above the known variants, which count up from 0 in wire order. Adding a variant no longer
+  moves `Unknown`'s number, so later releases can add variants without changing it. Code that
+  casts these enums with `as` sees `Unknown` change from one past the last variant to
+  `0xFFFF`; the enums are two bytes wide where they were one. In `mgmt::StatusAlarm`,
+  `gateway::events::EventName` and `audit::Action`, the variants that followed the old pinned `Unknown` move down
+  by one (`StatusAlarm::KeysMirrorUnmounted` 42 to 41, `KeysMirrorSameDevice` 43 to 42,
+  `KeysMirrorUnsynced` 44 to 43; `EventName::DmSeen` 68 to 67,
+  `ReadReceiptSettingsUpdated` 69 to 68, `ReadReceiptsPolicyUpdated` 70 to 69; `audit::Action`:
+  `NotifyPrefsSet` 212 to 211). The `coded_enum!` enums (`MemberChangeKind`,
+  `NotificationReason` and the others below) are covered the same way. The wire
+  strings, `ALL` and the storage codes (`as_i16`) do not change. The enums (160):
+    - `api::channels`: `ChannelListScope`, `ChannelType`, `MyChannelsKind`, `MyChannelsOrder`,
+      `Visibility`.
+    - `api::compliance`: `CreatedVia`, `HoldStateFilter`, `PolicyState`, `RunState`,
+      `RunTrigger`, `VanishReason`.
+    - `api::exports`: `ExportState`, `RequestedVia`.
+    - `api::extras`: `PollResultsVisibility`, `PollState`, `ReminderState`, `SavedState`,
+      `ScheduledFailReason`, `ScheduledState`.
+    - `api::files`: `FileKind`.
+    - `api::media`: `LinkPreviewKind`, `SecretSetVia`.
+    - `api::meetings`: `MeetingAdmissionOutcome`, `MeetingAttendeeKind`, `MeetingEndReason`,
+      `MeetingKind`, `MeetingListScope`, `MeetingLobbyKind`, `MeetingLobbyState`,
+      `MeetingRedeemState`, `MeetingState`.
+    - `api::members`: `AgentKind`, `InstallRole`, `MemberKind`, `SettableInstallRole`.
+    - `api::messages`: `DeletedReason`, `OnBehalfApprovalState`, `ReferenceKind`.
+    - `api::notify`: `DigestDetail`, `DigestInterval`, `NotifyLevel`.
+    - `api::people`: `DndDay`, `DndSource`, `ManualPresence`, `MentionableKind`,
+      `ProfileFieldKind`, `ProfileFieldManagedBy`, `ProfileFieldVisibility`, `ResettableField`,
+      `SelfStatus`.
+    - `api::read_state`: `ThreadsInboxFilter`.
+    - `api::search`: `SearchErrorReason`, `SearchSort`.
+    - `api::spaces`: `OverwriteTarget`, `SpaceGovernance`, `SpaceJoinPolicy`, `SpaceLevel`,
+      `SpaceListScope`.
+    - `audit`: `Action`, `ActorKind`, `AuditResult`, `AuditVisibility`.
+    - `calls`: `CallEndReason`, `CallState`, `RingState`.
+    - `changes`: `ChannelChangeKind`, `MemberChangeKind`, `NotificationReason`.
+    - `e2ee::device`: `DevicePlatform`, `DeviceRevokeReason`.
+    - `e2ee::wire`: `ConsentState`, `InvalidReason`, `KeyResyncReason`, `KeyStateStatus`,
+      `RekeyReason`, `RemoveReason`, `ReportKind`, `ResetReason`, `TransitionReason`,
+      `VerificationCode`.
+    - `error`: `Code`, `InvalidStateReason`, `PermissionReason`, `ResyncReason`.
+    - `export`: `DeleteKind`, `ExportKind`, `FileMode`, `MemberMode`, `RemoveKind`, `RunEnd`,
+      `SegmentState`.
+    - `gateway`: `Compression`, `Encoding`.
+    - `gateway::client`: `PresenceSetStatus`.
+    - `gateway::events`: `EventName`, `PresenceStatus`.
+    - `mgmt`: `AuditVerifyMode`, `DeliveryKind`, `DeliveryPlace`, `EraseKeptKind`,
+      `EraseKeptReason`, `EraseMode`, `EraseState`, `JobState`, `MailTls`, `MediaPathState`,
+      `MgmtChannelNotAddedReason`, `MgmtChannelOpKind`, `MgmtMemberChannelsSkip`,
+      `MgmtSpaceAppRole`, `MgmtSpaceNotAddedReason`, `MgmtVoiceChangeKind`,
+      `PersonNotificationKind`, `PrincipalsInclude`, `ProviderKind`, `SearchState`,
+      `StatusAlarm`.
+    - `mgmt::local`: `LocalRole`, `LocalSettableRole`.
+    - `policy`: `ArchiveWho`, `ChannelCreateFloor`, `GuestInvite`, `ManagedProfileField`,
+      `MeetingsCreate`, `PolicyKey`, `SpacesCreate`.
+    - `recording`: `AudioState`, `Capture`, `Consent`, `ConsentSurface`, `ConsentVia`,
+      `DeclineMode`, `DownloadWhat`, `GapReason`, `NotRecordedReason`, `Playback`,
+      `PromptRoomKind`, `RecordUnavailable`, `RecordingEventKind`, `RecordingRequiredPolicy`,
+      `RecordingRule`, `RecordingStartLevel`, `RecordingState`, `RecordingTrigger`,
+      `StopReason`, `TranscriptFailureCode`, `TranscriptState`.
+    - `search::query`: `FilterName`, `HasValue`, `IsValue`.
+    - `voice`: `BudgetSource`, `CallStatsCandidate`, `CallStatsClient`,
+      `CallStatsRelayProtocol`, `KeyJoinMode`, `MediaTier`, `VideoCodec`, `VoiceConnection`,
+      `VoiceEngineState`, `VoiceLeaveReason`.
+
+- **Every wire unit enum is `#[non_exhaustive]`.** The 160 enums listed above (every
+  `unit_enum!` and `coded_enum!`) are `#[non_exhaustive]`, so a later release can add a value
+  without a breaking change. A `match` on one outside this crate needs a wildcard arm (`_`),
+  usually the same arm as `Unknown`. The wire forms, `ALL` and the storage codes do not change
+  (the discriminant moves are listed above). Each already had its `serde(other)` `Unknown`.
+
+- **The transcript failure reason moves inside the recording summary.**
+  `SummaryTranscript.failure` (`Option<TranscriptFailure>`, skipped when `None`) carries why a
+  transcript is `failed` or `partial`: the record message's `recording.transcript.failure`,
+  e.g. `{"code": "transcriber_error", "message": "The transcription service could not process
+  the audio."}`. `RecordingSummary`, `SummaryAudio` and `SummaryTranscript` are
+  `#[non_exhaustive]`, with `RecordingSummary::new` (recording, starter, start time, audio,
+  transcript), `SummaryAudio::new` (state, mixed, keep days) and `SummaryTranscript::new`
+  (state); set the other fields on the value.
+- **Deprecated:** `Message.transcript_failure` and `MgmtRecordingSummary.transcript_failure`
+  (`#[deprecated]`). The server still writes both, with the same value as
+  `recording.transcript.failure`; they are kept for at least one more release, then removed in a
+  later breaking release.
+
+- **`PolicyKey` is `#[non_exhaustive]` and names `dm.read_receipts`.** It gains
+  `PolicyKey::DmReadReceipts` (`dm.read_receipts`), so the policy is listed, validated and
+  refused (`policy_denied`) like every other key; a later key is an additive change.
+  `policy::DM_READ_RECEIPTS` stays, as that variant's wire string. `PolicyDigest` gains
+  `dm_read_receipts` (old payloads read `true`), so READY's `ReadyInstall.policy_digest` and
+  `install_updated` carry the install policy.
+
+- `mgmt::KeysMirrorSyncResponse` is `#[non_exhaustive]`, with `KeysMirrorSyncResponse::new`
+  (mirror kind, ok); a later field is an additive change.
+
+- **The structs that grow are `#[non_exhaustive]`.** A later field on any of these is an
+  additive change. Outside this crate they can no longer be built with a struct expression or
+  matched without `..`: build one with its constructor and set the other (public) fields on
+  the value, e.g. `let mut s = Space::new(id, slug, "Ops", owner, now); s.private = true;`.
+  Each `new` takes the required fields in the order given and leaves every optional field
+  unset, every list empty, every count 0 and every flag `false` (each type's doc says which).
+  The wire forms do not change.
+  - READY and sync: `gateway::server::Ready::new` (session id, resume URL, member, install,
+    threads inbox; protocol `PROTOCOL_VERSION`), `ReadySpace::new` (id, slug, name,
+    versions), `api::read_state::ReadState::new` (channel id), `ThreadReadState::new` (root
+    id), `MeSync::new` (install id, sync epoch, member id, threads inbox).
+    `policy::PolicyDigest` implements `Default` (the digest of `Policies::default()`);
+    `Policies::digest` still builds one from the install's policies.
+  - `mgmt::Status` parts: `StatusIdentity::new` (provider), `StatusSearchRebuild::new`
+    (reason, start time), `StatusKeysMirror::new` (kind), `StatusGateway::new` (identify,
+    resume counters), `e2ee::StatusVoiceE2eeCall::new` (call id, leaves by state),
+    `voice::VoiceStatus::new` (engine), `VoiceEngineStatus::new` (state),
+    `VoiceMediaStatus::new` (media tier, budget source); `StatusDb`, `StatusJobs`,
+    `StatusBackup`, `StatusDrill`, `StatusSearch`, `StatusSearchDocs`, `StatusKeys`,
+    `StatusGatewayIdentify`, `StatusGatewayResume`, `StatusGatewayReauth`, `StatusMail`,
+    `StatusDigest`, `StatusFiles`, `StatusErasures`, `e2ee::StatusVoiceE2ee`,
+    `StatusVoiceE2eeLeaves`, `api::exports::StatusExports`,
+    `api::compliance::StatusRetention` and `recording::StatusRecording` through `Default`.
+    `Status::new` is unchanged.
+  - Mgmt: `DeliveryMessage::new` (id, channel id, author id, author display name, author
+    kind, addr, body, created at), `MgmtPrincipal::new` (member id, external id, kind, install
+    role, username, display name, created at), `PersonNotification::new` (kind, at, channel
+    id, from member id), `PersonNotificationsPage` and `MgmtEraseCounts` through `Default`,
+    `MgmtChannelCreateRequest::new` (space id, slug, name), `MgmtChannelCreateResponse::new`
+    (channel id, space id, slug, name; type `text`), `MgmtMemberChannelsRequest::new` (level),
+    `MgmtMemberChannelsItem::new` (external id, level).
+  - Client API: `api::spaces::Space::new` (id, slug, name, owner id, created at),
+    `api::messages::Attachment::new` (id, filename, content type, url),
+    `api::meetings::Meeting::new` (id, channel id, space id, organiser, kind, state, starts
+    at, ends at, time zone, opens at, hard end at, ICS UID, created at, updated at).
+  - Voice and calls: `voice::VoiceState::new` (member id, channel id, connection, joined at),
+    `VoiceJoinResponse::new` (url, token, expires at, room, state), `CallStatsSample::new`
+    (client), `calls::Call::new` (id, channel id, message id, started by, started at, state).
+  - Call keys: `e2ee::E2eeCaps::new` (kdf, SDK, SDK version), `CallKeysParams::new` (kdf,
+    exporter label, release info label), `CallKeysInit::new` (call id, join id, LiveKit
+    identity, scope, group id, external sender, params), `ReadyCallKeys::new` (external
+    sender, DS public key, CA, verification code, params).
+  - Export records (every `export::*Record`): `InstallRecord::new` (install id, name, created
+    at), `ProfileFieldRecord::new` (id, key, label, kind, managed by, visibility, created at,
+    updated at), `StatusRecord::new` (set at), `AvatarRecord::new` (file, avatar id, source),
+    `MemberRecord::new` (id, external id, kind, install role, username, display name, created
+    at), `PresenceSettingsRecord::new` (member id, manual, updated at), `IconRecord::new`
+    (file, link id, icon id), `RoleRecord::new` (id, space id, name, perms, created at,
+    updated at), `SpaceMemberRecord::new` (space id, member id, joined at),
+    `UserGroupRecord::new` (id, handle, name, created at, updated at), `OverwriteRecord::new`
+    (target kind, target id, allow, deny), `CategoryRecord::new` (id, space id, name, created
+    at), `ChannelMemberRecord::new` and `ChannelPastMemberRecord::new` (channel id, member id,
+    joined or left at), `SpaceBanRecord::new` (space id, member id, banned at),
+    `TimeoutCarryRecord::new` (space id, member id, timeout until), `EmojiRecord::new` (id,
+    space id, name, created at, updated at), `ReferenceRecord::new` (kind, message id, channel
+    id), `DeletedRecord::new` and `RemovedRecord::new` (at, kind), `PinRecord::new` (by, at),
+    `ReactionRecord::new` (emoji), `AttachmentRecord::new` (id, uploader id, content type,
+    kind, created at), `PollOptionRecord::new` (id), `PollRecord::new` (results visibility,
+    created at), `MessageRecord::new` (id, channel id, author id, created at),
+    `RevisionRecord::new` (id, message id, channel id, created at, replaced at),
+    `BookmarkRecord::new` (id, channel id, created by, created at, updated at),
+    `ThreadFollowRecord::new` (member id, root id, channel id, state, reason, followed at),
+    `ReadStateRecord::new` (member id, channel id, updated at), `ThreadReadRecord::new`
+    (member id, root id, channel id, last read id, updated at), `MentionRecord::new` (member
+    id, channel id, message id, created at), `SavedItemRecord::new` (id, member id, message
+    id, channel id, state, created at, updated at, state changed at), `ReminderRecord::new`
+    (id, member id, at, state, created at, updated at), `DraftRecord::new` (id, member id,
+    channel id, body, created at, updated at), `ScheduledRecord::new` (id, member id, channel
+    id, send at, state, created at, updated at), `NotifyPrefsRecord::new` (member id),
+    `NotifySettingsRecord::new` (digest interval, updated at), `NotifyChannelPrefRecord::new`
+    (channel id, updated at), `NotifySpacePrefRecord::new` (space id, level, updated at),
+    `AuditRecord::new` (event JSON), `RecordingParticipantRecord::new` (member id, consent,
+    first at, updated at), `RecordingRunRecord::new` (started at), `RecordingTrackRecord::new`
+    (member id), `RecordingGapRecord::new` (reason), `RecordingSegmentRecord::new` (id, member
+    id, join id, state, created at), `TranscriptTurnRecord::new` (message id, speaker id,
+    spoken at, pieces); `MentionsRecord` and `RecordingMixRecord` through `Default`.
+    `SpaceRecord`, `ChannelRecord`, `DmSeenRecord`, `ReadReceiptPrefRecord` and
+    `RecordingRecord` were already `#[non_exhaustive]` with constructors.
+  - `voice::ReadyVoiceChannel` (READY's `voice_channels`): `ReadyVoiceChannel::new` (id, Space
+    id, slug, name, position, my perms; no category, user limit 0). It gains `voice_invites`
+    (below).
+
+### Added
+
+- **The person notification feed's second version** (`mgmt::notifications`, flag
+  `feed_all_messages`, `mgmt::FEATURE_FEED_ALL_MESSAGES` in `mgmt::FEATURES`). With the enums
+  and structs above `#[non_exhaustive]`, these are additions:
+  - `PersonNotificationKind` gains `Message` (`message`, a channel at `all`), `Keyword`
+    (`keyword`), `Read` (`read`: the person read a channel, DM or thread up to `message_id`)
+    and `CallRingStopped` (`call_ring_stopped`: a loud ring answered, declined or cancelled),
+    numbered 5 to 8 after the five 0.10 kinds. `PersonNotificationKind::clears` says which
+    kinds only clear pushes.
+  - `PersonNotification` gains `from_external_id` and `thread_root_id` (`Option`, absent when
+    unset; `PersonNotification::new` leaves them unset), and `PersonNotificationsPage` gains
+    `head` (the log head at the read) and `PersonNotificationsPage::new(items, next, head)`.
+  - `changes::MemberChangeKind` gains `ReadMarker` (`read_marker`, code 20),
+    `ThreadReadMarker` (`thread_read_marker`, 21) and `CallRingStopped` (`call_ring_stopped`,
+    22), log entries only the person feed reads (the client change feed never returns them),
+    and `changes::NotificationReason` gains `InlineReply` (`inline_reply`, 13): an inline reply
+    to one of the member's messages (people only; it notifies like a role mention and ranks
+    after `dm`).
+- **Voice room notifications**: a voice room's start and voice invites (flags
+  `voice_started_feed` and `voice_invites`, `mgmt::FEATURE_VOICE_STARTED_FEED` and
+  `mgmt::FEATURE_VOICE_INVITES` in `mgmt::FEATURES`, also re-exported from the new module
+  `voice_notify`). All additions:
+  - `voice_notify::VoiceStartedEvent` (the event `voice_started`: `channel_id`, `space_id`,
+    `started_by`, `active`, `at`), `VoiceInviteRequest` (`member_ids`, 1–10 distinct,
+    `VOICE_INVITE_MEMBERS_MAX`), `VoiceInviteResults` of `VoiceInviteResult` (`member_id`,
+    `state` `pending` or `refused` as `VoiceInviteResultState`, `invite_id`, `expires_at`,
+    `silent`, `reason`), `VoiceInviteDeclineRequest` and `VoiceInviteCancelRequest`
+    (`invite_id`), `VoiceInvite` (the event `voice_invite`, the decline and cancel answers:
+    `invite_id`, `channel_id`, `space_id`, `invited_by`, `member_id`, `state`, `reason`,
+    `silent`, `recorded`, `expires_at`, `created_at`), `VoiceInviteState` (`pending`,
+    `accepted`, `declined`, `cancelled`, `inviter_left`, `expired`, `room_ended`, `revoked`)
+    and `MyVoiceInvites` (`incoming`, `outgoing`). The reason strings are in
+    `voice_notify::invite_reason` and `voice_notify::reasons` (`invite_not_pending`).
+  - `routes::CHANNEL_VOICE_INVITE`, `CHANNEL_VOICE_INVITE_DECLINE`,
+    `CHANNEL_VOICE_INVITE_CANCEL` and `ME_VOICE_INVITES`.
+  - `gateway::events::EventName` gains `VoiceStarted` (`voice_started`, 70) and `VoiceInvite`
+    (`voice_invite`, 71), with `Event::VoiceStarted` and `Event::VoiceInvite`;
+    `gateway::server::ReadyChannel` and `voice::ReadyVoiceChannel` gain `voice_invites` (the
+    member's incoming pending invites into the room, for a channel they are in and for a
+    public room they have not joined; absent when empty).
+  - `PersonNotificationKind` gains `VoiceStarted` (`voice_started`), `VoiceEnded`
+    (`voice_ended`, clears), `VoiceInvite` (`voice_invite`) and `VoiceInviteStopped`
+    (`voice_invite_stopped`, clears), numbered 9 to 12; `PersonNotification` gains `invite_id`
+    and `expires_at` (`Option`, absent when unset; an older server's item reads both as
+    `None`).
+  - `changes::MemberChangeKind` gains `VoiceStarted` (`voice_started`, code 23),
+    `VoiceEnded` (`voice_ended`, 24), `VoiceInvited` (`voice_invited`, 25) and
+    `VoiceInviteStopped` (`voice_invite_stopped`, 26): log entries only the person feed reads
+    (the client change feed never returns them).
+  - `audit::Action` gains `VoiceInvite` (`voice.invite`) and `VoiceInviteStop`
+    (`voice.invite_stop`), both Space class.
+
 ## 0.10.6 (2026-11-19)
 
 ### Added

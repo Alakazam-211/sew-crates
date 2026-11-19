@@ -166,6 +166,7 @@ pub struct MessageReference {
 /// strings. `width`/`height` are the displayed size (after EXIF orientation) of an image or the
 /// poster frame of a video.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Attachment {
     /// The attachment id.
     pub id: Id,
@@ -207,6 +208,35 @@ pub struct Attachment {
     /// When the signed URLs stop working (absent in older payloads).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url_expires_at: Option<Timestamp>,
+}
+
+impl Attachment {
+    /// An `Attachment` with its required fields: every count 0, every flag `false`, the
+    /// other fields at their serde defaults and every optional field unset.
+    pub fn new(
+        id: Id,
+        filename: impl Into<String>,
+        content_type: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Self {
+        Attachment {
+            id,
+            filename: filename.into(),
+            content_type: content_type.into(),
+            size: 0,
+            url: url.into(),
+            thumbnail_url: None,
+            width: None,
+            height: None,
+            kind: Default::default(),
+            inline: false,
+            animated: false,
+            media_pending: false,
+            preview_url: None,
+            poster_url: None,
+            url_expires_at: None,
+        }
+    }
 }
 
 /// A thread's summary, carried on its root message and in `thread_updated`.
@@ -303,6 +333,8 @@ impl Validate for SetOnBehalfApprovalRequest {
 /// A message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
+// `transcript_failure` is deprecated; the derives still read and write it.
+#[allow(deprecated)]
 pub struct Message {
     /// The message id.
     pub id: Id,
@@ -388,11 +420,16 @@ pub struct Message {
     /// on tombstones. A system message's `body` is empty, and it cannot be edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<MessageKind>,
-    /// On a record message (`recording` set) whose transcript is `failed` or `partial`: why,
-    /// as a stable code and plain words for the person
+    /// Deprecated: moves into `recording.transcript.failure`
+    /// ([`SummaryTranscript::failure`](crate::recording::SummaryTranscript::failure)); kept for
+    /// at least one more release, then removed in a later breaking release. Until then the server
+    /// writes both, with the same value: on a record message (`recording` set) whose transcript
+    /// is `failed` or `partial`, why, as a stable code and plain words for the person
     /// (`{"code": "transcriber_error", "message": "..."}`). Absent otherwise, when no cause is
-    /// known, and from servers that predate it. It sits beside `recording`, not inside
-    /// `recording.transcript`, so the field is additive.
+    /// known, and from servers that predate it.
+    #[deprecated(
+        note = "moves into `recording.transcript.failure`; kept for at least one more release, then removed in a later breaking release"
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_failure: Option<crate::recording::TranscriptFailure>,
 }
@@ -424,6 +461,7 @@ pub mod reasons {
 impl Message {
     /// A message with its required fields: an empty body, no mentions, reactions or
     /// attachments, not pinned, every optional field unset.
+    #[allow(deprecated)]
     pub fn new(id: Id, channel_id: Id, author_id: Id, seq: u64, created_at: Timestamp) -> Message {
         Message {
             id,

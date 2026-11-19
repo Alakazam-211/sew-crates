@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 coded_enum! {
     /// What started a recording. Stored in `recordings.trigger`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum RecordingTrigger {
         /// A person pressed Record (the start route).
         Manual = "manual" => 1,
@@ -64,7 +63,6 @@ impl RecordingRule {
 unit_enum! {
     /// The rule a voice room records under, as its settings and their sources resolve it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum RecordingRule {
         /// People press Record.
         None = "none",
@@ -79,7 +77,6 @@ unit_enum! {
     /// The lowest level of an App's governed Space whose members may start and stop
     /// recordings. `member` means everyone in the Space. Stored as its wire string.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum RecordingStartLevel {
         /// Nobody through the App's levels (the default; roles and overwrites still apply).
         None = "none",
@@ -101,7 +98,6 @@ unit_enum! {
     /// Org policy `recording.required`: whether rooms record every call with two or more
     /// people.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum RecordingRequiredPolicy {
         /// Not required by the org (the default; Apps, Spaces and channels may still require
         /// it).
@@ -114,7 +110,6 @@ unit_enum! {
 coded_enum! {
     /// What an event of an App's recording feed is. Stored in `recording_events.kind`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum RecordingEventKind {
         /// A recording started.
         Started = "started" => 1,

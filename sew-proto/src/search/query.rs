@@ -23,7 +23,6 @@
 use std::fmt;
 use std::ops::Range;
 
-use chrono::{Duration, NaiveDate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +33,7 @@ use crate::limits::{
     GROUP_DM_MAX_OTHERS, SEARCH_FILTER_VALUES_MAX, SEARCH_FILTERS_MAX, SEARCH_PREFIX_MIN_CHARS,
     SEARCH_Q_MAX_BYTES, SEARCH_TEXT_CLAUSES_MAX,
 };
+use crate::time::Date;
 
 // ---------------------------------------------------------------- character classes
 
@@ -238,11 +238,11 @@ impl ParsedQuery {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct DateFilter {
     /// `on:` days, ascending (they OR together).
-    pub on: Vec<NaiveDate>,
+    pub on: Vec<Date>,
     /// The earliest `before:` day (excluded).
-    pub before: Option<NaiveDate>,
+    pub before: Option<Date>,
     /// The latest `after:` day (excluded).
-    pub after: Option<NaiveDate>,
+    pub after: Option<Date>,
 }
 
 impl DateFilter {
@@ -252,15 +252,14 @@ impl DateFilter {
     }
 
     /// Whether day `d` passes `before:` and `after:`.
-    pub fn allows(&self, d: NaiveDate) -> bool {
+    pub fn allows(&self, d: Date) -> bool {
         self.before.is_none_or(|b| d < b) && self.after.is_none_or(|a| d > a)
     }
 
     /// Whether no day at all passes (tz-independent: local midnights are monotonic).
     pub fn is_empty_range(&self) -> bool {
         if let (Some(a), Some(b)) = (self.after, self.before)
-            && a.checked_add_signed(Duration::days(1))
-                .is_none_or(|first| first >= b)
+            && a.succ().is_none_or(|first| first >= b)
         {
             return true;
         }
@@ -568,21 +567,8 @@ pub fn parse_is_value(v: &str) -> Option<IsValue> {
 }
 
 /// A strict `YYYY-MM-DD` calendar day.
-pub fn parse_date(v: &str) -> Option<NaiveDate> {
-    let b = v.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
-        return None;
-    }
-    let digits = |r: Range<usize>| -> Option<u32> {
-        let s = &v[r];
-        if s.bytes().all(|c| c.is_ascii_digit()) {
-            s.parse().ok()
-        } else {
-            None
-        }
-    };
-    let y = i32::try_from(digits(0..4)?).ok()?;
-    NaiveDate::from_ymd_opt(y, digits(5..7)?, digits(8..10)?)
+pub fn parse_date(v: &str) -> Option<Date> {
+    Date::parse(v)
 }
 
 /// An `ext:` value: lowercased, one leading `.` stripped, `[a-z0-9]{1,16}`.

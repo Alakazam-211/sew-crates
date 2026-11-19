@@ -12,7 +12,7 @@
           ]
         },
         "display_name": {
-          "description": "The name they gave (a link guest's is attacker-chosen text: show it as plain text).",
+          "description": "The name they gave (a link guest's name is text the guest chooses: treat it as untrusted,\nand show it as plain text).",
           "type": "string"
         },
         "entry_id": {

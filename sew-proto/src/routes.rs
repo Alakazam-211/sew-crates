@@ -712,6 +712,15 @@ pub const SPACE_MEMBER_VOICE_MOVE: &str = "/api/v1/spaces/{id}/members/{member_i
 pub const SPACE_VOICE_STATES: &str = "/api/v1/spaces/{id}/voice/states";
 /// `GET`: voice states in one voice channel.
 pub const CHANNEL_VOICE_STATES: &str = "/api/v1/channels/{id}/voice/states";
+/// `POST`: invite members into the voice room the caller is in (body `VoiceInviteRequest`,
+/// flag `voice_invites`).
+pub const CHANNEL_VOICE_INVITE: &str = "/api/v1/channels/{id}/voice/invite";
+/// `POST`: the invitee declines a voice invite (body `VoiceInviteDeclineRequest`).
+pub const CHANNEL_VOICE_INVITE_DECLINE: &str = "/api/v1/channels/{id}/voice/invite/decline";
+/// `POST`: the inviter cancels a voice invite (body `VoiceInviteCancelRequest`).
+pub const CHANNEL_VOICE_INVITE_CANCEL: &str = "/api/v1/channels/{id}/voice/invite/cancel";
+/// `GET`: the caller's pending voice invites, incoming and outgoing.
+pub const ME_VOICE_INVITES: &str = "/api/v1/me/voice/invites";
 
 // ---- Call key delivery (the key join itself is `CHANNEL_VOICE_JOIN`) ----
 

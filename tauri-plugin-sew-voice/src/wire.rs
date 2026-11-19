@@ -19,6 +19,7 @@ pub use sew_call_client::ConsentPrompt;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 // No deny_unknown_fields: it is flattened into StateSnapshot, which carries more fields.
 #[serde(tag = "state", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CallState {
     /// No call yet (the plugin's start).
     Idle,
@@ -141,6 +142,7 @@ pub mod reason {
 /// One participant in the `participants` event. Names are the host's: the plugin has none.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Participant {
     /// Sew's member id (a decimal string, as Sew's API writes ids).
     pub member_id: String,
@@ -161,6 +163,22 @@ pub struct Participant {
     /// reads every participant who may speak.
     #[serde(default, skip_serializing_if = "is_false")]
     pub speak_denied: bool,
+}
+
+impl Participant {
+    /// A participant with Sew's member id: not this device's member, and no mute, deafen or
+    /// SPEAK flag set (set them on the result).
+    pub fn new(member_id: impl Into<String>) -> Participant {
+        Participant {
+            member_id: member_id.into(),
+            is_self: false,
+            muted: false,
+            deafened: false,
+            server_muted: false,
+            server_deafened: false,
+            speak_denied: false,
+        }
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -374,6 +392,7 @@ impl ForgetServerArgs {
 /// the plugin and go to the host's `JoinProvider` as given.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct JoinArgs {
     /// Which Sew (or which App) to join through; the host's meaning.
     pub target: String,
@@ -385,6 +404,36 @@ pub struct JoinArgs {
     /// Join deafened (default false; implies muted).
     #[serde(default)]
     pub deafened: Option<bool>,
+}
+
+impl JoinArgs {
+    /// A join of `room` through `target`, `muted` and `deafened` unset (both default to
+    /// false; set them with [`JoinArgs::with_muted`] and [`JoinArgs::with_deafened`]).
+    pub fn new(target: impl Into<String>, room: impl Into<String>) -> JoinArgs {
+        JoinArgs {
+            target: target.into(),
+            room: room.into(),
+            muted: None,
+            deafened: None,
+        }
+    }
+
+    /// Sets `muted`.
+    pub fn with_muted(mut self, muted: bool) -> JoinArgs {
+        self.muted = Some(muted);
+        self
+    }
+
+    /// Sets `deafened`. A deafened join is muted, so `with_deafened(true)` also sets `muted` to
+    /// `Some(true)`; `with_deafened(false)` leaves `muted` as it is. A `with_muted` after this
+    /// one still sets `muted`.
+    pub fn with_deafened(mut self, deafened: bool) -> JoinArgs {
+        self.deafened = Some(deafened);
+        if deafened {
+            self.muted = Some(true);
+        }
+        self
+    }
 }
 
 /// A native join's options ([`crate::VoiceControl::join_with`]), for what CallKit's or
@@ -1124,6 +1173,7 @@ pub const UNAVAILABLE_NOISE_MODES: [&str; 1] = ["strong"];
 /// `self_view` and `live_switch` `false`, backend `null`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct VideoCaps {
     /// A camera API is present (there may still be no camera).
     pub camera: bool,
@@ -1165,6 +1215,14 @@ impl Default for VideoCaps {
             live_switch: false,
             backend: "null".into(),
         }
+    }
+}
+
+impl VideoCaps {
+    /// Everything off and backend `null` (an engine without video; the same as
+    /// `VideoCaps::default()`): set what the device can do on the result.
+    pub fn new() -> VideoCaps {
+        VideoCaps::default()
     }
 }
 
@@ -1799,5 +1857,36 @@ mod recording_tests {
             }
         }))
         .expect("the auto notice parses")
+    }
+}
+
+#[cfg(test)]
+mod join_args_tests {
+    use super::*;
+
+    #[test]
+    fn with_deafened_true_also_mutes_and_false_leaves_muted() {
+        let a = JoinArgs::new("t", "r").with_deafened(true);
+        assert_eq!(a.deafened, Some(true));
+        assert_eq!(a.muted, Some(true), "with_deafened(true) did not set muted");
+
+        let a = JoinArgs::new("t", "r").with_deafened(false);
+        assert_eq!(a.deafened, Some(false));
+        assert_eq!(a.muted, None, "with_deafened(false) changed an unset muted");
+
+        let a = JoinArgs::new("t", "r")
+            .with_muted(false)
+            .with_deafened(false);
+        assert_eq!(a.muted, Some(false), "with_deafened(false) changed muted");
+
+        let a = JoinArgs::new("t", "r")
+            .with_deafened(true)
+            .with_deafened(false);
+        assert_eq!(a.deafened, Some(false));
+        assert_eq!(
+            a.muted,
+            Some(true),
+            "un-deafening the builder cleared muted"
+        );
     }
 }

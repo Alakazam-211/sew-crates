@@ -3,8 +3,12 @@
 //!
 //! - `GET /mgmt/v1/people/{external_id}/notifications?after=&limit=&wait=`
 //!   ([`PersonNotificationsQuery`] → [`PersonNotificationsPage`]): the person's member-log
-//!   entries after `after` that Sew's notify rules let through, as [`PersonNotification`]s of
-//!   five kinds ([`PersonNotificationKind`]). The cursor is the member-log `seq`: it survives
+//!   entries after `after` that Sew's notify rules let through, as [`PersonNotification`]s
+//!   ([`PersonNotificationKind`]: rings, missed calls, mentions, DMs, replies, channels at
+//!   `all`, keywords; since flag [`FEATURE_FEED_ALL_MESSAGES`] also `read` markers and
+//!   `call_ring_stopped`, which clear pushes; since flag [`FEATURE_VOICE_STARTED_FEED`]
+//!   `voice_started` and its clear `voice_ended`; since flag [`FEATURE_VOICE_INVITES`]
+//!   `voice_invite` and its clear `voice_invite_stopped`). The cursor is the member-log `seq`: it survives
 //!   restarts. A cursor behind the log's floor (pruned) is `410 cursor_expired` with
 //!   [`CursorExpiredDetails`].
 //! - Persons only: an agent's external id is `404` (agents keep
@@ -28,9 +32,20 @@ pub const FEATURE_PERSON_NOTIFICATIONS: &str = "person_notifications";
 /// The feature flag of `GET /mgmt/v1/people/{external_id}/notifications/head` (where a new feed
 /// consumer starts).
 pub const FEATURE_FEED_HEAD: &str = "feed_head";
+/// The feature flag of the feed's second version: the kinds `message`, `keyword`, `read` and
+/// `call_ring_stopped`, inline replies as `reply_to_me`, `from_external_id` and
+/// `thread_root_id` on items, and `head` on pages.
+pub const FEATURE_FEED_ALL_MESSAGES: &str = "feed_all_messages";
 /// The feature flag of `GET /mgmt/v1/people/{external_id}/channels/{id}/notify` and
 /// `POST …/notify/set`: a person's level and mute per channel or DM, read and set over mgmt.
 pub const FEATURE_PERSON_CHANNEL_NOTIFY: &str = "person_channel_notify";
+/// The feature flag of the voice room start on the person feed: the kinds `voice_started` and
+/// `voice_ended`, and the client event `voice_started`.
+pub const FEATURE_VOICE_STARTED_FEED: &str = "voice_started_feed";
+/// The feature flag of voice room invites: `POST /api/v1/channels/{id}/voice/invite`, its
+/// decline and cancel, `GET /api/v1/me/voice/invites`, the client event `voice_invite`,
+/// `ReadyChannel.voice_invites` and the feed kinds `voice_invite` and `voice_invite_stopped`.
+pub const FEATURE_VOICE_INVITES: &str = "voice_invites";
 /// The longest long-poll, in seconds.
 pub const PERSON_NOTIFICATIONS_WAIT_MAX_S: u32 = 30;
 /// The default page size.
@@ -89,7 +104,8 @@ impl Validate for PersonNotificationsQuery {
 }
 
 unit_enum! {
-    /// What a person notification is about.
+    /// What a person notification is about. New kinds are added over time: treat an unknown
+    /// kind (`Unknown`) as nothing to push.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
     pub enum PersonNotificationKind {
         /// A DM or group-DM call is ringing the person (a loud ring only: a busy, DND or muted
@@ -101,13 +117,54 @@ unit_enum! {
         Mention = "mention",
         /// A message in a DM or group DM.
         Dm = "dm",
-        /// A reply in a thread the person follows (started, replied in or followed).
+        /// A reply to the person: in a thread they follow (started, replied in or followed),
+        /// or an inline reply to one of their messages.
         ReplyToMe = "reply_to_me",
+        /// A message in a channel the person set to `all` (reason `all_messages`).
+        Message = "message",
+        /// A message with one of the person's keywords.
+        Keyword = "keyword",
+        /// The person read a channel, DM or thread (on any device) up to `message_id`: clear
+        /// the pushes there up to it. With `thread_root_id`, the thread's pushes; without,
+        /// the channel's own (not its threads'). Never for the person's own posts.
+        Read = "read",
+        /// A loud ring the person got (`call_ring`) stopped without being missed: answered,
+        /// declined, or the call cancelled. Clear the ring. A missed ring is `call_missed`.
+        CallRingStopped = "call_ring_stopped",
+        /// A voice room in a channel the person set to `all` came alive: someone joined it
+        /// while it was empty and stayed (`from_member_id`). No `message_id`.
+        VoiceStarted = "voice_started",
+        /// The `voice_started` push of `channel_id` no longer applies (the room went quiet, or
+        /// the person joined it): clear it. At most one room session per channel is live, so
+        /// the channel is enough.
+        VoiceEnded = "voice_ended",
+        /// A person in a voice room invites the person in (`from_member_id`, `invite_id`,
+        /// `expires_at`). Accepting is joining the room; declining is
+        /// `POST /api/v1/channels/{id}/voice/invite/decline` with the person's own session.
+        VoiceInvite = "voice_invite",
+        /// A loud `voice_invite` stopped (accepted, declined, cancelled, expired, the inviter
+        /// left, the room ended or the invite was revoked): clear it (`invite_id`).
+        VoiceInviteStopped = "voice_invite_stopped",
+    }
+}
+
+impl PersonNotificationKind {
+    /// Whether this kind only clears earlier pushes (`read`, `call_ring_stopped`,
+    /// `voice_ended`, `voice_invite_stopped`): DND does not hold these.
+    pub const fn clears(self) -> bool {
+        matches!(
+            self,
+            PersonNotificationKind::Read
+                | PersonNotificationKind::CallRingStopped
+                | PersonNotificationKind::VoiceEnded
+                | PersonNotificationKind::VoiceInviteStopped
+        )
     }
 }
 
 /// One item of the person feed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct PersonNotification {
     /// The member-log seq (the cursor).
     pub seq: u64,
@@ -118,7 +175,7 @@ pub struct PersonNotification {
     /// The Space of a Space channel; absent for DMs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<Id>,
-    /// The channel (the DM for calls).
+    /// The channel (the DM for calls; the voice channel for the voice kinds).
     pub channel_id: Id,
     /// The message (the call record for calls).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,8 +183,18 @@ pub struct PersonNotification {
     /// The call, for `call_ring` and `call_missed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<Id>,
-    /// Who caused it: the message's author, or the call's starter.
+    /// Who caused it: the message's author, the call's starter, the voice room session's
+    /// starter (`voice_started`, `voice_ended`) or the inviter (`voice_invite`,
+    /// `voice_invite_stopped`); the person themself for `read`.
     pub from_member_id: Id,
+    /// The external id of `from_member_id` (K2 resolves the name from it); absent for `read`
+    /// and when that member has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_external_id: Option<String>,
+    /// The thread's root when the message is a thread reply (a tap opens the thread), and on
+    /// a `read` of a thread; absent for top-level messages and calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_root_id: Option<Id>,
     /// The App the Space is bound to; `null` for an unbound Space and for DMs.
     pub app_id: Option<String>,
     /// Since 0.8.0 (flag `app_participant_links`): the Space's participant Apps (sorted), so
@@ -139,16 +206,64 @@ pub struct PersonNotification {
     /// only on message items (never on calls).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// The voice invite, on `voice_invite` and `voice_invite_stopped` (flag `voice_invites`);
+    /// an item from an older server has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite_id: Option<Id>,
+    /// When the invite expires, on `voice_invite` (the push's expiry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<Timestamp>,
+}
+
+impl PersonNotification {
+    /// A `PersonNotification` with its required fields: `seq` 0, every list empty and every
+    /// optional field unset (set them on the value).
+    pub fn new(
+        kind: PersonNotificationKind,
+        at: Timestamp,
+        channel_id: Id,
+        from_member_id: Id,
+    ) -> Self {
+        PersonNotification {
+            seq: 0,
+            kind,
+            at,
+            space_id: None,
+            channel_id,
+            message_id: None,
+            call_id: None,
+            from_member_id,
+            from_external_id: None,
+            thread_root_id: None,
+            app_id: None,
+            participant_app_ids: Vec::new(),
+            preview: None,
+            invite_id: None,
+            expires_at: None,
+        }
+    }
 }
 
 /// Response of `GET /mgmt/v1/people/{external_id}/notifications`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct PersonNotificationsPage {
     /// The items, oldest first.
     pub items: Vec<PersonNotification>,
     /// The next `after`: the seq of the last log row looked at (returned or skipped). Equal
-    /// to `after` while DND holds the feed.
+    /// to `after` while DND holds the feed and nothing before the first held item clears.
     pub next: u64,
+    /// The person's member-log head at the read (`next == head`: caught up). Since flag
+    /// `feed_all_messages`; a page from an older server has none and reads `0` (unknown).
+    #[serde(default)]
+    pub head: u64,
+}
+
+impl PersonNotificationsPage {
+    /// A page (`PersonNotificationsPage::default()` is the empty page at 0).
+    pub fn new(items: Vec<PersonNotification>, next: u64, head: u64) -> Self {
+        PersonNotificationsPage { items, next, head }
+    }
 }
 
 /// Response of `GET /mgmt/v1/people/{external_id}/notifications/head`: the person's member-log
@@ -205,6 +320,119 @@ mod tests {
         assert_eq!(p.len(), 240);
         assert_eq!(preview_of("hi").as_deref(), Some("hi"));
         assert_eq!(preview_of(""), None);
+    }
+
+    #[test]
+    fn kind_discriminants_are_fixed() {
+        use PersonNotificationKind as K;
+        // `Unknown` has the fixed discriminant; the known kinds count up from 0 in wire order.
+        assert_eq!(K::Unknown as isize, crate::registry::UNKNOWN_DISCRIMINANT);
+        assert_eq!(
+            [K::CallRing, K::CallMissed, K::Mention, K::Dm, K::ReplyToMe].map(|k| k as isize),
+            [0, 1, 2, 3, 4]
+        );
+        assert_eq!(
+            [K::Message, K::Keyword, K::Read, K::CallRingStopped].map(|k| k as isize),
+            [5, 6, 7, 8]
+        );
+        assert_eq!(
+            [
+                K::VoiceStarted,
+                K::VoiceEnded,
+                K::VoiceInvite,
+                K::VoiceInviteStopped
+            ]
+            .map(|k| k as isize),
+            [9, 10, 11, 12]
+        );
+        assert!(K::Read.clears() && K::CallRingStopped.clears());
+        assert!(K::VoiceEnded.clears() && K::VoiceInviteStopped.clears());
+        assert!(!K::Mention.clears() && !K::Unknown.clears());
+        assert!(!K::VoiceStarted.clears() && !K::VoiceInvite.clears());
+        let k: K = serde_json::from_str("\"voice_invite\"").unwrap();
+        assert_eq!(k, K::VoiceInvite);
+        let k: K = serde_json::from_str("\"voice_missed\"").unwrap();
+        assert_eq!(k, K::Unknown);
+    }
+
+    #[test]
+    fn page_from_an_older_server_reads() {
+        // A server without flag `feed_all_messages` sends no `head`, and items without
+        // `from_external_id` or `thread_root_id`.
+        let old = r#"{"items": [{"seq": 815, "kind": "mention", "at": "2026-09-27T12:00:01.500Z",
+            "channel_id": "48831765147549710", "message_id": "48831765147549800",
+            "from_member_id": "48831765147549703", "app_id": null}], "next": 818}"#;
+        let page: PersonNotificationsPage = serde_json::from_str(old).unwrap();
+        assert_eq!((page.next, page.head), (818, 0));
+        assert_eq!(page.items.len(), 1);
+        let item = &page.items[0];
+        assert_eq!(item.kind, PersonNotificationKind::Mention);
+        assert_eq!((&item.from_external_id, item.thread_root_id), (&None, None));
+        let empty: PersonNotificationsPage =
+            serde_json::from_str(r#"{"items": [], "next": 77}"#).unwrap();
+        assert_eq!(empty, PersonNotificationsPage::new(Vec::new(), 77, 0));
+    }
+
+    #[test]
+    fn item_wire_shape() {
+        let mut i = PersonNotification::new(
+            PersonNotificationKind::Read,
+            Timestamp::from_unix_ms_saturating(0),
+            Id::from_i64(2).unwrap(),
+            Id::from_i64(3).unwrap(),
+        );
+        i.seq = 9;
+        let v = serde_json::to_value(&i).unwrap();
+        for absent in ["from_external_id", "thread_root_id", "preview", "space_id"] {
+            assert!(v.get(absent).is_none(), "{v}");
+        }
+        assert!(v["app_id"].is_null(), "{v}");
+        i.thread_root_id = Id::from_i64(5);
+        i.from_external_id = Some("local:bob".into());
+        let v = serde_json::to_value(&i).unwrap();
+        assert_eq!(v["thread_root_id"], "5");
+        assert_eq!(v["from_external_id"], "local:bob");
+        let back: PersonNotification = serde_json::from_value(v).unwrap();
+        assert_eq!(back, i);
+    }
+
+    #[test]
+    fn voice_items_wire_shape() {
+        // An invite item carries `invite_id` and `expires_at`; an item from an older server
+        // (no such keys) reads with both unset.
+        let mut i = PersonNotification::new(
+            PersonNotificationKind::VoiceInvite,
+            Timestamp::from_unix_ms_saturating(1_000),
+            Id::from_i64(2).unwrap(),
+            Id::from_i64(3).unwrap(),
+        );
+        i.seq = 903;
+        i.space_id = Id::from_i64(7);
+        i.invite_id = Id::from_i64(9);
+        i.expires_at = Some(Timestamp::from_unix_ms_saturating(301_000));
+        let v = serde_json::to_value(&i).unwrap();
+        assert_eq!(v["kind"], "voice_invite");
+        assert_eq!(v["invite_id"], "9");
+        assert_eq!(v["expires_at"], "1970-01-01T00:05:01.000Z");
+        for absent in ["message_id", "call_id", "thread_root_id", "preview"] {
+            assert!(v.get(absent).is_none(), "{v}");
+        }
+        let back: PersonNotification = serde_json::from_value(v).unwrap();
+        assert_eq!(back, i);
+        let old = r#"{"seq": 5, "kind": "mention", "at": "2026-09-27T12:00:01.500Z",
+            "channel_id": "2", "from_member_id": "3", "app_id": null}"#;
+        let old: PersonNotification = serde_json::from_str(old).unwrap();
+        assert_eq!((old.invite_id, old.expires_at), (None, None));
+        let started = PersonNotification::new(
+            PersonNotificationKind::VoiceStarted,
+            Timestamp::from_unix_ms_saturating(0),
+            Id::from_i64(2).unwrap(),
+            Id::from_i64(3).unwrap(),
+        );
+        let v = serde_json::to_value(&started).unwrap();
+        for absent in ["invite_id", "expires_at", "message_id"] {
+            assert!(v.get(absent).is_none(), "{v}");
+        }
     }
 
     #[test]

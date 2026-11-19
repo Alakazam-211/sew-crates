@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.0 (2026-11-19)
+
+### Breaking
+
+- **`JoinParams` and `ClientInfoOpts` are `#[non_exhaustive]`**, so later fields are not
+  breaking changes. Outside this crate they are built with constructors instead of struct
+  literals; their fields stay public, so set the others on the value the constructor returns.
+  - `JoinParams::new(token, client_info)` as before: a first join (auto-subscribe on, not a
+    resume, the token kept out of the URL).
+  - `ClientInfoOpts::new()` or `ClientInfoOpts::default()`: the Rust SDK family, an empty
+    version, the current protocol and this OS.
+
+### Dependencies
+
+- Requires sew-lkproto 0.11.0 (its own `Timestamp`); see sew-lkproto's CHANGELOG.
+
 ## 0.10.6 (2026-11-19)
 
 - The version follows Sew 0.10.6. No API or behaviour change.

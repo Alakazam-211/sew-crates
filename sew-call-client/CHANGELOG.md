@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.9.0 (2026-11-19, Sew 0.11.0)
+
+### Breaking
+
+- **`JoinRequest`, `VaultConfig`, `CallCredential` and `KeySessionConfig` are
+  `#[non_exhaustive]`**, so later fields are not breaking changes. Outside this crate they are
+  built with constructors instead of struct literals; their fields stay public, so set the
+  others on the value the constructor returns.
+  - `JoinRequest::new(target, room)`: not muted, not deafened, no `rejoin`, no
+    `recording_notice`; the setters `with_muted`, `with_deafened`, `with_rejoin` and
+    `with_recording_notice` set the rest.
+  - `VaultConfig::new(data_dir, app_id, label)`: the default store (`StoreChoice::Auto`) and
+    the platform of `default_platform()`.
+  - `CallCredential::new(token, expires_at, join_id, device_scope)`.
+  - `KeySessionConfig::new(api_base, bearer, device_scope, vault, clock)`: no
+    `credential_expires_at_ms`, `install_id` or `tls` (`KeySessionConfig::from_grant` as
+    before).
+- Through `sew-e2ee`, its session and error enums (`E2eeStatus`, `LeftReason`, …) are
+  `#[non_exhaustive]`: a `match` on the `E2eeStatus` of `KeySessionEvent::Status` needs a
+  wildcard arm. See sew-e2ee's CHANGELOG.
+- **Renamed:** `MediaReport::Attack { kind, identity }` is
+  `MediaReport::EngineMisbehaviour { kind, identity }`, and its `kind` is sew-e2ee's
+  `EngineMisbehaviour` (was `EngineAttack`; same variants).
+- `JoinRequest::with_deafened(true)` also sets `muted` to `true` (a deafened join is muted, as
+  the engine treats it); `with_deafened(false)` leaves `muted` as it is.
+
+### Added
+
+- `JoinRequest::with_rejoin_opt(Option<RejoinReason>)`, for a caller holding an `Option`
+  (`with_rejoin` still takes a bare `RejoinReason`).
+
+### Dependencies
+
+- Requires the Sew crates at 0.11.0.
+
 ## 0.8.4 (2026-11-19, Sew 0.10.6)
 
 Additive: one new field and updated WebRTC dependencies; no other change to the API.

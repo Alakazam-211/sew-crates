@@ -1,29 +1,32 @@
 //! Internal macros for unit enums.
 //!
 //! Every wire unit enum carries a `#[serde(other)] Unknown` fallback (serde rule 5), a
-//! `pub const ALL` without it, `as_str`, `from_wire` and `Display`. The derive list is written
+//! `pub const ALL` without it, `as_str`, `from_wire` and `Display`, and is `#[non_exhaustive]`
+//! (the macro adds it), so a new value is not a breaking change. The derive list is written
 //! at each call site so the registry test can see it in the source.
 
 /// Defines a wire unit enum whose JSON form is a string.
 ///
-/// An enum already published with `Unknown` at a given discriminant may pin it with a leading
-/// `@unknown = N;` and give the variants added after it explicit discriminants
-/// (`Variant = "wire" @ N`), so adding a variant does not move `Unknown`'s number.
+/// The variants take the discriminants 0, 1, 2, … in order; `Unknown` always has
+/// [`UNKNOWN_DISCRIMINANT`](crate::registry::UNKNOWN_DISCRIMINANT), so adding a variant never
+/// moves it.
 macro_rules! unit_enum {
     (
         $(#[$meta:meta])*
         pub enum $name:ident {
-            $(@unknown = $udisc:literal;)?
-            $( $(#[$vmeta:meta])* $variant:ident = $wire:literal $(@ $disc:literal)? ),+ $(,)?
+            $( $(#[$vmeta:meta])* $variant:ident = $wire:literal ),+ $(,)?
         }
     ) => {
         $(#[$meta])*
+        #[non_exhaustive]
         pub enum $name {
-            $( $(#[$vmeta])* #[serde(rename = $wire)] $variant $(= $disc)?, )+
+            $( $(#[$vmeta])* #[serde(rename = $wire)] $variant, )+
             /// A value this build does not know, sent by a newer peer. The server never sends it.
+            /// Its discriminant is always
+            /// [`UNKNOWN_DISCRIMINANT`](crate::registry::UNKNOWN_DISCRIMINANT).
             #[serde(other, rename = "unknown")]
             #[schemars(skip)]
-            Unknown $(= $udisc)?,
+            Unknown = $crate::registry::UNKNOWN_DISCRIMINANT,
         }
 
         impl $name {

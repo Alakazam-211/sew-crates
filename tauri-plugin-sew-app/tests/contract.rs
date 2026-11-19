@@ -416,14 +416,7 @@ async fn the_plugin_speaks_the_lane_fixture() {
         .lock()
         .unwrap()
         .insert("voice_join".into(), answer);
-    let req = JoinRequest {
-        target: "acme".into(),
-        room: "5".into(),
-        muted: false,
-        deafened: false,
-        rejoin: None,
-        recording_notice: None,
-    };
+    let req = JoinRequest::new("acme", "5");
     let a = provider.join(req.clone()).await.unwrap();
     assert_eq!(a.api_base.as_str(), "https://app.test/sew/native/");
     assert_eq!(a.join.url.as_str(), "wss://app.test/sew/native");
@@ -432,9 +425,10 @@ async fn the_plugin_speaks_the_lane_fixture() {
     // A recorded room: Sew's prompt, read as the engine's consent question.
     replay.expect(&["voice_join_consent_required"]);
     let e = provider
-        .join(JoinRequest {
-            room: "7".into(),
-            ..req
+        .join({
+            let mut req = req;
+            req.room = "7".into();
+            req
         })
         .await
         .unwrap_err();

@@ -1319,6 +1319,11 @@
           "default": "shown",
           "description": "`calls.verification_code`: a change reaches clients in `install_updated`.\nOld payloads read as `shown`."
         },
+        "dm_read_receipts": {
+          "default": true,
+          "description": "`dm.read_receipts`: whether the install shows read receipts in DMs (each member's own\nsetting is in `ReadyInstall.read_receipts`). Old payloads read `true`.",
+          "type": "boolean"
+        },
         "emoji_max_per_space": {
           "description": "`emoji.max_per_space`.",
           "format": "uint32",
@@ -1899,6 +1904,13 @@
         "visibility": {
           "$ref": "#/$defs/Visibility",
           "description": "Public or private."
+        },
+        "voice_invites": {
+          "description": "Voice channels: the member's incoming pending voice invites into this room (flag\n`voice_invites`), oldest first; absent when there are none.",
+          "items": {
+            "$ref": "#/$defs/VoiceInvite"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -2188,6 +2200,13 @@
           "maximum": 255,
           "minimum": 0,
           "type": "integer"
+        },
+        "voice_invites": {
+          "description": "The member's incoming pending voice invites into this room (flag `voice_invites`),\noldest first; absent when there are none.",
+          "items": {
+            "$ref": "#/$defs/VoiceInvite"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -2818,6 +2837,121 @@
         {
           "const": "connected",
           "description": "The engine confirmed the participant (also during a reconnect window).",
+          "type": "string"
+        }
+      ]
+    },
+    "VoiceInvite": {
+      "description": "A voice invite: the body of `voice_invite` (to the invitee's and the inviter's sessions,\nnever the rest of the room), the answer of decline and cancel, an item of\n`ReadyChannel.voice_invites` and of [`MyVoiceInvites`].",
+      "properties": {
+        "channel_id": {
+          "description": "The voice channel.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "When it was made.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "When it expires.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "invite_id": {
+          "description": "The invite.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "invited_by": {
+          "description": "The inviter.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "member_id": {
+          "description": "The invitee.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "reason": {
+          "description": "On a silent pending invite, why it is silent (`busy`, `muted`, `rate_limited`, `dnd`);\non a stopped one, the stop (the same word as `state`). Absent otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recorded": {
+          "description": "The room has a live recording or records every call (the invitee's copy only; absent\nwhen `false`). Joining still meets the recording notice.",
+          "type": "boolean"
+        },
+        "silent": {
+          "description": "The invitee is not pushed (the invitee's copy only; absent when `false`): clients stay\nquiet and still show it in the room UI.",
+          "type": "boolean"
+        },
+        "space_id": {
+          "description": "Its Space.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/VoiceInviteState",
+          "description": "Where it stands."
+        }
+      },
+      "required": [
+        "invite_id",
+        "channel_id",
+        "space_id",
+        "invited_by",
+        "member_id",
+        "state",
+        "expires_at",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "VoiceInviteState": {
+      "description": "Where a voice invite stands. `pending` until it stops; every other value is a stop.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Waiting for the invitee.",
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "The invitee joined the room (on any device).",
+          "type": "string"
+        },
+        {
+          "const": "declined",
+          "description": "The invitee declined.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The inviter cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "inviter_left",
+          "description": "The inviter left the room (left, was moved out or disconnected).",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "Nobody answered before `expires_at`.",
+          "type": "string"
+        },
+        {
+          "const": "room_ended",
+          "description": "The room ended: archived, closing, its session ended, voice turned off or the media\npath down.",
+          "type": "string"
+        },
+        {
+          "const": "revoked",
+          "description": "The invitee can no longer join the room: no longer able to connect, deactivated,\nout of the Space, or erased.",
           "type": "string"
         }
       ]

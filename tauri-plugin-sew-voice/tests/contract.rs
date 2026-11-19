@@ -77,15 +77,10 @@ fn state_values() {
 
 #[test]
 fn participant_has_no_name() {
-    let p = Participant {
-        member_id: "48831765147549699".into(),
-        is_self: true,
-        muted: true,
-        deafened: false,
-        server_muted: false,
-        server_deafened: true,
-        speak_denied: false,
-    };
+    let mut p = Participant::new("48831765147549699");
+    p.is_self = true;
+    p.muted = true;
+    p.server_deafened = true;
     // `speak_denied` (Sew 0.7.2) is written only when true: this is the 0.7.1 shape.
     exact(
         &p,
@@ -103,15 +98,9 @@ fn participant_has_no_name() {
 
 #[test]
 fn participant_speak_denied_is_its_own_flag() {
-    let p = Participant {
-        member_id: "48831765147549700".into(),
-        is_self: false,
-        muted: true,
-        deafened: false,
-        server_muted: false,
-        server_deafened: false,
-        speak_denied: true,
-    };
+    let mut p = Participant::new("48831765147549700");
+    p.muted = true;
+    p.speak_denied = true;
     exact(
         &p,
         json!({
@@ -292,12 +281,9 @@ fn command_arguments_and_answers() {
     assert_eq!(min.muted, None);
     assert_eq!(min.deafened, None);
     exact(
-        &JoinArgs {
-            target: "k2".into(),
-            room: "123".into(),
-            muted: Some(true),
-            deafened: Some(false),
-        },
+        &JoinArgs::new("k2", "123")
+            .with_muted(true)
+            .with_deafened(false),
         json!({"target": "k2", "room": "123", "muted": true, "deafened": false}),
     );
     // No token in: a join carrying one is refused.
@@ -884,23 +870,13 @@ fn commands_build_script_and_permissions_agree() {
 #[test]
 fn provider_http_shapes() {
     // What the example's provider POSTs to the App's server.
-    let req = JoinRequest {
-        target: "acme".into(),
-        room: "48831765147549698".into(),
-        muted: false,
-        deafened: false,
-        rejoin: None,
-        recording_notice: None,
-    };
+    let req = JoinRequest::new("acme", "48831765147549698");
     exact(
         &req,
         json!({"target": "acme", "room": "48831765147549698", "muted": false, "deafened": false, "rejoin": null}),
     );
     exact(
-        &JoinRequest {
-            rejoin: Some(RejoinReason::AdmitLost),
-            ..req
-        },
+        &req.with_rejoin(RejoinReason::AdmitLost),
         json!({"target": "acme", "room": "48831765147549698", "muted": false, "deafened": false, "rejoin": "admit_lost"}),
     );
     exact(
@@ -911,14 +887,7 @@ fn provider_http_shapes() {
     // `recording_notice` (written only when there is one).
     let held = tauri_plugin_sew_voice::fake::consent_required(48831765147549720, 3141);
     exact(
-        &JoinRequest {
-            target: "acme".into(),
-            room: "48831765147549698".into(),
-            muted: false,
-            deafened: false,
-            rejoin: None,
-            recording_notice: Some(held.notice(true)),
-        },
+        &JoinRequest::new("acme", "48831765147549698").with_recording_notice(held.notice(true)),
         json!({"target": "acme", "room": "48831765147549698", "muted": false, "deafened": false,
                "rejoin": null,
                "recording_notice": {"recording_id": "48831765147549720", "consent": true,

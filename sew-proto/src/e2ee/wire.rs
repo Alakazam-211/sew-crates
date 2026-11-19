@@ -78,6 +78,7 @@ fn is_false(b: &bool) -> bool {
 /// not checked here, only their sizes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct E2eeCaps {
     /// The SDK can move its sender to a new key slot.
     pub sender_key_index: bool,
@@ -98,6 +99,27 @@ pub struct E2eeCaps {
     /// MLS ciphersuites the client supports; must contain 1 when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ciphersuites: Option<Vec<u16>>,
+}
+
+impl E2eeCaps {
+    /// An `E2eeCaps` with its required fields: every count 0, every flag `false` and every
+    /// optional field unset.
+    pub fn new(
+        kdf: impl Into<String>,
+        sdk: impl Into<String>,
+        sdk_version: impl Into<String>,
+    ) -> Self {
+        E2eeCaps {
+            sender_key_index: false,
+            kdf: kdf.into(),
+            key_ring_size: 0,
+            sdk: sdk.into(),
+            sdk_version: sdk_version.into(),
+            browser: None,
+            lib: None,
+            ciphersuites: None,
+        }
+    }
 }
 
 impl Validate for E2eeCaps {
@@ -188,6 +210,7 @@ impl Validate for KeyJoinRequest {
 /// The client timings and constants the server relays (READY `call_keys.params` and every
 /// [`CallKeysInit`]). The single source for client timings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct CallKeysParams {
     /// The ciphersuite every group uses (1).
     pub ciphersuite: u16,
@@ -213,9 +236,33 @@ pub struct CallKeysParams {
     pub securing_indicator_after_ms: u64,
 }
 
+impl CallKeysParams {
+    /// A `CallKeysParams` with its required fields: every count 0 and every list empty.
+    pub fn new(
+        kdf: impl Into<String>,
+        exporter_label: impl Into<String>,
+        release_info_label: impl Into<String>,
+    ) -> Self {
+        CallKeysParams {
+            ciphersuite: 0,
+            ciphersuites: Vec::new(),
+            key_ring_size: 0,
+            kdf: kdf.into(),
+            exporter_label: exporter_label.into(),
+            release_info_label: release_info_label.into(),
+            retire_after_ms: 0,
+            client_activate_fallback_ms: 0,
+            key_package_max_lifetime_s: 0,
+            unknown_call_buffer_ms: 0,
+            securing_indicator_after_ms: 0,
+        }
+    }
+}
+
 /// What a key join answers (the voice join's `VoiceJoinResponse.e2ee`, the key join, and
 /// the `init` dispatch).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct CallKeysInit {
     /// The call: its `r_…` room.
     pub call_id: CallId,
@@ -239,6 +286,33 @@ pub struct CallKeysInit {
     pub external_sender: B64,
     /// Client timings.
     pub params: CallKeysParams,
+}
+
+impl CallKeysInit {
+    /// A `CallKeysInit` with its required fields: every count 0 and every flag `false`.
+    pub fn new(
+        call_id: CallId,
+        join_id: JoinIdHex,
+        lk_identity: LkIdentity,
+        scope: CallScope,
+        group_id: B64,
+        external_sender: B64,
+        params: CallKeysParams,
+    ) -> Self {
+        CallKeysInit {
+            call_id,
+            join_id,
+            lk_identity,
+            scope,
+            group_id,
+            epoch: 0,
+            create: false,
+            activate_on_create: false,
+            slot_base: 0,
+            external_sender,
+            params,
+        }
+    }
 }
 
 // ---------------------------------------------------------------- KeyPackage upload
@@ -1225,6 +1299,7 @@ unit_enum! {
 /// READY `call_keys`: the trust anchors and client parameters. Absent when voice is
 /// disabled.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ReadyCallKeys {
     /// TLS `ExternalSender` of every group.
     pub external_sender: B64,
@@ -1243,6 +1318,27 @@ pub struct ReadyCallKeys {
     pub params: CallKeysParams,
 }
 
+impl ReadyCallKeys {
+    /// A `ReadyCallKeys` with its required fields: every flag `false` and every list empty.
+    pub fn new(
+        external_sender: B64,
+        ds_public_key: B64,
+        ca: CallPublicKey,
+        verification_code: VerificationCode,
+        params: CallKeysParams,
+    ) -> Self {
+        ReadyCallKeys {
+            external_sender,
+            ds_public_key,
+            ca,
+            crl: Vec::new(),
+            crl_partial: false,
+            verification_code,
+            params,
+        }
+    }
+}
+
 unit_enum! {
     /// A member's consent for one recording (the key service's `ConsentSource`).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -1257,7 +1353,8 @@ unit_enum! {
 }
 
 /// `status.voice.e2ee`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusVoiceE2ee {
     /// Live key groups.
     pub calls: u32,
@@ -1291,6 +1388,7 @@ pub struct StatusVoiceE2ee {
 
 /// One call in `status.voice.e2ee.per_call` (Sew 0.7.1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusVoiceE2eeCall {
     /// The call (its room name, as the key routes carry it).
     pub call_id: CallId,
@@ -1317,8 +1415,29 @@ pub struct StatusVoiceE2eeCall {
     pub backoff: bool,
 }
 
+impl StatusVoiceE2eeCall {
+    /// A `StatusVoiceE2eeCall` with its required fields: every count 0, every flag `false`
+    /// and every optional field unset.
+    pub fn new(call_id: CallId, leaves_by_state: StatusVoiceE2eeLeaves) -> Self {
+        StatusVoiceE2eeCall {
+            call_id,
+            generation: 0,
+            epoch: 0,
+            active_epoch: None,
+            leaves_by_state,
+            pending: 0,
+            queue_len: 0,
+            awaiting_creator: false,
+            resetting: false,
+            rebuilding: false,
+            backoff: false,
+        }
+    }
+}
+
 /// Leaf counts by state in a [`StatusVoiceE2eeCall`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusVoiceE2eeLeaves {
     /// Welcomed, not yet acked.
     pub joining: u32,

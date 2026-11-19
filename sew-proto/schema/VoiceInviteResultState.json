@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One member's result in [`VoiceInviteResults`].",
+  "oneOf": [
+    {
+      "const": "pending",
+      "description": "The member has a pending invite (a new one, or the inviter's earlier one, unchanged).",
+      "type": "string"
+    },
+    {
+      "const": "refused",
+      "description": "No invite: `reason` says why.",
+      "type": "string"
+    }
+  ],
+  "title": "VoiceInviteResultState"
+}

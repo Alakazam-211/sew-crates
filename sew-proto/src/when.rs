@@ -1,18 +1,17 @@
 //! Time input for scheduled sends, reminders and snoozes.
 //!
 //! `When` is plain data here. Turning a local time plus an IANA zone into UTC needs a time-zone
-//! database, so that conversion lives in the server (it keeps `sew-proto` at its four
-//! dependencies). Each route that takes a `When` adds its own min/max bounds relative to the
-//! request time.
+//! database, so that conversion lives in the server (`sew-proto` carries none). Each route that
+//! takes a `When` adds its own min/max bounds relative to the request time.
 
-use chrono::NaiveDateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Validate, ValidationError};
-use crate::time::Timestamp;
+use crate::time::{LocalDateTime, Timestamp};
 
-/// The local wall-clock format: `YYYY-MM-DDTHH:MM` (no seconds, no offset).
+/// The local wall-clock format: `YYYY-MM-DDTHH:MM` (no seconds, no offset), as a strftime
+/// pattern. [`LocalDateTime::parse`] reads it.
 pub const LOCAL_DATE_TIME_FORMAT: &str = "%Y-%m-%dT%H:%M";
 /// Longest IANA time-zone name accepted.
 pub const TIMEZONE_MAX_LEN: usize = 64;
@@ -54,11 +53,9 @@ pub fn is_timezone_name(s: &str) -> bool {
 
 impl When {
     /// The parsed local time for `Local`.
-    pub fn local_date_time(&self) -> Option<NaiveDateTime> {
+    pub fn local_date_time(&self) -> Option<LocalDateTime> {
         match self {
-            When::Local { date_time, .. } => {
-                NaiveDateTime::parse_from_str(date_time, LOCAL_DATE_TIME_FORMAT).ok()
-            }
+            When::Local { date_time, .. } => LocalDateTime::parse(date_time),
             _ => None,
         }
     }

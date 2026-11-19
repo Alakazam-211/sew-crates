@@ -436,6 +436,7 @@ pub struct ComplianceOfficers {
 
 /// `status.exports` on `GET /mgmt/v1/status`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusExports {
     /// The running export.
     #[serde(default, skip_serializing_if = "Option::is_none")]

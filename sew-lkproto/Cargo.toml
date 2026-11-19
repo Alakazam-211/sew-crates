@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-lkproto"
-version = "0.10.6"
+version = "0.11.0"
 build = false
 include = [
     "src/**",
@@ -53,9 +53,6 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies.pbjson]
-version = "=0.9.0"
-
-[dependencies.pbjson-types]
 version = "=0.9.0"
 
 [dependencies.prost]

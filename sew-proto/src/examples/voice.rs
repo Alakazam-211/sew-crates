@@ -414,30 +414,29 @@ impl Example for VoiceServerUpdated {
 }
 
 pub(super) fn ready_voice_channel_full() -> ReadyVoiceChannel {
-    ReadyVoiceChannel {
-        id: ID_OTHER_CHANNEL,
-        space_id: ID_SPACE,
-        category_id: Some(ID_CATEGORY),
-        slug: slug("lounge"),
-        name: "lounge".into(),
-        position: 2,
-        user_limit: 25,
-        my_perms: perms::DEFAULT_EVERYONE,
-    }
+    let mut c = ready_voice_channel_min();
+    c.category_id = Some(ID_CATEGORY);
+    c.user_limit = 25;
+    c.voice_invites = vec![super::voice_notify::invite_in(ID_OTHER_CHANNEL)];
+    c
+}
+
+fn ready_voice_channel_min() -> ReadyVoiceChannel {
+    ReadyVoiceChannel::new(
+        ID_OTHER_CHANNEL,
+        ID_SPACE,
+        slug("lounge"),
+        "lounge".into(),
+        2,
+        perms::DEFAULT_EVERYONE,
+    )
 }
 
 impl Example for ReadyVoiceChannel {
     fn examples() -> Vec<(&'static str, Self)> {
         vec![
             ("full", ready_voice_channel_full()),
-            (
-                "min",
-                ReadyVoiceChannel {
-                    category_id: None,
-                    user_limit: 0,
-                    ..ready_voice_channel_full()
-                },
-            ),
+            ("min", ready_voice_channel_min()),
         ]
     }
 }

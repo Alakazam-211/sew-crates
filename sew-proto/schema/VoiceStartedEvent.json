@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Body of `voice_started`: a voice room the receiver gets pushes for came alive\n(`active: true`), or that push no longer applies (`active: false`: the room went quiet or\nthe receiver joined it). Clients pop up only on this event, never on `voice_state_updated`\nalone, and stay quiet in Do Not Disturb and for the channel in view.",
+  "properties": {
+    "active": {
+      "description": "`true`: the room started; `false`: clear it.",
+      "type": "boolean"
+    },
+    "at": {
+      "description": "When the session started (`active: true`) or the push stopped applying.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "channel_id": {
+      "description": "The voice channel.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "space_id": {
+      "description": "Its Space.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    },
+    "started_by": {
+      "description": "Who started the room session.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "channel_id",
+    "space_id",
+    "started_by",
+    "active",
+    "at"
+  ],
+  "title": "VoiceStartedEvent",
+  "type": "object"
+}

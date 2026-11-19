@@ -91,6 +91,37 @@ coded_enum! {
         /// A Space the member is in went private or public (`entity_id` = the Space);
         /// the client reads the Space again.
         SpaceUpdated = "space_updated" => 19,
+        /// A person acked a channel or DM (`entity_id` = the channel, `ref_id` = their read
+        /// position then). Coalesced; read only by the mgmt person notification feed (a `read`
+        /// item); the client change feed never returns it.
+        ReadMarker = "read_marker" => 20,
+        /// A person acked a thread (`entity_id` = the root, `ref_id` = their thread read
+        /// position then). Coalesced; read only by the mgmt person notification feed (a `read`
+        /// item with `thread_root_id`); the client change feed never returns it.
+        ThreadReadMarker = "thread_read_marker" => 21,
+        /// A loud DM ring of the member stopped without being missed: answered, declined or
+        /// the call cancelled (`entity_id` = the call id, `ref_id` = the call-record message).
+        /// Read only by the mgmt person notification feed (`call_ring_stopped`); the client
+        /// change feed never returns it.
+        CallRingStopped = "call_ring_stopped" => 22,
+        /// A voice room the member gets pushes for came alive (`entity_id` = the voice
+        /// channel, `ref_id` = the room session). Read only by the mgmt person notification
+        /// feed (`voice_started`); the client change feed never returns it.
+        VoiceStarted = "voice_started" => 23,
+        /// The `voice_started` push of a room no longer applies: the session ended, or the
+        /// member joined the room (`entity_id` = the voice channel, `ref_id` = the room
+        /// session). Read only by the mgmt person notification feed (`voice_ended`); the
+        /// client change feed never returns it.
+        VoiceEnded = "voice_ended" => 24,
+        /// A member in a voice room invited this member in, loudly (`entity_id` = the invite,
+        /// `ref_id` = the voice channel). Read only by the mgmt person notification feed
+        /// (`voice_invite`); the client change feed never returns it.
+        VoiceInvited = "voice_invited" => 25,
+        /// A loud voice invite of this member stopped: accepted, declined, cancelled, expired,
+        /// the inviter left, the room ended or the invite was revoked (`entity_id` = the
+        /// invite, `ref_id` = the voice channel). Read only by the mgmt person notification
+        /// feed (`voice_invite_stopped`); the client change feed never returns it.
+        VoiceInviteStopped = "voice_invite_stopped" => 26,
     }
 }
 
@@ -122,5 +153,8 @@ coded_enum! {
         CallMissed = "call_missed" => 11,
         /// A call transcript is ready.
         TranscriptReady = "transcript_ready" => 12,
+        /// An inline reply (a `reply` reference, not a quote or a forward) to one of the
+        /// member's messages. People only.
+        InlineReply = "inline_reply" => 13,
     }
 }

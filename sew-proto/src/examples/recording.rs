@@ -214,6 +214,9 @@ pub(super) fn recording_summary_full() -> RecordingSummary {
             turns: 42,
             gaps_ms: 1_500,
             lang: Some("en".into()),
+            failure: Some(TranscriptFailure::new(
+                TranscriptFailureCode::AudioNotCaptured,
+            )),
         },
         e2ee: true,
     }
@@ -240,6 +243,7 @@ fn recording_summary_running() -> RecordingSummary {
             turns: 0,
             gaps_ms: 0,
             lang: None,
+            failure: None,
         },
         e2ee: true,
     }

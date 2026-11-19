@@ -13,7 +13,7 @@ use crate::http::Patch;
 use crate::recording::RecordingRequiredPolicy;
 
 unit_enum! {
-    /// A policy key.
+    /// A policy key. Later releases add keys.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
     pub enum PolicyKey {
         /// Who can create spaces.
@@ -116,16 +116,18 @@ unit_enum! {
         /// Whether a DM or group DM may put an agent with a box person (`k2:owner`,
         /// `k2:connect:`); off refuses opening one (since 0.10.0).
         AgentsDmWithBoxPeople = "agents.dm_with_box_people",
+        /// Read receipts in DMs and group DMs: on (the default), a member's seen position is
+        /// shown to the other members when both share their read receipts.
+        DmReadReceipts = "dm.read_receipts",
     }
 }
 
 /// Feature flag (since 0.10.0): the policy `agents.dm_with_box_people`.
 pub const FEATURE_AGENTS_DM_WITH_BOX_PEOPLE: &str = "agents_dm_with_box_people";
 
-/// The policy key `dm.read_receipts` (read receipts in DMs; flag `dm_read_receipts`). It is a
-/// key of [`Policies`] and [`PolicyPatch`]; [`PolicyKey`] has no variant for it (that enum is not
-/// `#[non_exhaustive]`).
-pub const DM_READ_RECEIPTS: &str = "dm.read_receipts";
+/// The policy key `dm.read_receipts` (read receipts in DMs; flag `dm_read_receipts`), the wire
+/// string of [`PolicyKey::DmReadReceipts`].
+pub const DM_READ_RECEIPTS: &str = PolicyKey::DmReadReceipts.as_str();
 
 unit_enum! {
     /// A profile field `identity.managed_fields` may give to K2. A listed field changes only
@@ -587,6 +589,7 @@ impl Policies {
             recording_audio_default_days: self.recording_audio_default_days,
             recording_audio_max_days: self.recording_audio_max_days,
             recording_require_consent_to_join: self.recording_require_consent_to_join,
+            dm_read_receipts: self.dm_read_receipts,
         }
     }
 
@@ -1147,6 +1150,7 @@ impl Validate for SetPoliciesRequest {
 /// The policy values clients need at boot, carried in READY. Field names are the
 /// policy keys with `.` replaced by `_`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct PolicyDigest {
     /// `gifs.enabled`.
     pub gifs_enabled: bool,
@@ -1194,6 +1198,17 @@ pub struct PolicyDigest {
     /// `recording.require_consent_to_join`.
     #[serde(default)]
     pub recording_require_consent_to_join: bool,
+    /// `dm.read_receipts`: whether the install shows read receipts in DMs (each member's own
+    /// setting is in `ReadyInstall.read_receipts`). Old payloads read `true`.
+    #[serde(default = "default_true")]
+    pub dm_read_receipts: bool,
+}
+
+impl Default for PolicyDigest {
+    /// The digest of the default policies ([`Policies::digest`] of [`Policies::default`]).
+    fn default() -> Self {
+        Policies::default().digest()
+    }
 }
 
 fn default_guest_invite() -> GuestInvite {

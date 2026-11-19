@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "VoiceInviteResult": {
+      "description": "One member's result of an invite request.",
+      "properties": {
+        "expires_at": {
+          "description": "When the invite expires, when `pending`.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "invite_id": {
+          "description": "The invite, when `pending`.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "member_id": {
+          "description": "The member named.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it was refused, or why it is silent ([`invite_reason`]).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "silent": {
+          "description": "A pending invite the invitee is not pushed (absent when `false`).",
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/$defs/VoiceInviteResultState",
+          "description": "`pending` (invited) or `refused`."
+        }
+      },
+      "required": [
+        "member_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "VoiceInviteResultState": {
+      "description": "One member's result in [`VoiceInviteResults`].",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "The member has a pending invite (a new one, or the inviter's earlier one, unchanged).",
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "No invite: `reason` says why.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Response of `POST /api/v1/channels/{id}/voice/invite`: one result per member, in request\norder.",
+  "properties": {
+    "invites": {
+      "description": "The results.",
+      "items": {
+        "$ref": "#/$defs/VoiceInviteResult"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "invites"
+  ],
+  "title": "VoiceInviteResults",
+  "type": "object"
+}

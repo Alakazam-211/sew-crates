@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-proto"
-version = "0.10.6"
+version = "0.11.0"
 build = false
 include = [
     "src/**",
@@ -49,21 +49,15 @@ categories = [
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 
+[features]
+default = []
+
 [lib]
 name = "sew_proto"
 path = "src/lib.rs"
 
-[dependencies.chrono]
-version = "0.4"
-features = [
-    "std",
-    "clock",
-]
-default-features = false
-
 [dependencies.schemars]
 version = "1"
-features = ["chrono04"]
 
 [dependencies.serde]
 version = "1"

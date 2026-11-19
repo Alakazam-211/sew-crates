@@ -120,6 +120,7 @@ impl JsonSchema for MgmtMemberRef {
 /// Body of `POST /mgmt/v1/channels/create`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MgmtChannelCreateRequest {
     /// The Space; it must be bound to an App, or be the server-governed Space.
     pub space_id: Id,
@@ -151,6 +152,24 @@ pub struct MgmtChannelCreateRequest {
     /// `update` changes it later.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub members_can_leave: bool,
+}
+
+impl MgmtChannelCreateRequest {
+    /// A `MgmtChannelCreateRequest` with its required fields: every flag `false`, every
+    /// list empty and every optional field unset.
+    pub fn new(space_id: Id, slug: Slug, name: impl Into<String>) -> Self {
+        MgmtChannelCreateRequest {
+            space_id,
+            app_id: None,
+            slug,
+            name: name.into(),
+            private: false,
+            members: Vec::new(),
+            kind: None,
+            user_limit: None,
+            members_can_leave: false,
+        }
+    }
 }
 
 impl MgmtChannelCreateRequest {
@@ -227,6 +246,7 @@ pub struct MgmtChannelNotAdded {
 
 /// Response of `POST /mgmt/v1/channels/create`, each member list in request order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct MgmtChannelCreateResponse {
     /// The channel.
     pub channel_id: Id,
@@ -261,6 +281,28 @@ pub struct MgmtChannelCreateResponse {
     pub skipped: Vec<Id>,
     /// Listed members that cannot join, with the reason.
     pub not_added: Vec<MgmtChannelNotAdded>,
+}
+
+impl MgmtChannelCreateResponse {
+    /// A `MgmtChannelCreateResponse` with its required fields: every flag `false`, every
+    /// list empty, the other fields at their serde defaults and every optional field unset.
+    pub fn new(channel_id: Id, space_id: Id, slug: Slug, name: impl Into<String>) -> Self {
+        MgmtChannelCreateResponse {
+            channel_id,
+            space_id,
+            slug,
+            name: name.into(),
+            private: false,
+            kind: text_type(),
+            user_limit: None,
+            members_can_leave: false,
+            created: false,
+            added: Vec::new(),
+            already: Vec::new(),
+            skipped: Vec::new(),
+            not_added: Vec::new(),
+        }
+    }
 }
 
 fn text_type() -> ChannelType {

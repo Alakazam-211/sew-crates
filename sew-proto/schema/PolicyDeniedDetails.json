@@ -1,7 +1,7 @@
 {
   "$defs": {
     "PolicyKey": {
-      "description": "A policy key.",
+      "description": "A policy key. Later releases add keys.",
       "oneOf": [
         {
           "const": "spaces.create",
@@ -226,6 +226,11 @@
         {
           "const": "agents.dm_with_box_people",
           "description": "Whether a DM or group DM may put an agent with a box person (`k2:owner`,\n`k2:connect:`); off refuses opening one (since 0.10.0).",
+          "type": "string"
+        },
+        {
+          "const": "dm.read_receipts",
+          "description": "Read receipts in DMs and group DMs: on (the default), a member's seen position is\nshown to the other members when both share their read receipts.",
           "type": "string"
         }
       ]

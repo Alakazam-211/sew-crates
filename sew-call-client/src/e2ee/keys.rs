@@ -42,9 +42,9 @@ pub fn engine_caps() -> Caps {
 #[non_exhaustive]
 pub enum MediaReport {
     /// The engine misbehaved (an unencrypted track, a downgraded publication).
-    Attack {
+    EngineMisbehaviour {
         /// What.
-        kind: sew_e2ee::EngineAttack,
+        kind: sew_e2ee::EngineMisbehaviour,
         /// The publisher involved, if any.
         identity: Option<LkIdentity>,
     },

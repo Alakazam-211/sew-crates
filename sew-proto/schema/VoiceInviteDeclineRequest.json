@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`POST /api/v1/channels/{id}/voice/invite/decline` body: the invitee declines.",
+  "properties": {
+    "invite_id": {
+      "description": "The invite.",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "invite_id"
+  ],
+  "title": "VoiceInviteDeclineRequest",
+  "type": "object"
+}

@@ -39,14 +39,7 @@ async fn signed_in() -> (AppService, FakeLane, LaneJoinProvider) {
 }
 
 fn req(room: &str) -> JoinRequest {
-    JoinRequest {
-        target: "myapp".into(),
-        room: room.into(),
-        muted: true,
-        deafened: false,
-        rejoin: None,
-        recording_notice: None,
-    }
+    JoinRequest::new("myapp", room).with_muted(true)
 }
 
 #[tokio::test]
@@ -143,12 +136,9 @@ async fn re_joins_and_consent_keep_the_calls_account() {
         .unwrap();
     assert_eq!(svc.active(), Some(carol.key.clone()));
     let bob_bearer = svc.bearer(&bob).await.unwrap();
-    p.join(JoinRequest {
-        rejoin: Some(RejoinReason::AdmitLost),
-        ..req("5")
-    })
-    .await
-    .unwrap();
+    p.join(req("5").with_rejoin(RejoinReason::AdmitLost))
+        .await
+        .unwrap();
     let sent = lane
         .seen()
         .into_iter()
@@ -191,10 +181,7 @@ async fn a_recorded_room_holds_for_consent_then_joins() {
     };
     assert_eq!(c.notice_version(), 3141);
     let a = p
-        .join(JoinRequest {
-            recording_notice: Some(c.notice(true)),
-            ..req("9")
-        })
+        .join(req("9").with_recording_notice(c.notice(true)))
         .await
         .unwrap();
     assert!(a.call_credential().is_some());
@@ -281,12 +268,9 @@ async fn refusals_map_as_the_voice_plugin_reads_them() {
     // And stays so without asking the server again.
     let before = lane.seen().len();
     assert_eq!(
-        p.join(JoinRequest {
-            rejoin: Some(RejoinReason::CredentialExpired),
-            ..req("5")
-        })
-        .await
-        .unwrap_err(),
+        p.join(req("5").with_rejoin(RejoinReason::CredentialExpired))
+            .await
+            .unwrap_err(),
         ProviderError::SigninRequired
     );
     assert_eq!(lane.seen().len(), before);
@@ -323,15 +307,7 @@ async fn the_voice_plugin_joins_through_it() {
     });
     let voice = VoiceService::new(Arc::new(FakeEngine::new()), Arc::new(p), sink, spawn);
     voice.start();
-    let r = voice
-        .join(JoinArgs {
-            target: "myapp".into(),
-            room: "5".into(),
-            muted: None,
-            deafened: None,
-        })
-        .await
-        .unwrap();
+    let r = voice.join(JoinArgs::new("myapp", "5")).await.unwrap();
     assert!(!r.call_id.is_empty());
     assert!(
         lane.seen()

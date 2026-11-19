@@ -35,6 +35,7 @@ pub enum RejoinReason {
 /// `recording_notice` when there is one) is what a host's provider may forward to its own server
 /// (tauri-plugin-sew-voice's App server route).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct JoinRequest {
     /// Opaque to the engine: the host's target (K2: the server label; an App: its Sew).
     pub target: String,
@@ -54,6 +55,57 @@ pub struct JoinRequest {
     /// ([`ProviderError::ConsentRequired`]). Written only when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_notice: Option<RecordingNotice>,
+}
+
+impl JoinRequest {
+    /// A first join of `room` through `target`: not muted, not deafened, no `rejoin`, no
+    /// `recording_notice` (set them with the `with_*` setters or on the fields).
+    pub fn new(target: impl Into<String>, room: impl Into<String>) -> JoinRequest {
+        JoinRequest {
+            target: target.into(),
+            room: room.into(),
+            muted: false,
+            deafened: false,
+            rejoin: None,
+            recording_notice: None,
+        }
+    }
+
+    /// Sets `muted`.
+    pub fn with_muted(mut self, muted: bool) -> JoinRequest {
+        self.muted = muted;
+        self
+    }
+
+    /// Sets `deafened`. A deafened join is muted, so `with_deafened(true)` also sets `muted` to
+    /// `true` (un-deafening later leaves the call muted, as the engine does for its own
+    /// deafened joins); `with_deafened(false)` leaves `muted` as it is. A `with_muted` after
+    /// this one still sets `muted`.
+    pub fn with_deafened(mut self, deafened: bool) -> JoinRequest {
+        self.deafened = deafened;
+        if deafened {
+            self.muted = true;
+        }
+        self
+    }
+
+    /// Sets `rejoin` to `Some(rejoin)`: why Sew dropped the join this one replaces.
+    pub fn with_rejoin(mut self, rejoin: RejoinReason) -> JoinRequest {
+        self.rejoin = Some(rejoin);
+        self
+    }
+
+    /// Sets `rejoin` from an `Option` (`None`: a first join), for a caller that holds one.
+    pub fn with_rejoin_opt(mut self, rejoin: Option<RejoinReason>) -> JoinRequest {
+        self.rejoin = rejoin;
+        self
+    }
+
+    /// Sets `recording_notice`: the person's answer to the recording notice.
+    pub fn with_recording_notice(mut self, notice: RecordingNotice) -> JoinRequest {
+        self.recording_notice = Some(notice);
+        self
+    }
 }
 
 /// Sew's `409 recording_consent_required` on a join (Sew 0.7.3): the room is
@@ -260,6 +312,7 @@ pub const RECORDING_UNSUPPORTED: &str = "recording_unsupported";
 /// The same JSON shape as `sew_proto::voice::CallCredential` (Sew 0.7.1); the engine reads it
 /// from the join answer's JSON ([`JoinAnswer::from_json`]).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CallCredential {
     /// `sewcc_<selector>.<secret>`.
     pub token: String,
@@ -269,6 +322,23 @@ pub struct CallCredential {
     pub join_id: String,
     /// Opaque and stable for the login lineage (32 hex): the device store keys on it.
     pub device_scope: String,
+}
+
+impl CallCredential {
+    /// A credential from its four fields (every field is required).
+    pub fn new(
+        token: impl Into<String>,
+        expires_at: sew_proto::time::Timestamp,
+        join_id: impl Into<String>,
+        device_scope: impl Into<String>,
+    ) -> CallCredential {
+        CallCredential {
+            token: token.into(),
+            expires_at,
+            join_id: join_id.into(),
+            device_scope: device_scope.into(),
+        }
+    }
 }
 
 impl fmt::Debug for CallCredential {
@@ -591,14 +661,8 @@ impl ProviderError {
 /// let call = client
 ///     .join(
 ///         provider,
-///         JoinRequest {
-///             target: "chat.example.com".into(),
-///             room: "48831765147549699".into(), // the voice channel's id
-///             muted: false,
-///             deafened: false,
-///             rejoin: None,
-///             recording_notice: None,
-///         },
+///         // The room is the voice channel's id.
+///         JoinRequest::new("chat.example.com", "48831765147549699"),
 ///     )
 ///     .await?;
 /// let mut events = call.events(); // CallEvent::State, Participants, Speaking, Error
@@ -657,6 +721,50 @@ pub trait JoinProvider: Send + Sync + 'static {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn with_deafened_true_also_mutes_and_false_leaves_muted() {
+        let r = JoinRequest::new("t", "r").with_deafened(true);
+        assert!(r.deafened, "with_deafened(true) did not set deafened");
+        assert!(r.muted, "with_deafened(true) did not set muted");
+
+        let r = JoinRequest::new("t", "r").with_deafened(false);
+        assert!(!r.deafened);
+        assert!(
+            !r.muted,
+            "with_deafened(false) changed an unmuted join's muted"
+        );
+
+        let r = JoinRequest::new("t", "r")
+            .with_muted(true)
+            .with_deafened(false);
+        assert!(!r.deafened);
+        assert!(r.muted, "with_deafened(false) cleared muted");
+
+        let r = JoinRequest::new("t", "r")
+            .with_deafened(true)
+            .with_deafened(false);
+        assert!(!r.deafened);
+        assert!(r.muted, "un-deafening the builder cleared muted");
+    }
+
+    #[test]
+    fn with_rejoin_opt_sets_and_clears_rejoin() {
+        let r = JoinRequest::new("t", "r").with_rejoin_opt(Some(RejoinReason::CredentialExpired));
+        assert_eq!(r.rejoin, Some(RejoinReason::CredentialExpired));
+
+        let r = JoinRequest::new("t", "r")
+            .with_rejoin(RejoinReason::AdmitLost)
+            .with_rejoin_opt(None);
+        assert_eq!(
+            r.rejoin, None,
+            "with_rejoin_opt(None) kept the earlier reason"
+        );
+
+        let a = JoinRequest::new("t", "r").with_rejoin(RejoinReason::AdmitLost);
+        let b = JoinRequest::new("t", "r").with_rejoin_opt(Some(RejoinReason::AdmitLost));
+        assert_eq!(a, b);
+    }
 
     fn body(cred: bool) -> Vec<u8> {
         let mut v = serde_json::json!({

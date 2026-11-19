@@ -132,7 +132,6 @@ impl RecordingState {
 coded_enum! {
     /// Why a recording stopped. Stored in `recordings.stop_reason`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum StopReason {
         /// The stop route.
         Stopped = "stopped" => 1,
@@ -324,7 +323,6 @@ coded_enum! {
     /// `recordings.transcript_failure`. Later releases add codes: show
     /// [`TranscriptFailure::message`] for a code this build does not know.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum TranscriptFailureCode {
         /// The audio was deleted (expired, purged, or its record message deleted) before it was
         /// transcribed.
@@ -870,6 +868,7 @@ pub struct ActiveRecording {
 
 /// The audio part of a [`RecordingSummary`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct SummaryAudio {
     /// Its state.
     pub state: AudioState,
@@ -881,8 +880,21 @@ pub struct SummaryAudio {
     pub keep_days: u16,
 }
 
+impl SummaryAudio {
+    /// The audio part in `state`, with no expiry yet; set the other fields.
+    pub fn new(state: AudioState, mixed: bool, keep_days: u16) -> SummaryAudio {
+        SummaryAudio {
+            state,
+            expires_at: None,
+            mixed,
+            keep_days,
+        }
+    }
+}
+
 /// The transcript part of a [`RecordingSummary`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct SummaryTranscript {
     /// Its state.
     pub state: TranscriptState,
@@ -892,10 +904,30 @@ pub struct SummaryTranscript {
     pub gaps_ms: u64,
     /// The majority language of the turns.
     pub lang: Option<String>,
+    /// Why the transcript is `failed` or `partial`, as a stable code and plain words for the
+    /// person (`{"code": "transcriber_error", "message": "..."}`). Absent otherwise, when no
+    /// cause is known, and from servers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<TranscriptFailure>,
+}
+
+impl SummaryTranscript {
+    /// The transcript part in `state`: no turns, no gaps, no language, no failure; set the
+    /// other fields.
+    pub fn new(state: TranscriptState) -> SummaryTranscript {
+        SummaryTranscript {
+            state,
+            turns: 0,
+            gaps_ms: 0,
+            lang: None,
+            failure: None,
+        }
+    }
 }
 
 /// `Message.recording` on the record message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct RecordingSummary {
     /// The recording.
     pub recording_id: Id,
@@ -919,6 +951,32 @@ pub struct RecordingSummary {
     pub transcript: SummaryTranscript,
     /// Always `true` in v2: every call is end-to-end encrypted.
     pub e2ee: bool,
+}
+
+impl RecordingSummary {
+    /// A recording that `started_by` started at `started_at` and that has not stopped: manual,
+    /// no speakers yet, end-to-end encrypted; set the other fields.
+    pub fn new(
+        recording_id: Id,
+        started_by: Id,
+        started_at: Timestamp,
+        audio: SummaryAudio,
+        transcript: SummaryTranscript,
+    ) -> RecordingSummary {
+        RecordingSummary {
+            recording_id,
+            started_by,
+            started_at,
+            auto: false,
+            stopped_at: None,
+            stop_reason: None,
+            duration_ms: None,
+            speaker_ids: Vec::new(),
+            audio,
+            transcript,
+            e2ee: true,
+        }
+    }
 }
 
 /// One piece of a transcript turn (numbers only; text lives in the message body).
@@ -1210,6 +1268,7 @@ impl RecordingControlsUpdated {
 
 /// `status.recording`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusRecording {
     /// `[recording] enabled`.
     pub enabled: bool,

@@ -805,7 +805,6 @@ impl Validate for ComplianceChannelsQuery {
 unit_enum! {
     /// Why content vanished.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum VanishReason {
         /// A retention policy's cutoff.
         Retention = "retention",
@@ -850,6 +849,7 @@ pub struct ContentVanished {
 
 /// `status.retention` on `GET /mgmt/v1/status`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusRetention {
     /// When the last run finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]

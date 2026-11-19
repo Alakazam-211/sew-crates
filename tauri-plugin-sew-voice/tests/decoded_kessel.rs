@@ -282,14 +282,9 @@ async fn behind_the_sinks_fixture_vp8_comes_out_as_i420_at_15_fps() {
         spawn,
     );
     svc.start();
-    svc.join(JoinArgs {
-        target: "k2:acme".into(),
-        room: "48831765147549698".into(),
-        muted: None,
-        deafened: None,
-    })
-    .await
-    .expect("join");
+    svc.join(JoinArgs::new("k2:acme", "48831765147549698"))
+        .await
+        .expect("join");
     let call = engine.last_call().expect("call");
     call.set_video_tracks(vec![VideoTrack {
         member_id: "48831765147549700".into(),

@@ -158,7 +158,7 @@ join calls on (see the [sew-crates](https://github.com/Alakazam-211/sew-crates) 
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.8.4"
+tauri-plugin-sew-voice = "0.9.0"
 # For a JoinProvider like sew-call-client's example (its JoinProvider docs):
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
@@ -360,7 +360,7 @@ low-latency model, by Hendrik Schröter and the DeepFilterNet authors
 inference. Its weights are not in any crate: your app ships them.
 
 ```toml
-tauri-plugin-sew-voice = { version = "0.8.4", features = ["dfn3"] }
+tauri-plugin-sew-voice = { version = "0.9.0", features = ["dfn3"] }
 ```
 
 The four files come in a GitHub release asset of the Sew release the plugin belongs to, on
@@ -371,8 +371,8 @@ https://github.com/Alakazam-211/sew-releases/releases/download/v<sew-version>/se
 ```
 
 where `<sew-version>` is the Sew version in the heading of this release's CHANGELOG entry.
-For plugin 0.8.4 that is Sew 0.10.6:
-<https://github.com/Alakazam-211/sew-releases/releases/download/v0.10.6/sew-dfn3-0.10.6.tar.gz>
+For plugin 0.9.0 that is Sew 0.11.0:
+<https://github.com/Alakazam-211/sew-releases/releases/download/v0.11.0/sew-dfn3-0.11.0.tar.gz>
 (sha256 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). Each release's
 `SHA256SUMS` and `release.json` carry the asset's sha256. The tarball holds a `dfn3/` folder
 with these files:
@@ -387,7 +387,7 @@ Fetch and check it at build time (the weights are not committed to your reposito
 example from `src-tauri/`:
 
 ```sh
-v=0.10.6
+v=0.11.0
 curl -fLO "https://github.com/Alakazam-211/sew-releases/releases/download/v$v/sew-dfn3-$v.tar.gz"
 echo "153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697  sew-dfn3-$v.tar.gz" | sha256sum -c -
 tar -xzf "sew-dfn3-$v.tar.gz"   # writes dfn3/

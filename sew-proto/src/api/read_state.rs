@@ -27,6 +27,7 @@ fn is_false(b: &bool) -> bool {
 
 /// A member's read state in one channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ReadState {
     /// The channel.
     pub channel_id: Id,
@@ -56,8 +57,26 @@ pub struct ReadState {
     pub seq: u64,
 }
 
+impl ReadState {
+    /// A `ReadState` with its required fields: every count 0, every flag `false` and every
+    /// optional field unset.
+    pub fn new(channel_id: Id) -> Self {
+        ReadState {
+            channel_id,
+            last_read_id: None,
+            last_message_id: None,
+            mention_count: 0,
+            unread: false,
+            unread_count: 0,
+            muted: false,
+            seq: 0,
+        }
+    }
+}
+
 /// A member's read state in one thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ThreadReadState {
     /// The thread root.
     pub root_id: Id,
@@ -85,6 +104,24 @@ pub struct ThreadReadState {
     /// The member change-log head this state is current as of.
     #[serde(default)]
     pub seq: u64,
+}
+
+impl ThreadReadState {
+    /// A `ThreadReadState` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(root_id: Id) -> Self {
+        ThreadReadState {
+            root_id,
+            channel_id: None,
+            last_read_id: None,
+            last_reply_id: None,
+            unread: false,
+            unread_replies: 0,
+            mention_count: 0,
+            following: false,
+            seq: 0,
+        }
+    }
 }
 
 /// Body of `POST /api/v1/channels/{id}/ack` and `POST /api/v1/threads/{root_id}/ack`: move
@@ -337,6 +374,7 @@ pub type ThreadReadsPage = crate::http::Page<ThreadReadState>;
 /// Response of `GET /api/v1/me/sync`: READY's sync section over HTTP, read in one snapshot
 /// (agents and clients without a socket).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct MeSync {
     /// The install.
     pub install_id: Id,
@@ -352,4 +390,24 @@ pub struct MeSync {
     pub read_states: Vec<ReadState>,
     /// The threads inbox summary.
     pub threads_inbox: ThreadsInbox,
+}
+
+impl MeSync {
+    /// A `MeSync` with its required fields: every count 0 and every list empty.
+    pub fn new(
+        install_id: Id,
+        sync_epoch: impl Into<String>,
+        member_id: Id,
+        threads_inbox: ThreadsInbox,
+    ) -> Self {
+        MeSync {
+            install_id,
+            sync_epoch: sync_epoch.into(),
+            member_id,
+            member_seq: 0,
+            channels: Vec::new(),
+            read_states: Vec::new(),
+            threads_inbox,
+        }
+    }
 }

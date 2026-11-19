@@ -23,7 +23,7 @@ What it holds:
   itself against it; the file's `id` field says how each case's id encodes its facts.
 
 The crate is pure: apart from the clock in `clock`, it does no I/O. Its dependencies are
-`serde`, `serde_json`, `schemars` and `chrono`. It has no platform-specific code and works on
+`serde`, `serde_json` and `schemars`. It has no platform-specific code and works on
 Linux, macOS and Windows (Sew's own builds cover Linux and macOS; a compile check covers
 Windows).
 
@@ -40,7 +40,7 @@ Windows).
 
 ```toml
 [dependencies]
-sew-proto = "0.10.6"
+sew-proto = "0.11.0"
 serde_json = "1" # for the example below
 ```
 

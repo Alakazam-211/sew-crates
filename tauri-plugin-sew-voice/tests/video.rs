@@ -49,12 +49,7 @@ fn world(video: bool) -> World {
 }
 
 fn args() -> JoinArgs {
-    JoinArgs {
-        target: "k2:acme".into(),
-        room: "48831765147549698".into(),
-        muted: None,
-        deafened: None,
-    }
+    JoinArgs::new("k2:acme", "48831765147549698")
 }
 
 /// Let spawned tasks run until `pred` holds; panics (loudly) if it never does.

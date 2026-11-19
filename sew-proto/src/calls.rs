@@ -33,7 +33,6 @@ unit_enum! {
 unit_enum! {
     /// A ring's state as every DM member sees it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum RingState {
         /// Ringing.
         Ringing = "ringing",
@@ -54,7 +53,6 @@ unit_enum! {
 coded_enum! {
     /// Why a call ended. Stored in `calls.end_reason`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum CallEndReason {
         /// Nobody left in the call.
         Empty = "empty" => 1,
@@ -101,6 +99,7 @@ pub struct MyRing {
 
 /// A call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Call {
     /// The call (`calls.id`).
     pub id: Id,
@@ -127,6 +126,32 @@ pub struct Call {
     /// The viewer's own ring (READY, the member's copy only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub my_ring: Option<MyRing>,
+}
+
+impl Call {
+    /// A `Call` with its required fields: every list empty and every optional field unset.
+    pub fn new(
+        id: Id,
+        channel_id: Id,
+        message_id: Id,
+        started_by: Id,
+        started_at: Timestamp,
+        state: CallState,
+    ) -> Self {
+        Call {
+            id,
+            channel_id,
+            message_id,
+            started_by,
+            started_at,
+            state,
+            ended_at: None,
+            end_reason: None,
+            participant_ids: Vec::new(),
+            rings: Vec::new(),
+            my_ring: None,
+        }
+    }
 }
 
 /// The call summary on the call-record message (`Message.call`).

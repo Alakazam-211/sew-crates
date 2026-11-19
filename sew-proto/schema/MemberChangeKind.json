@@ -96,6 +96,41 @@
       "const": "space_updated",
       "description": "A Space the member is in went private or public (`entity_id` = the Space);\nthe client reads the Space again.",
       "type": "string"
+    },
+    {
+      "const": "read_marker",
+      "description": "A person acked a channel or DM (`entity_id` = the channel, `ref_id` = their read\nposition then). Coalesced; read only by the mgmt person notification feed (a `read`\nitem); the client change feed never returns it.",
+      "type": "string"
+    },
+    {
+      "const": "thread_read_marker",
+      "description": "A person acked a thread (`entity_id` = the root, `ref_id` = their thread read\nposition then). Coalesced; read only by the mgmt person notification feed (a `read`\nitem with `thread_root_id`); the client change feed never returns it.",
+      "type": "string"
+    },
+    {
+      "const": "call_ring_stopped",
+      "description": "A loud DM ring of the member stopped without being missed: answered, declined or\nthe call cancelled (`entity_id` = the call id, `ref_id` = the call-record message).\nRead only by the mgmt person notification feed (`call_ring_stopped`); the client\nchange feed never returns it.",
+      "type": "string"
+    },
+    {
+      "const": "voice_started",
+      "description": "A voice room the member gets pushes for came alive (`entity_id` = the voice\nchannel, `ref_id` = the room session). Read only by the mgmt person notification\nfeed (`voice_started`); the client change feed never returns it.",
+      "type": "string"
+    },
+    {
+      "const": "voice_ended",
+      "description": "The `voice_started` push of a room no longer applies: the session ended, or the\nmember joined the room (`entity_id` = the voice channel, `ref_id` = the room\nsession). Read only by the mgmt person notification feed (`voice_ended`); the\nclient change feed never returns it.",
+      "type": "string"
+    },
+    {
+      "const": "voice_invited",
+      "description": "A member in a voice room invited this member in, loudly (`entity_id` = the invite,\n`ref_id` = the voice channel). Read only by the mgmt person notification feed\n(`voice_invite`); the client change feed never returns it.",
+      "type": "string"
+    },
+    {
+      "const": "voice_invite_stopped",
+      "description": "A loud voice invite of this member stopped: accepted, declined, cancelled, expired,\nthe inviter left, the room ended or the invite was revoked (`entity_id` = the\ninvite, `ref_id` = the voice channel). Read only by the mgmt person notification\nfeed (`voice_invite_stopped`); the client change feed never returns it.",
+      "type": "string"
     }
   ],
   "title": "MemberChangeKind"

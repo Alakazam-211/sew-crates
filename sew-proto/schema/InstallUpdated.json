@@ -32,6 +32,11 @@
           "default": "shown",
           "description": "`calls.verification_code`: a change reaches clients in `install_updated`.\nOld payloads read as `shown`."
         },
+        "dm_read_receipts": {
+          "default": true,
+          "description": "`dm.read_receipts`: whether the install shows read receipts in DMs (each member's own\nsetting is in `ReadyInstall.read_receipts`). Old payloads read `true`.",
+          "type": "boolean"
+        },
         "emoji_max_per_space": {
           "description": "`emoji.max_per_space`.",
           "format": "uint32",

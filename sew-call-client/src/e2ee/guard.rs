@@ -22,7 +22,7 @@
 
 use std::fmt;
 
-use sew_e2ee::{EngineAttack, LkIdentity, Slot, UndecryptReason};
+use sew_e2ee::{EngineMisbehaviour, LkIdentity, Slot, UndecryptReason};
 use sew_lkproto::livekit::{AddTrackRequest, TrackInfo, TrackSource, TrackType, encryption};
 
 use super::frame::{FrameCrypto, IvParts, OpenError, VideoFrameCodec};
@@ -153,8 +153,8 @@ impl<C: FrameCrypto> PublishGuard<C> {
         if track.encryption != encryption::Type::Gcm as i32 {
             s.publish = PublishState::Refused;
             drop(s);
-            self.keys.report(MediaReport::Attack {
-                kind: EngineAttack::EncryptionDowngrade,
+            self.keys.report(MediaReport::EngineMisbehaviour {
+                kind: EngineMisbehaviour::EncryptionDowngrade,
                 identity: self.keys.local_identity(),
             });
             return Err(PublishRefused::Downgraded);
@@ -229,8 +229,8 @@ impl<C: FrameCrypto> SubscribeGuard<C> {
             return SubscribeDecision::Refuse(SubscribeRefused::NotAudio);
         }
         if track.encryption != encryption::Type::Gcm as i32 {
-            self.keys.report(MediaReport::Attack {
-                kind: EngineAttack::UnencryptedTrack,
+            self.keys.report(MediaReport::EngineMisbehaviour {
+                kind: EngineMisbehaviour::UnencryptedTrack,
                 identity: Some(id),
             });
             return SubscribeDecision::Refuse(SubscribeRefused::Unencrypted);

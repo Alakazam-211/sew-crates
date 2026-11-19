@@ -9,7 +9,7 @@ pub struct MetricsBatch {
     #[prost(int64, tag = "1")]
     pub timestamp_ms: i64,
     #[prost(message, optional, tag = "2")]
-    pub normalized_timestamp: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub normalized_timestamp: ::core::option::Option<crate::Timestamp>,
     /// To avoid repeating string values, we store them in a separate list and reference them by index
     /// This is useful for storing participant identities, track names, etc.
     /// There is also a predefined list of labels that can be used to reference common metrics.
@@ -47,7 +47,7 @@ pub struct MetricSample {
     #[prost(int64, tag = "1")]
     pub timestamp_ms: i64,
     #[prost(message, optional, tag = "2")]
-    pub normalized_timestamp: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub normalized_timestamp: ::core::option::Option<crate::Timestamp>,
     #[prost(float, tag = "3")]
     pub value: f32,
 }
@@ -68,9 +68,9 @@ pub struct EventMetric {
     #[prost(int64, optional, tag = "5")]
     pub end_timestamp_ms: ::core::option::Option<i64>,
     #[prost(message, optional, tag = "6")]
-    pub normalized_start_timestamp: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub normalized_start_timestamp: ::core::option::Option<crate::Timestamp>,
     #[prost(message, optional, tag = "7")]
-    pub normalized_end_timestamp: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub normalized_end_timestamp: ::core::option::Option<crate::Timestamp>,
     #[prost(string, tag = "8")]
     pub metadata: ::prost::alloc::string::String,
     /// index into 'str_data'
@@ -85,7 +85,7 @@ pub struct MetricsRecordingHeader {
     #[prost(uint64, tag = "3")]
     pub duration: u64,
     #[prost(message, optional, tag = "4")]
-    pub start_time: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub start_time: ::core::option::Option<crate::Timestamp>,
     #[prost(map = "string, string", tag = "5")]
     pub room_tags: ::std::collections::HashMap<
         ::prost::alloc::string::String,
@@ -94,7 +94,7 @@ pub struct MetricsRecordingHeader {
     #[prost(string, tag = "6")]
     pub room_name: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "7")]
-    pub room_start_time: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub room_start_time: ::core::option::Option<crate::Timestamp>,
     #[prost(string, tag = "8")]
     pub job_id: ::prost::alloc::string::String,
     /// session is a simulation; the collector skips PII redaction for it unless redaction_enabled is set
@@ -1568,9 +1568,9 @@ pub struct DisabledCodecs {
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct RtpDrift {
     #[prost(message, optional, tag = "1")]
-    pub start_time: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub start_time: ::core::option::Option<crate::Timestamp>,
     #[prost(message, optional, tag = "2")]
-    pub end_time: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub end_time: ::core::option::Option<crate::Timestamp>,
     #[prost(double, tag = "3")]
     pub duration: f64,
     #[prost(uint64, tag = "4")]
@@ -1589,9 +1589,9 @@ pub struct RtpDrift {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RtpStats {
     #[prost(message, optional, tag = "1")]
-    pub start_time: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub start_time: ::core::option::Option<crate::Timestamp>,
     #[prost(message, optional, tag = "2")]
-    pub end_time: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub end_time: ::core::option::Option<crate::Timestamp>,
     #[prost(double, tag = "3")]
     pub duration: f64,
     #[prost(uint32, tag = "4")]
@@ -1653,11 +1653,11 @@ pub struct RtpStats {
     #[prost(uint32, tag = "27")]
     pub plis: u32,
     #[prost(message, optional, tag = "28")]
-    pub last_pli: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub last_pli: ::core::option::Option<crate::Timestamp>,
     #[prost(uint32, tag = "29")]
     pub firs: u32,
     #[prost(message, optional, tag = "30")]
-    pub last_fir: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub last_fir: ::core::option::Option<crate::Timestamp>,
     #[prost(uint32, tag = "31")]
     pub rtt_current: u32,
     #[prost(uint32, tag = "32")]
@@ -1665,11 +1665,11 @@ pub struct RtpStats {
     #[prost(uint32, tag = "33")]
     pub key_frames: u32,
     #[prost(message, optional, tag = "34")]
-    pub last_key_frame: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub last_key_frame: ::core::option::Option<crate::Timestamp>,
     #[prost(uint32, tag = "35")]
     pub layer_lock_plis: u32,
     #[prost(message, optional, tag = "36")]
-    pub last_layer_lock_pli: ::core::option::Option<::pbjson_types::Timestamp>,
+    pub last_layer_lock_pli: ::core::option::Option<crate::Timestamp>,
     #[prost(message, optional, tag = "44")]
     pub packet_drift: ::core::option::Option<RtpDrift>,
     #[prost(message, optional, tag = "45")]

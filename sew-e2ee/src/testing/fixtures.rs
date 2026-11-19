@@ -165,18 +165,18 @@ impl Install {
 
     /// READY's `call_keys`.
     pub fn ready(&self) -> ReadyCallKeys {
-        ReadyCallKeys {
-            external_sender: B64::new(self.external_sender()),
-            ds_public_key: B64::new(self.ds.public().to_vec()),
-            ca: CallPublicKey {
+        let mut ready_call_keys = ReadyCallKeys::new(
+            B64::new(self.external_sender()),
+            B64::new(self.ds.public().to_vec()),
+            CallPublicKey {
                 kid: self.ca.kid(),
                 public_key: B64::new(self.ca.public().to_vec()),
             },
-            crl: self.crl.iter().map(|s| id(*s)).collect(),
-            crl_partial: false,
-            verification_code: self.verification_code,
-            params: Params::default_wire(),
-        }
+            self.verification_code,
+            Params::default_wire(),
+        );
+        ready_call_keys.crl = self.crl.iter().map(|s| id(*s)).collect();
+        ready_call_keys
     }
 
     /// A fresh serial.

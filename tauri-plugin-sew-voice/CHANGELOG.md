@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0 (2026-11-19, Sew 0.11.0)
+
+### Breaking
+
+- **`CallState`, `Participant`, `JoinArgs` and `VideoCaps` are `#[non_exhaustive]`**, so later
+  states and fields are not breaking changes for Rust hosts. The JSON the webview sends and
+  receives does not change.
+  - A `match` on `CallState` outside this crate needs a wildcard arm (`CallState::is_live`
+    still answers for every state).
+  - `JoinArgs::new(target, room)` (`muted` and `deafened` unset), with `with_muted` and
+    `with_deafened`.
+  - `JoinArgs::with_deafened(true)` also sets `muted` to `Some(true)` (a deafened join is
+    muted); `with_deafened(false)` leaves `muted` as it is.
+  - `Participant::new(member_id)`: not this device's member and every flag `false`; set the
+    flags on the result.
+  - `VideoCaps::new()` or `VideoCaps::default()`: everything off, backend `null`.
+- Through sew-call-client, `JoinRequest` is `#[non_exhaustive]`: a host's `JoinProvider` tests
+  build it with `JoinRequest::new(target, room)` and its `with_*` setters. See
+  sew-call-client's CHANGELOG.
+
+### Dependencies
+
+- Requires sew-call-client 0.9.0 and sew-proto 0.11.0.
+
 ## 0.8.4 (2026-11-19, Sew 0.10.6)
 
 Additive: one new field in the `recording` event; no other change to the API, the commands

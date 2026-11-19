@@ -165,6 +165,7 @@ pub struct ReadyVersions {
 
 /// A space in READY.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ReadySpace {
     /// The space id.
     pub id: Id,
@@ -215,6 +216,31 @@ pub struct ReadySpace {
         skip_serializing_if = "crate::api::spaces::SpaceGovernance::is_sew"
     )]
     pub governance: crate::api::spaces::SpaceGovernance,
+}
+
+impl ReadySpace {
+    /// A `ReadySpace` with its required fields: every count 0, every flag `false`, every
+    /// list empty, the other fields at their serde defaults and every optional field unset.
+    pub fn new(id: Id, slug: Slug, name: impl Into<String>, versions: ReadyVersions) -> Self {
+        ReadySpace {
+            id,
+            slug,
+            name: name.into(),
+            icon_url: None,
+            icon_thumb_url: None,
+            my_role_ids: Vec::new(),
+            member_count: 0,
+            versions,
+            my_space_perms: Default::default(),
+            hidden: false,
+            app_id: None,
+            app_display_name: None,
+            participant_app_ids: Vec::new(),
+            private: false,
+            orphaned_from: None,
+            governance: crate::api::spaces::SpaceGovernance::default_sew(),
+        }
+    }
 }
 
 /// A category in READY.
@@ -310,6 +336,10 @@ pub struct ReadyChannel {
     /// receipts, flag `dm_read_receipts`), ascending member id; absent when there are none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dm_seen: Vec<crate::api::read_receipts::DmSeen>,
+    /// Voice channels: the member's incoming pending voice invites into this room (flag
+    /// `voice_invites`), oldest first; absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_invites: Vec<crate::voice_notify::VoiceInvite>,
 }
 
 impl ReadyChannel {
@@ -341,6 +371,7 @@ impl ReadyChannel {
             recording_rule: crate::recording::RecordingRule::None,
             members_can_leave: false,
             dm_seen: Vec::new(),
+            voice_invites: Vec::new(),
         }
     }
 }
@@ -422,6 +453,7 @@ pub struct CallReadyUser {
 
 /// The `ready` dispatch: a small boot snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Ready {
     /// The gateway session id, for RESUME.
     pub session_id: String,
@@ -474,6 +506,41 @@ pub struct Ready {
     /// with the member's own `my_consent`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recordings: Vec<crate::recording::Recording>,
+}
+
+impl Ready {
+    /// A `Ready` at this build's [`crate::PROTOCOL_VERSION`] with its required fields: member
+    /// seq 0, every flag `false`, every list empty and every optional field unset.
+    pub fn new(
+        session_id: impl Into<String>,
+        resume_url: impl Into<String>,
+        member: Member,
+        install: ReadyInstall,
+        threads_inbox: ThreadsInbox,
+    ) -> Self {
+        Ready {
+            session_id: session_id.into(),
+            resume_url: resume_url.into(),
+            protocol: crate::PROTOCOL_VERSION,
+            member,
+            install,
+            spaces: Vec::new(),
+            categories: Vec::new(),
+            channels: Vec::new(),
+            read_states: Vec::new(),
+            member_seq: 0,
+            threads_inbox,
+            presence_settings: None,
+            dm_members: Vec::new(),
+            notify: None,
+            call_keys: None,
+            voice_states: Vec::new(),
+            voice_states_partial: false,
+            voice_channels: Vec::new(),
+            calls: Vec::new(),
+            recordings: Vec::new(),
+        }
+    }
 }
 
 /// A decoded server-to-client frame.

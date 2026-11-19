@@ -67,10 +67,10 @@ Not affiliated with or endorsed by LiveKit.
 - **Trust on first use.** The first READY a device sees for an install pins the CA key, the DS
   key and the `external_sender` bytes in its `DeviceStore`. A later change is a hard error
   (`E2eeStatus::ServerIdentityChanged`: no joins, and a report for the admins). That catches a
-  later swap of the server's call keys. It does not help if the first READY is already an
-  attacker's, if the attacker holds the server's real CA and DS keys, or after the device store is
-  cleared (a new enrolment accepts new keys). Transport security (TLS to the server) is the
-  host's job.
+  later swap of the server's call keys. It does not help if the first READY already comes from
+  someone other than the server, against whoever holds the server's real CA and DS keys, or after
+  the device store is cleared (a new enrolment accepts new keys). Transport protection (TLS to
+  the server) is the host's job.
 - **What is tested** (the package carries only unit tests; the full suites are in Sew's
   repository): device certificates, pins and revocation; the call credential; Welcome and
   commit checks, including crafted Welcomes, wrong external senders and disallowed proposals;
@@ -93,7 +93,7 @@ malicious protocol messages. Never enable it outside tests.**
 
 ```toml
 [dependencies]
-sew-e2ee = "0.10.6"
+sew-e2ee = "0.11.0"
 ```
 
 A host enrols its device (`identity`), builds an `E2eeClient` from the device identity and the

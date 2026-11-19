@@ -63,6 +63,7 @@ const SCALE: f32 = 32_768.0;
 
 /// A refused call. Nothing is processed when one is returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// A frame call's input or output is not [`FRAME`] samples.
     FrameLength {

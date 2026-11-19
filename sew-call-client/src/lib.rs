@@ -23,7 +23,7 @@
 //!
 //! ```text
 //! let client = CallClient::with_mls(ClientConfig::new("com.example.app", data_dir));
-//! let call = client.join(provider, JoinRequest { target, room, muted: false, deafened: false, rejoin: None, recording_notice: None }).await?;
+//! let call = client.join(provider, JoinRequest::new(target, room)).await?;
 //! let audio = AudioBridge::start(&call, kessel_audio::EngineConfig::default())?; // feature `audio`
 //! let mut events = call.events();
 //! ```

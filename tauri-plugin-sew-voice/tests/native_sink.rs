@@ -192,12 +192,7 @@ fn world(backend: bool) -> World {
 
 async fn in_call(w: &World, tracks: Vec<VideoTrack>) -> Arc<FakeCall> {
     w.svc
-        .join(JoinArgs {
-            target: "k2:acme".into(),
-            room: "48831765147549698".into(),
-            muted: None,
-            deafened: None,
-        })
+        .join(JoinArgs::new("k2:acme", "48831765147549698"))
         .await
         .expect("join");
     let call = w.engine.last_call().expect("call");

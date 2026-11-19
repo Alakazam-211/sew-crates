@@ -60,6 +60,7 @@ pub const TICK: Duration = Duration::from_millis(100);
 
 /// What the key session needs.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct KeySessionConfig {
     /// The door (`JoinAnswer.api_base`).
     pub api_base: Url,
@@ -91,6 +92,27 @@ impl fmt::Debug for KeySessionConfig {
 }
 
 impl KeySessionConfig {
+    /// A key session config with its required fields: no `credential_expires_at_ms` (never
+    /// renewed), no `install_id` (READY's) and no `tls` (the platform's trust).
+    pub fn new(
+        api_base: Url,
+        bearer: Bearer,
+        device_scope: impl Into<String>,
+        vault: VaultConfig,
+        clock: Clock,
+    ) -> KeySessionConfig {
+        KeySessionConfig {
+            api_base,
+            bearer,
+            credential_expires_at_ms: None,
+            device_scope: device_scope.into(),
+            vault,
+            install_id: None,
+            clock,
+            tls: None,
+        }
+    }
+
     /// From the join answer's credential.
     pub fn from_grant(
         api_base: Url,
@@ -825,6 +847,7 @@ async fn pump<C: FrameCrypto>(shared: &Arc<Shared<C>>) {
                     }
                     Output::Status(s) => shared.emit(KeySessionEvent::Status(s)),
                     Output::Roster => roster = true,
+                    _ => {}
                 }
             }
             let me = session.lk_identity().clone();
@@ -913,7 +936,9 @@ async fn input<C: FrameCrypto>(shared: &Arc<Shared<C>>, i: Input) {
 
 fn report_input(r: MediaReport) -> Input {
     match r {
-        MediaReport::Attack { kind, identity } => Input::EngineAttack { kind, identity },
+        MediaReport::EngineMisbehaviour { kind, identity } => {
+            Input::EngineMisbehaviour { kind, identity }
+        }
         MediaReport::Undecryptable {
             identity,
             since,
@@ -1171,9 +1196,11 @@ pub(crate) fn security_of(s: &E2eeStatus) -> crate::call::CallSecurity {
                 LeftReason::Left => "left".to_owned(),
                 LeftReason::Removed(r) => format!("removed:{}", r.as_str()),
                 LeftReason::Failed(r) => format!("failed:{r}"),
+                _ => "other".to_owned(),
             });
             "left"
         }
+        _ => "unknown",
     }
     .to_owned();
     out

@@ -24,14 +24,37 @@
           ]
         },
         "channel_id": {
-          "description": "The channel (the DM for calls).",
+          "description": "The channel (the DM for calls; the voice channel for the voice kinds).",
           "pattern": "^[1-9][0-9]{0,18}$",
           "type": "string"
         },
+        "expires_at": {
+          "description": "When the invite expires, on `voice_invite` (the push's expiry).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_external_id": {
+          "description": "The external id of `from_member_id` (K2 resolves the name from it); absent for `read`\nand when that member has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "from_member_id": {
-          "description": "Who caused it: the message's author, or the call's starter.",
+          "description": "Who caused it: the message's author, the call's starter, the voice room session's\nstarter (`voice_started`, `voice_ended`) or the inviter (`voice_invite`,\n`voice_invite_stopped`); the person themself for `read`.",
           "pattern": "^[1-9][0-9]{0,18}$",
           "type": "string"
+        },
+        "invite_id": {
+          "description": "The voice invite, on `voice_invite` and `voice_invite_stopped` (flag `voice_invites`);\nan item from an older server has none.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "kind": {
           "$ref": "#/$defs/PersonNotificationKind",
@@ -72,6 +95,14 @@
             "string",
             "null"
           ]
+        },
+        "thread_root_id": {
+          "description": "The thread's root when the message is a thread reply (a tap opens the thread), and on\na `read` of a thread; absent for top-level messages and calls.",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -84,7 +115,7 @@
       "type": "object"
     },
     "PersonNotificationKind": {
-      "description": "What a person notification is about.",
+      "description": "What a person notification is about. New kinds are added over time: treat an unknown\nkind (`Unknown`) as nothing to push.",
       "oneOf": [
         {
           "const": "call_ring",
@@ -108,7 +139,47 @@
         },
         {
           "const": "reply_to_me",
-          "description": "A reply in a thread the person follows (started, replied in or followed).",
+          "description": "A reply to the person: in a thread they follow (started, replied in or followed),\nor an inline reply to one of their messages.",
+          "type": "string"
+        },
+        {
+          "const": "message",
+          "description": "A message in a channel the person set to `all` (reason `all_messages`).",
+          "type": "string"
+        },
+        {
+          "const": "keyword",
+          "description": "A message with one of the person's keywords.",
+          "type": "string"
+        },
+        {
+          "const": "read",
+          "description": "The person read a channel, DM or thread (on any device) up to `message_id`: clear\nthe pushes there up to it. With `thread_root_id`, the thread's pushes; without,\nthe channel's own (not its threads'). Never for the person's own posts.",
+          "type": "string"
+        },
+        {
+          "const": "call_ring_stopped",
+          "description": "A loud ring the person got (`call_ring`) stopped without being missed: answered,\ndeclined, or the call cancelled. Clear the ring. A missed ring is `call_missed`.",
+          "type": "string"
+        },
+        {
+          "const": "voice_started",
+          "description": "A voice room in a channel the person set to `all` came alive: someone joined it\nwhile it was empty and stayed (`from_member_id`). No `message_id`.",
+          "type": "string"
+        },
+        {
+          "const": "voice_ended",
+          "description": "The `voice_started` push of `channel_id` no longer applies (the room went quiet, or\nthe person joined it): clear it. At most one room session per channel is live, so\nthe channel is enough.",
+          "type": "string"
+        },
+        {
+          "const": "voice_invite",
+          "description": "A person in a voice room invites the person in (`from_member_id`, `invite_id`,\n`expires_at`). Accepting is joining the room; declining is\n`POST /api/v1/channels/{id}/voice/invite/decline` with the person's own session.",
+          "type": "string"
+        },
+        {
+          "const": "voice_invite_stopped",
+          "description": "A loud `voice_invite` stopped (accepted, declined, cancelled, expired, the inviter\nleft, the room ended or the invite was revoked): clear it (`invite_id`).",
           "type": "string"
         }
       ]
@@ -117,6 +188,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Response of `GET /mgmt/v1/people/{external_id}/notifications`.",
   "properties": {
+    "head": {
+      "default": 0,
+      "description": "The person's member-log head at the read (`next == head`: caught up). Since flag\n`feed_all_messages`; a page from an older server has none and reads `0` (unknown).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
     "items": {
       "description": "The items, oldest first.",
       "items": {
@@ -125,7 +203,7 @@
       "type": "array"
     },
     "next": {
-      "description": "The next `after`: the seq of the last log row looked at (returned or skipped). Equal\nto `after` while DND holds the feed.",
+      "description": "The next `after`: the seq of the last log row looked at (returned or skipped). Equal\nto `after` while DND holds the feed and nothing before the first held item clears.",
       "format": "uint64",
       "minimum": 0,
       "type": "integer"

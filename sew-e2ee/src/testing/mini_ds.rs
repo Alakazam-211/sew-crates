@@ -499,19 +499,20 @@ impl MiniDs {
     }
 
     fn init_for(&self, join: &JoinId, create: bool, activate_on_create: bool) -> CallKeysInit {
-        CallKeysInit {
-            call_id: self.call_id.clone(),
-            join_id: join.clone(),
-            lk_identity: join.lk_identity(),
-            scope: self.scope,
-            group_id: B64::new(self.group_id.clone()),
-            epoch: self.epoch().unwrap_or(0),
-            create,
-            activate_on_create,
-            slot_base: self.slot_base,
-            external_sender: B64::new(self.install.external_sender()),
-            params: self.params(),
-        }
+        let mut call_keys_init = CallKeysInit::new(
+            self.call_id.clone(),
+            join.clone(),
+            join.lk_identity(),
+            self.scope,
+            B64::new(self.group_id.clone()),
+            B64::new(self.install.external_sender()),
+            self.params(),
+        );
+        call_keys_init.epoch = self.epoch().unwrap_or(0);
+        call_keys_init.create = create;
+        call_keys_init.activate_on_create = activate_on_create;
+        call_keys_init.slot_base = self.slot_base;
+        call_keys_init
     }
 
     // ------------------------------------------------------------------ upload and joins

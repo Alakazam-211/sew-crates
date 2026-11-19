@@ -41,12 +41,7 @@ fn world() -> World {
 }
 
 fn args() -> JoinArgs {
-    JoinArgs {
-        target: "k2:acme".into(),
-        room: "48831765147549698".into(),
-        muted: None,
-        deafened: None,
-    }
+    JoinArgs::new("k2:acme", "48831765147549698")
 }
 
 /// Let spawned tasks run until `pred` holds; panics (loudly) if it never does.
@@ -133,25 +128,13 @@ async fn join_goes_connecting_then_connected() {
 async fn join_deafened_implies_muted() {
     let provider = Arc::new(FakeProvider::answering(ME));
     let w = world_with(FakeEngine::new(), provider.clone());
-    w.svc
-        .join(JoinArgs {
-            deafened: Some(true),
-            ..args()
-        })
-        .await
-        .expect("join");
+    w.svc.join(args().with_deafened(true)).await.expect("join");
     let req = &provider.calls()[0];
     assert!(req.muted && req.deafened, "deafened implies muted: {req:?}");
     assert_eq!(w.sink.of("participants"), vec![json!([me(true, true)])]);
 
     let w = world();
-    w.svc
-        .join(JoinArgs {
-            muted: Some(true),
-            ..args()
-        })
-        .await
-        .expect("join");
+    w.svc.join(args().with_muted(true)).await.expect("join");
     assert_eq!(w.sink.of("participants"), vec![json!([me(true, false)])]);
 }
 
@@ -723,11 +706,7 @@ async fn state_has_target_and_room_and_a_move_changes_the_room() {
     assert_eq!(ended["room"], "48831765147549710");
     assert_eq!(ended["target"], TARGET);
     w.svc
-        .join(JoinArgs {
-            target: "k2:other".into(),
-            room: "7".into(),
-            ..args()
-        })
+        .join(JoinArgs::new("k2:other", "7"))
         .await
         .expect("join again");
     let s = w.svc.snapshot();
@@ -824,14 +803,12 @@ async fn a_lagging_pump_resyncs_from_the_snapshot() {
     }
     let truth = CallSnapshot {
         state: CallState::Connected,
-        participants: vec![Participant {
-            member_id: ME.into(),
-            is_self: true,
-            muted: true,
-            deafened: false,
-            server_muted: true,
-            server_deafened: false,
-            speak_denied: false,
+        participants: vec![{
+            let mut me = Participant::new(ME);
+            me.is_self = true;
+            me.muted = true;
+            me.server_muted = true;
+            me
         }],
         recording: None,
     };
@@ -1835,16 +1812,7 @@ async fn a_dm_call_joins_with_the_call_join_answer_unchanged() {
         calls: std::sync::Mutex::new(Vec::new()),
     });
     let w = world_with(FakeEngine::new(), provider.clone());
-    let r = w
-        .svc
-        .join(JoinArgs {
-            target: TARGET.into(),
-            room: DM.into(),
-            muted: None,
-            deafened: None,
-        })
-        .await
-        .expect("join");
+    let r = w.svc.join(JoinArgs::new(TARGET, DM)).await.expect("join");
     // The call's id on the plugin is the media room of the answer's `voice`, as for a voice
     // channel; the call is on the DM.
     assert_eq!(r.call_id, ROOM);

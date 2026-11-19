@@ -245,14 +245,14 @@ fn fixture_arguments_are_the_wire_types() {
 /// choice is kept apart and `muted` is forced on.
 #[test]
 fn self_mute_from_the_row() {
-    let row = |muted, deafened, server_muted, speak_denied| Participant {
-        member_id: ME.into(),
-        is_self: true,
-        muted,
-        deafened,
-        server_muted,
-        server_deafened: false,
-        speak_denied,
+    let row = |muted, deafened, server_muted, speak_denied| {
+        let mut p = Participant::new(ME);
+        p.is_self = true;
+        p.muted = muted;
+        p.deafened = deafened;
+        p.server_muted = server_muted;
+        p.speak_denied = speak_denied;
+        p
     };
     let s = SelfMute::of(&row(true, false, false, false), false);
     assert!(s.muted && s.self_muted, "unforced: the row is the choice");
@@ -274,12 +274,7 @@ fn self_mute_from_the_row() {
 async fn deafen_is_reported_and_undone() {
     let w = world(FakeProvider::answering(ME));
     w.control
-        .join(JoinArgs {
-            target: "k2:acme".into(),
-            room: "48831765147549698".into(),
-            muted: None,
-            deafened: None,
-        })
+        .join(JoinArgs::new("k2:acme", "48831765147549698"))
         .await
         .expect("join");
     until("joined", || w.listener.calls().len() >= 4).await;
@@ -327,12 +322,7 @@ async fn control_rules() {
     );
 
     w.control
-        .join(JoinArgs {
-            target: "k2:acme".into(),
-            room: "48831765147549698".into(),
-            muted: Some(true),
-            deafened: None,
-        })
+        .join(JoinArgs::new("k2:acme", "48831765147549698").with_muted(true))
         .await
         .expect("join");
     let snap = w.control.snapshot();
@@ -386,12 +376,7 @@ async fn network_and_audio_session_pass_through() {
     w.control.network_changed();
     w.control.session_activated();
     w.control
-        .join(JoinArgs {
-            target: "k2:acme".into(),
-            room: "48831765147549698".into(),
-            muted: None,
-            deafened: None,
-        })
+        .join(JoinArgs::new("k2:acme", "48831765147549698"))
         .await
         .expect("join");
     let call = w.engine.last_call().expect("call");
@@ -457,12 +442,7 @@ async fn a_listener_that_hops_reads_the_snapshot() {
         seen
     });
     control
-        .join(JoinArgs {
-            target: "k2:acme".into(),
-            room: "48831765147549698".into(),
-            muted: None,
-            deafened: None,
-        })
+        .join(JoinArgs::new("k2:acme", "48831765147549698"))
         .await
         .expect("join");
     let seen = reader.await.expect("reader");

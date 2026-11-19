@@ -561,7 +561,6 @@ impl From<MyChannelsQuery> for MyChannelsPageQuery {
 unit_enum! {
     /// `GET /api/v1/me/channels?order=`: by id (the default), or by latest activity.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum MyChannelsOrder {
         /// By id ascending (creation order), with the `after` cursor.
         Id = "id",

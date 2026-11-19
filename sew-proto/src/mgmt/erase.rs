@@ -157,6 +157,7 @@ impl Validate for MgmtEraseRequest {
 
 /// What an erasure erased, by kind. Every key is always present (zeros included).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct MgmtEraseCounts {
     /// The profile (1 once scrubbed).
     #[serde(default)]
@@ -369,7 +370,8 @@ pub struct MgmtErasurePage {
 }
 
 /// `status.erasures`: account erasures not yet completed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusErasures {
     /// Erasures still in their pass (`running`).
     pub running: u64,

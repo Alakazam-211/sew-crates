@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0 (2026-11-19)
+
+### Breaking
+
+- **`Error` is `#[non_exhaustive]`**, so later refusals are not breaking changes. A `match` on
+  it outside this crate needs a wildcard arm (its `Display` text describes every refusal).
+
 ## 0.10.6 (2026-11-19)
 
 - The version follows Sew 0.10.6. No API or behaviour change.

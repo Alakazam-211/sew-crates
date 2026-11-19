@@ -157,7 +157,8 @@
               "type": "null"
             }
           ],
-          "description": "Why the transcript is `failed` or `partial`, as a stable code and plain words; absent\notherwise, when no cause is known, and from servers that predate it."
+          "deprecated": true,
+          "description": "Deprecated: moves into `recording.transcript.failure` of the record message\n(`record_message_id`), [`SummaryTranscript::failure`](crate::recording::SummaryTranscript::failure);\nkept for at least one more release, then removed in a later breaking release. Until then\nthe server writes both, with the same value: why the transcript is `failed` or `partial`,\nas a stable code and plain words; absent otherwise, when no cause is known, and from\nservers that predate it."
         },
         "transcript_state": {
           "$ref": "#/$defs/TranscriptState",

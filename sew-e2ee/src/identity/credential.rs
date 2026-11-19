@@ -41,6 +41,7 @@ pub struct LeafIdentity {
 
 /// Why a leaf was refused. Carries no credential bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum LeafCheckError {
     /// Not Basic, not `SewCallIdentity` v2, or `kind ≠ 1`.
     #[error("credential: {0}")]

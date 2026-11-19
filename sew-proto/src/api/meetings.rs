@@ -428,6 +428,7 @@ impl Validate for MeetingListQuery {
 
 /// A meeting, as its channel members see it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Meeting {
     /// The meeting id (not the channel id; never in a guest URL).
     pub id: Id,
@@ -482,6 +483,55 @@ pub struct Meeting {
     pub created_at: Timestamp,
     /// Last change.
     pub updated_at: Timestamp,
+}
+
+impl Meeting {
+    /// A `Meeting` with its required fields: every count 0, every flag `false` and every
+    /// optional field unset.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Id,
+        channel_id: Id,
+        space_id: Id,
+        organiser_member_id: Id,
+        kind: MeetingKind,
+        state: MeetingState,
+        starts_at: Timestamp,
+        ends_at: Timestamp,
+        tz: impl Into<String>,
+        opens_at: Timestamp,
+        hard_end_at: Timestamp,
+        ics_uid: impl Into<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        Meeting {
+            id,
+            channel_id,
+            space_id,
+            organiser_member_id,
+            title: None,
+            kind,
+            state,
+            starts_at,
+            ends_at,
+            tz: tz.into(),
+            opens_at,
+            hard_end_at,
+            locked: false,
+            auto_record: false,
+            guest_screen_share: false,
+            show_title_to_guests: false,
+            ics_uid: ics_uid.into(),
+            ics_sequence: 0,
+            is_host: false,
+            ended_at: None,
+            ended_by: None,
+            end_reason: None,
+            created_at,
+            updated_at,
+        }
+    }
 }
 
 /// Answer of `POST /api/v1/meetings`. Idempotency `KEY_IGNORED`: it holds a fresh link secret,
@@ -960,7 +1010,8 @@ pub struct MeetingLobbyEntry {
     pub meeting_id: Id,
     /// Who knocked.
     pub member_id: Id,
-    /// The name they gave (a link guest's is attacker-chosen text: show it as plain text).
+    /// The name they gave (a link guest's name is text the guest chooses: treat it as untrusted,
+    /// and show it as plain text).
     pub display_name: String,
     /// A link guest or a signed-in member.
     pub kind: MeetingLobbyKind,
@@ -1105,7 +1156,8 @@ pub struct MeetingGuestUpdated {
 /// display name and whether they are a link guest, nothing else (no handle, email, role,
 /// status, profile field or Space membership). Answered by `GET /api/v1/channels/{id}/people`
 /// and carried as `person` by a meeting channel's `channel_member_added`. A link guest's name is
-/// attacker-chosen text: show it as plain text, after a fixed "Guest" badge.
+/// text the guest chooses: treat it as untrusted, and show it as plain text, after a fixed
+/// "Guest" badge.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MeetingPerson {
     /// The member.

@@ -54,12 +54,7 @@ fn world() -> World {
 }
 
 fn args() -> JoinArgs {
-    JoinArgs {
-        target: "k2:acme".into(),
-        room: "48831765147549698".into(),
-        muted: None,
-        deafened: None,
-    }
+    JoinArgs::new("k2:acme", "48831765147549698")
 }
 
 async fn until(what: &str, mut pred: impl FnMut() -> bool) {

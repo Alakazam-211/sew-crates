@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// A decoder input over its cap ([`crate::config`]), or one that did not decode.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// Over the cap; nothing was parsed.
     #[error("{what}: {len} bytes over the cap of {cap}")]
@@ -32,6 +33,7 @@ pub fn check_cap(what: &'static str, len: usize, cap: usize) -> Result<(), Decod
 
 /// Trust-anchor errors.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum TrustError {
     /// A pinned CA, DS key or `external_sender` changed: `E2eeStatus::ServerIdentityChanged`.
     #[error("the server's call identity changed ({what})")]
@@ -49,6 +51,7 @@ pub enum TrustError {
 
 /// Device identity and enrollment errors.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum IdentityError {
     /// The certificate is for another member.
     #[error("the certificate names another member")]
@@ -87,6 +90,7 @@ pub enum IdentityError {
 
 /// Why a session could not start or continue.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum SessionError {
     /// A `params` value outside its allowed range.
     #[error("params: {key} out of range")]
@@ -131,6 +135,7 @@ pub enum SessionError {
 
 /// Why a join failed for good.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum JoinError {
     /// `422 e2ee_unsupported_client` with `details.unsupported`.
     #[error("this client cannot join encrypted calls ({unsupported})")]
@@ -148,6 +153,7 @@ pub enum JoinError {
 
 /// Why a recorder release could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum ReleaseError {
     /// `enc` is not 32 bytes or `ct` not 48.
     #[error("release sizes")]
@@ -162,6 +168,7 @@ pub enum ReleaseError {
 
 /// Why a signed `LeafBinding` table was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum BindingError {
     /// The DS signature does not verify for this call, group and epoch.
     #[error("binding table signature")]
@@ -191,6 +198,7 @@ pub enum BindingError {
 
 /// Why a recording chunk could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum ChunkError {
     /// The 16-byte header is malformed (magic, version, chunk size, reserved).
     #[error("recording header: {0}")]

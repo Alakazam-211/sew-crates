@@ -11,6 +11,7 @@ use crate::ids::{
 use crate::wire::{ApiFailure, KeyReply, KeyRequest};
 
 /// Everything a `CallSession` reacts to. The driver or the TS wrapper feeds them.
+#[non_exhaustive]
 pub enum Input {
     /// A `call_keys_delivered` body.
     Server(CallKeysMessage),
@@ -75,9 +76,9 @@ pub enum Input {
         observed: Slot,
     },
     /// The bridge saw the engine misbehave (the `report` engine kinds).
-    EngineAttack {
+    EngineMisbehaviour {
         /// What.
-        kind: EngineAttack,
+        kind: EngineMisbehaviour,
         /// The identity involved (the publisher), if any.
         identity: Option<LkIdentity>,
     },
@@ -116,7 +117,7 @@ impl fmt::Debug for Input {
             } => write!(f, "SdkUndecryptable({identity}, {reason:?})"),
             Input::SdkDecryptOk { identity } => write!(f, "SdkDecryptOk({identity})"),
             Input::SenderSlotObserved { observed } => write!(f, "SenderSlotObserved({observed})"),
-            Input::EngineAttack { kind, .. } => write!(f, "EngineAttack({kind:?})"),
+            Input::EngineMisbehaviour { kind, .. } => write!(f, "EngineMisbehaviour({kind:?})"),
             Input::MediaParticipants(v) => write!(f, "MediaParticipants({})", v.len()),
             Input::VoiceMembers(v) => write!(f, "VoiceMembers({})", v.len()),
         }
@@ -125,6 +126,7 @@ impl fmt::Debug for Input {
 
 /// Why a receiver cannot decrypt a sender.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum UndecryptReason {
     /// The SDK has a key at the frame's index but the tag fails.
     InvalidKey,
@@ -144,7 +146,8 @@ impl UndecryptReason {
 
 /// Engine misbehaviour a bridge detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EngineAttack {
+#[non_exhaustive]
+pub enum EngineMisbehaviour {
     /// A publication announced unencrypted (`enable{false}` filtered, or a NONE track refused).
     UnencryptedTrack,
     /// A non-empty SIF trailer (dropped).
@@ -154,6 +157,7 @@ pub enum EngineAttack {
 }
 
 /// What a `CallSession` asks its driver to do.
+#[non_exhaustive]
 pub enum Output {
     /// POST a key route; feed the answer back as `Input::Reply(id, …)`.
     Send(RequestId, KeyRequest),
@@ -195,6 +199,7 @@ impl fmt::Debug for Output {
 
 /// The UI status. Every change is an `Output::Status`, carrying its timestamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum E2eeStatus {
     /// Preparing the key package.
     Preparing,
@@ -248,6 +253,7 @@ pub enum E2eeStatus {
 
 /// Why a session ended (`SessionState::Left`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LeftReason {
     /// `leave()`.
     Left,
@@ -259,6 +265,7 @@ pub enum LeftReason {
 
 /// The per-call state.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SessionState {
     /// Join sent; waiting for `init` / `welcome`.
     Joining,
@@ -292,6 +299,7 @@ pub enum SessionState {
 
 /// A transition in progress.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Transition {
     /// Nothing in flight.
     Idle,

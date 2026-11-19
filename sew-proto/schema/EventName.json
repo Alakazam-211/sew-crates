@@ -351,6 +351,16 @@
       "const": "read_receipts_policy_updated",
       "description": "The install policy `dm.read_receipts` changed (body `ReadReceiptsPolicyUpdated`,\nto every session).",
       "type": "string"
+    },
+    {
+      "const": "voice_started",
+      "description": "A voice room the receiver gets pushes for came alive, or that push no longer\napplies (body `VoiceStartedEvent`, to the members chosen by the room start rules).",
+      "type": "string"
+    },
+    {
+      "const": "voice_invite",
+      "description": "A voice invite was made or changed (body `VoiceInvite`, to the invitee's and the\ninviter's sessions only).",
+      "type": "string"
     }
   ],
   "title": "EventName"

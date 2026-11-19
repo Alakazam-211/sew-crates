@@ -121,6 +121,7 @@ impl KeyReply {
 /// (`status = 0`). The driver retries transport failures and `503 voice_unavailable` itself
 /// (with backoff, unchanged content); what reaches the session is final.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ApiFailure {
     /// HTTP status (`0` = transport).
     pub status: u16,
@@ -145,12 +146,36 @@ impl ApiFailure {
 
     /// A transport failure.
     pub fn transport() -> ApiFailure {
+        ApiFailure::from_status(0)
+    }
+
+    /// A failure with a status only: no `reason`, `detail` or `retry_after_ms` (set them with
+    /// the `with_*` setters).
+    pub fn from_status(status: u16) -> ApiFailure {
         ApiFailure {
-            status: 0,
+            status,
             reason: None,
             detail: None,
             retry_after_ms: None,
         }
+    }
+
+    /// Sets `reason` (`details.reason`).
+    pub fn with_reason(mut self, reason: Option<String>) -> ApiFailure {
+        self.reason = reason;
+        self
+    }
+
+    /// Sets `detail` (`details.check` / `details.unsupported`).
+    pub fn with_detail(mut self, detail: Option<String>) -> ApiFailure {
+        self.detail = detail;
+        self
+    }
+
+    /// Sets `retry_after_ms`.
+    pub fn with_retry_after_ms(mut self, retry_after_ms: Option<u64>) -> ApiFailure {
+        self.retry_after_ms = retry_after_ms;
+        self
     }
 
     /// Whether `details.reason` is `r`.

@@ -74,12 +74,14 @@ pub use member_channels::{
     MgmtMemberChannelsResponse, MgmtMemberChannelsSkip,
 };
 pub use notifications::{
-    CursorExpiredDetails, FEATURE_FEED_HEAD, FEATURE_PERSON_CHANNEL_NOTIFY,
-    FEATURE_PERSON_NOTIFICATIONS, PERSON_NOTIFICATION_PREVIEW_MAX_CHARS,
-    PERSON_NOTIFICATIONS_LIMIT_DEFAULT, PERSON_NOTIFICATIONS_LIMIT_MAX,
-    PERSON_NOTIFICATIONS_WAIT_MAX_S, PersonNotification, PersonNotificationKind,
-    PersonNotificationsHead, PersonNotificationsPage, PersonNotificationsQuery, preview_of,
+    CursorExpiredDetails, FEATURE_FEED_ALL_MESSAGES, FEATURE_FEED_HEAD,
+    FEATURE_PERSON_CHANNEL_NOTIFY, FEATURE_PERSON_NOTIFICATIONS,
+    PERSON_NOTIFICATION_PREVIEW_MAX_CHARS, PERSON_NOTIFICATIONS_LIMIT_DEFAULT,
+    PERSON_NOTIFICATIONS_LIMIT_MAX, PERSON_NOTIFICATIONS_WAIT_MAX_S, PersonNotification,
+    PersonNotificationKind, PersonNotificationsHead, PersonNotificationsPage,
+    PersonNotificationsQuery, preview_of,
 };
+pub use notifications::{FEATURE_VOICE_INVITES, FEATURE_VOICE_STARTED_FEED};
 pub use ops::{
     AuditVerifyMode, AuditVerifyReport, AuditVerifyRequest, EXPORT_RECIPIENTS_MAX, ExportRequest,
 };
@@ -224,7 +226,8 @@ unit_enum! {
 }
 
 /// Database status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusDb {
     /// Whether the database answers (`SELECT 1` within 1 s).
     pub ok: bool,
@@ -237,7 +240,8 @@ pub struct StatusDb {
 }
 
 /// Job queue status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusJobs {
     /// Jobs waiting (not under a live lease).
     pub queued: u64,
@@ -254,10 +258,7 @@ pub struct StatusJobs {
 unit_enum! {
     /// A status alarm. K2 shows each one verbatim.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum StatusAlarm {
-        // `Unknown` keeps the discriminant it had in 0.10.4; later variants take explicit ones.
-        @unknown = 41;
         /// `db.ok = false`.
         DbDown = "db_down",
         /// `jobs.dead > 0`.
@@ -348,19 +349,20 @@ unit_enum! {
         RecordingRequiredFailed = "recording_required_failed",
         /// The `dir` keyring mirror path is not mounted: it is missing, or a plain directory
         /// that holds no mirror of this install. Nothing is written there; key writes wait.
-        KeysMirrorUnmounted = "keys_mirror_unmounted" @ 42,
+        KeysMirrorUnmounted = "keys_mirror_unmounted",
         /// The `dir` keyring mirror path is on the keyring's own filesystem. Nothing is
         /// written there; key writes wait.
-        KeysMirrorSameDevice = "keys_mirror_same_device" @ 43,
+        KeysMirrorSameDevice = "keys_mirror_same_device",
         /// No full keyring mirror reconcile has succeeded since the server started (it runs
         /// one at start), so the mirror is not known to hold every key; `keys.mirror_ok` is
         /// `false` meanwhile.
-        KeysMirrorUnsynced = "keys_mirror_unsynced" @ 44,
+        KeysMirrorUnsynced = "keys_mirror_unsynced",
     }
 }
 
 /// Identity provider state in `status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusIdentity {
     /// The provider.
     pub provider: ProviderKind,
@@ -387,8 +389,25 @@ pub struct StatusIdentity {
     pub restart_required: bool,
 }
 
+impl StatusIdentity {
+    /// A `StatusIdentity` with its required fields: every flag `false` and every optional
+    /// field unset.
+    pub fn new(provider: ProviderKind) -> Self {
+        StatusIdentity {
+            provider,
+            jwks_url: None,
+            jwks_ok: None,
+            mode: None,
+            switched_at: None,
+            unlinked_local_members: None,
+            restart_required: false,
+        }
+    }
+}
+
 /// Backup state in `status`. The backup engine fills it; absent until then.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusBackup {
     /// The last good backup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,7 +430,8 @@ pub struct StatusBackup {
 }
 
 /// Restore-drill state in `status`. The backup engine fills it; absent until then.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusDrill {
     /// The last good drill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -429,6 +449,7 @@ pub struct StatusDrill {
 
 /// Search index status.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusSearch {
     /// How far indexing trails writes: `now − min(created_at)` over pending or running
     /// `search_index` / `search_delete` jobs; 0 when none.
@@ -467,6 +488,7 @@ unit_enum! {
 
 /// Live search documents by type.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusSearchDocs {
     /// Message documents.
     pub messages: u64,
@@ -476,6 +498,7 @@ pub struct StatusSearchDocs {
 
 /// A running search rebuild.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusSearchRebuild {
     /// Why: `marker`, `missing`, `corrupt`, `meta_mismatch` or `admin`.
     pub reason: String,
@@ -487,6 +510,19 @@ pub struct StatusSearchRebuild {
     pub docs: u64,
     /// When it started.
     pub started_at: Timestamp,
+}
+
+impl StatusSearchRebuild {
+    /// A `StatusSearchRebuild` with its required fields: every count 0.
+    pub fn new(reason: impl Into<String>, started_at: Timestamp) -> Self {
+        StatusSearchRebuild {
+            reason: reason.into(),
+            generation: 0,
+            progress_pct: 0,
+            docs: 0,
+            started_at,
+        }
+    }
 }
 
 /// Body of `POST /mgmt/v1/search/rebuild`.
@@ -524,6 +560,7 @@ pub struct SearchRebuildResponse {
 
 /// Key provider and keyring status.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusKeys {
     /// Whether the master key provider works.
     pub provider_ok: bool,
@@ -565,6 +602,7 @@ pub struct StatusKeys {
 
 /// `status.keys.mirror`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusKeysMirror {
     /// Mirror kind: `dir`, `none` (`k2` reserved).
     pub kind: String,
@@ -580,6 +618,21 @@ pub struct StatusKeysMirror {
     pub last_ok_at: Option<Timestamp>,
     /// Mirror entries that are neither local nor on the ledger.
     pub unknown_keys: u64,
+}
+
+impl StatusKeysMirror {
+    /// A `StatusKeysMirror` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(kind: impl Into<String>) -> Self {
+        StatusKeysMirror {
+            kind: kind.into(),
+            stale: false,
+            pending: 0,
+            oldest_pending_age_s: None,
+            last_ok_at: None,
+            unknown_keys: 0,
+        }
+    }
 }
 
 /// Response of `GET /mgmt/v1/status`.
@@ -708,6 +761,7 @@ impl Status {
 /// `status.gateway` (0.7.1): the gateway's counters since this process started, the same
 /// numbers as the `sew_gateway_*` metric families.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusGateway {
     /// Sockets with READY or RESUMED queued.
     pub sockets_live: u64,
@@ -725,8 +779,24 @@ pub struct StatusGateway {
     pub closes: std::collections::BTreeMap<String, u64>,
 }
 
+impl StatusGateway {
+    /// A `StatusGateway` with its required fields: every count 0, every list empty and the
+    /// other fields at their serde defaults.
+    pub fn new(identify: StatusGatewayIdentify, resume: StatusGatewayResume) -> Self {
+        StatusGateway {
+            sockets_live: 0,
+            sockets_pending: 0,
+            identify,
+            resume,
+            reauth: Default::default(),
+            closes: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 /// `status.gateway.identify`: IDENTIFY outcomes since start.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusGatewayIdentify {
     /// READY sent.
     pub ok: u64,
@@ -743,6 +813,7 @@ pub struct StatusGatewayIdentify {
 
 /// `status.gateway.resume`: RESUME outcomes since start.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusGatewayResume {
     /// RESUMED sent.
     pub resumed: u64,
@@ -760,6 +831,7 @@ pub struct StatusGatewayResume {
 
 /// `status.gateway.reauth` (0.7.2): REAUTH outcomes since start.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusGatewayReauth {
     /// The socket's login was swapped.
     pub ok: u64,
@@ -817,9 +889,12 @@ pub const FEATURES: &[&str] = &[
     // Read receipts in DMs: the seen positions, `share_read_receipts`, the policy
     // `dm.read_receipts` and their events.
     crate::api::read_receipts::FEATURE_DM_READ_RECEIPTS,
-    // Since 0.9.2: group DM names (the update's `name` on a group DM, the rename notice).
+    // The person feed's `message`, `keyword`, `read` and `call_ring_stopped` kinds, inline
+    // replies, `from_external_id`, `thread_root_id` and the page's `head`.
+    FEATURE_FEED_ALL_MESSAGES,
     // `GET /mgmt/v1/people/{external_id}/notifications/head` (the person feed's start).
     FEATURE_FEED_HEAD,
+    // Since 0.9.2: group DM names (the update's `name` on a group DM, the rename notice).
     crate::api::channels::FEATURE_GROUP_DM_NAMES,
     // `/mgmt/v1/home-client` and `hidden_from_home`.
     FEATURE_HOME_CLIENT,
@@ -868,11 +943,18 @@ pub const FEATURES: &[&str] = &[
     "turn_relay_only",
     // Closing a voice room (`channels/{channel_id}/closing`, `Channel.closing`).
     FEATURE_VOICE_CHANNEL_CLOSING,
+    // Voice invites (`channels/{id}/voice/invite`, decline, cancel, `me/voice/invites`, the
+    // `voice_invite` event, `ReadyChannel.voice_invites`, the feed's `voice_invite` and
+    // `voice_invite_stopped`).
+    FEATURE_VOICE_INVITES,
     // `POST /mgmt/v1/voice/media-path`, `status.voice.media_path`.
     FEATURE_VOICE_MEDIA_PATH,
     // Since 0.9.0: the pass cap `voice:record` (a ceiling on recording start and stop where the
     // session's App sets `recording.cap_required`).
     FEATURE_VOICE_RECORD_CAP,
+    // A voice room's start on the person feed (`voice_started`, `voice_ended`) and the
+    // `voice_started` event.
+    FEATURE_VOICE_STARTED_FEED,
     // The pass cap `voice:video` (camera and screen leases).
     "voice_video_cap",
 ];
@@ -896,7 +978,8 @@ unit_enum! {
 }
 
 /// Outgoing mail in `status`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusMail {
     /// `[mail.smtp]` is set.
     pub configured: bool,
@@ -919,7 +1002,8 @@ pub struct StatusMail {
 }
 
 /// The email digest in `status`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusDigest {
     /// Org policy `digest.enabled`.
     pub enabled: bool,
@@ -955,7 +1039,8 @@ pub struct MailTestResponse {
 }
 
 /// File state in `status`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct StatusFiles {
     /// Whether `ffmpeg` answered `-version` at boot (video posters need it).
     pub ffmpeg_available: bool,
@@ -1517,6 +1602,7 @@ impl Validate for PrincipalsQuery {
 
 /// One principal in `GET /mgmt/v1/principals` (directory metadata only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct MgmtPrincipal {
     /// The member id.
     pub member_id: Id,
@@ -1552,6 +1638,37 @@ pub struct MgmtPrincipal {
     /// When the member was deactivated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deactivated_at: Option<Timestamp>,
+}
+
+impl MgmtPrincipal {
+    /// A `MgmtPrincipal` with its required fields: every flag `false` and every optional
+    /// field unset.
+    pub fn new(
+        member_id: Id,
+        external_id: ExternalId,
+        kind: MemberKind,
+        install_role: crate::api::members::InstallRole,
+        username: Handle,
+        display_name: impl Into<String>,
+        created_at: Timestamp,
+    ) -> Self {
+        MgmtPrincipal {
+            member_id,
+            external_id,
+            kind,
+            agent_kind: None,
+            assistant_of: None,
+            install_role,
+            username,
+            display_name: display_name.into(),
+            email: None,
+            title: None,
+            pronouns: None,
+            deactivated: false,
+            created_at,
+            deactivated_at: None,
+        }
+    }
 }
 
 /// Response of `GET /mgmt/v1/principals`.
@@ -1890,6 +2007,7 @@ pub struct DeliveryCall {
 
 /// A message summary in an agent delivery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct DeliveryMessage {
     /// The message.
     pub id: Id,
@@ -1947,6 +2065,45 @@ pub struct DeliveryMessage {
     pub created_at: Timestamp,
 }
 
+impl DeliveryMessage {
+    /// A `DeliveryMessage` with its required fields: every count 0, every flag `false`, the
+    /// other fields at their serde defaults and every optional field unset.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: Id,
+        channel_id: Id,
+        author_id: Id,
+        author_display_name: impl Into<String>,
+        author_kind: MemberKind,
+        addr: Addr,
+        body: impl Into<String>,
+        created_at: Timestamp,
+    ) -> Self {
+        DeliveryMessage {
+            id,
+            channel_id,
+            space_id: None,
+            thread_root_id: None,
+            author_id,
+            author_display_name: author_display_name.into(),
+            author_username: None,
+            author_kind,
+            addr,
+            reply_addr: None,
+            place: None,
+            kind: Default::default(),
+            call: None,
+            recording: None,
+            body: body.into(),
+            body_truncated: false,
+            attachment_count: 0,
+            on_behalf_of: None,
+            on_behalf_of_display_name: None,
+            created_at,
+        }
+    }
+}
+
 /// One agent delivery: a `notification` entry of the agent's member log.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Delivery {
@@ -1981,6 +2138,7 @@ pub struct DeliveriesPage {
 
 /// Response of `POST /mgmt/v1/keys/mirror-sync`: one full keyring mirror reconcile, run now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct KeysMirrorSyncResponse {
     /// The mirror kind: `dir`, `none`.
     pub kind: String,
@@ -2005,6 +2163,25 @@ pub struct KeysMirrorSyncResponse {
     /// The last successful full reconcile since the server started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_full_reconcile_ok_at: Option<Timestamp>,
+}
+
+impl KeysMirrorSyncResponse {
+    /// A reconcile of a mirror of `kind` that did nothing: every count 0, no error, placement
+    /// or last reconcile; set the other fields.
+    pub fn new(kind: impl Into<String>, ok: bool) -> KeysMirrorSyncResponse {
+        KeysMirrorSyncResponse {
+            kind: kind.into(),
+            ok,
+            pushed: 0,
+            failed: 0,
+            repaired: 0,
+            deleted_shredded: 0,
+            unknown: 0,
+            error: None,
+            placement: None,
+            last_full_reconcile_ok_at: None,
+        }
+    }
 }
 
 // ---- jobs ----

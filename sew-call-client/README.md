@@ -170,7 +170,7 @@ needs a Sew server to join calls on (see the
 
 ```toml
 [dependencies]
-sew-call-client = "0.8.4"
+sew-call-client = "0.9.0"
 ```
 
 An app also needs, for its `JoinProvider` and to run a call:
@@ -264,14 +264,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let call = client
         .join(
             provider,
-            JoinRequest {
-                target: "chat.example.com".into(),
-                room: "48831765147549699".into(), // the voice channel's id
-                muted: false,
-                deafened: false,
-                rejoin: None,
-                recording_notice: None,
-            },
+            // The room is the voice channel's id.
+            JoinRequest::new("chat.example.com", "48831765147549699"),
         )
         .await?;
     // With the `audio` feature: capture and playout on the system's devices.

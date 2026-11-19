@@ -37,10 +37,7 @@ use crate::voice::{MediaPolicy, VoiceServerUpdated, VoiceStateUpdated};
 unit_enum! {
     /// A dispatch event name (the frame's `t`).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum EventName {
-        // `Unknown` keeps the discriminant it had in 0.10.5; later variants take explicit ones.
-        @unknown = 67;
         /// The boot snapshot after IDENTIFY.
         Ready = "ready",
         /// Replay after RESUME finished.
@@ -189,13 +186,19 @@ unit_enum! {
         /// Another member's seen position in a DM or group DM moved, or was removed (body
         /// `DmSeen`, to the DM's other members who may see it, never the reader's own
         /// sessions).
-        DmSeen = "dm_seen" @ 68,
+        DmSeen = "dm_seen",
         /// The receiver's own read-receipt settings changed (body `ReadReceiptSettings`, to
         /// the member's own sessions).
-        ReadReceiptSettingsUpdated = "read_receipt_settings_updated" @ 69,
+        ReadReceiptSettingsUpdated = "read_receipt_settings_updated",
         /// The install policy `dm.read_receipts` changed (body `ReadReceiptsPolicyUpdated`,
         /// to every session).
-        ReadReceiptsPolicyUpdated = "read_receipts_policy_updated" @ 70,
+        ReadReceiptsPolicyUpdated = "read_receipts_policy_updated",
+        /// A voice room the receiver gets pushes for came alive, or that push no longer
+        /// applies (body `VoiceStartedEvent`, to the members chosen by the room start rules).
+        VoiceStarted = "voice_started",
+        /// A voice invite was made or changed (body `VoiceInvite`, to the invitee's and the
+        /// inviter's sessions only).
+        VoiceInvite = "voice_invite",
     }
 }
 
@@ -594,6 +597,10 @@ pub enum Event {
     ReadReceiptSettingsUpdated(crate::api::read_receipts::ReadReceiptSettings),
     /// `read_receipts_policy_updated`.
     ReadReceiptsPolicyUpdated(crate::api::read_receipts::ReadReceiptsPolicyUpdated),
+    /// `voice_started`.
+    VoiceStarted(Box<crate::voice_notify::VoiceStartedEvent>),
+    /// `voice_invite`.
+    VoiceInvite(Box<crate::voice_notify::VoiceInvite>),
     /// A name this build has no body for (unknown, or registered without a body yet).
     Unknown {
         /// The event name.
@@ -677,6 +684,8 @@ impl Event {
             Event::DmSeen(_) => EventName::DmSeen,
             Event::ReadReceiptSettingsUpdated(_) => EventName::ReadReceiptSettingsUpdated,
             Event::ReadReceiptsPolicyUpdated(_) => EventName::ReadReceiptsPolicyUpdated,
+            Event::VoiceStarted(_) => EventName::VoiceStarted,
+            Event::VoiceInvite(_) => EventName::VoiceInvite,
             Event::Unknown { t, .. } => EventName::from_wire(t).unwrap_or(EventName::Unknown),
         }
     }
@@ -759,6 +768,8 @@ impl Event {
             Event::ReadReceiptsPolicyUpdated(b) => {
                 to_value_or_panic("ReadReceiptsPolicyUpdated", b)
             }
+            Event::VoiceStarted(b) => to_value_or_panic("VoiceStartedEvent", b),
+            Event::VoiceInvite(b) => to_value_or_panic("VoiceInvite", b),
             Event::Unknown { t, d } => return (t.clone(), d.clone()),
         };
         (name, d)
@@ -917,6 +928,8 @@ impl Event {
             EventName::ReadReceiptsPolicyUpdated => {
                 Event::ReadReceiptsPolicyUpdated(serde_json::from_value(d)?)
             }
+            EventName::VoiceStarted => Event::VoiceStarted(Box::new(serde_json::from_value(d)?)),
+            EventName::VoiceInvite => Event::VoiceInvite(Box::new(serde_json::from_value(d)?)),
             EventName::Unknown => Event::Unknown { t: t.to_owned(), d },
         })
     }

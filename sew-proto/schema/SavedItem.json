@@ -831,7 +831,8 @@
               "type": "null"
             }
           ],
-          "description": "On a record message (`recording` set) whose transcript is `failed` or `partial`: why,\nas a stable code and plain words for the person\n(`{\"code\": \"transcriber_error\", \"message\": \"...\"}`). Absent otherwise, when no cause is\nknown, and from servers that predate it. It sits beside `recording`, not inside\n`recording.transcript`, so the field is additive."
+          "deprecated": true,
+          "description": "Deprecated: moves into `recording.transcript.failure`\n([`SummaryTranscript::failure`](crate::recording::SummaryTranscript::failure)); kept for\nat least one more release, then removed in a later breaking release. Until then the server\nwrites both, with the same value: on a record message (`recording` set) whose transcript\nis `failed` or `partial`, why, as a stable code and plain words for the person\n(`{\"code\": \"transcriber_error\", \"message\": \"...\"}`). Absent otherwise, when no cause is\nknown, and from servers that predate it."
         }
       },
       "required": [
@@ -1366,6 +1367,17 @@
     "SummaryTranscript": {
       "description": "The transcript part of a [`RecordingSummary`].",
       "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TranscriptFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the transcript is `failed` or `partial`, as a stable code and plain words for the\nperson (`{\"code\": \"transcriber_error\", \"message\": \"...\"}`). Absent otherwise, when no\ncause is known, and from servers that predate it."
+        },
         "gaps_ms": {
           "description": "Total gap time.",
           "format": "uint64",

@@ -62,6 +62,7 @@ pub mod caps {
 
 /// The local (not server-relayed) timings and limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct E2eeConfig {
     /// The missing-key check runs this long after an activation.
     pub missing_key_check_ms: u64,
@@ -112,6 +113,14 @@ impl Default for E2eeConfig {
             key_package_lifetime_back_s: 600,
             key_package_lifetime_fwd_s: 6_600,
         }
+    }
+}
+
+impl E2eeConfig {
+    /// The default timings and limits (the same as `E2eeConfig::default()`); change single
+    /// fields on the result.
+    pub fn new() -> E2eeConfig {
+        E2eeConfig::default()
     }
 }
 
@@ -207,18 +216,19 @@ impl Params {
     /// The wire form of the defaults (for `Sim` and tests).
     pub fn default_wire() -> CallKeysParams {
         let d = Params::default();
-        CallKeysParams {
-            ciphersuite: CIPHERSUITE,
-            ciphersuites: vec![CIPHERSUITE],
-            key_ring_size: u32::from(KEY_RING_SIZE),
-            kdf: KDF.to_owned(),
-            exporter_label: LABEL_FRAME_KEY.to_owned(),
-            release_info_label: LABEL_RELEASE_INFO.to_owned(),
-            retire_after_ms: d.retire_after_ms,
-            client_activate_fallback_ms: d.client_activate_fallback_ms,
-            key_package_max_lifetime_s: d.key_package_max_lifetime_s,
-            unknown_call_buffer_ms: d.unknown_call_buffer_ms,
-            securing_indicator_after_ms: d.securing_indicator_after_ms,
-        }
+        let mut call_keys_params = CallKeysParams::new(
+            KDF.to_owned(),
+            LABEL_FRAME_KEY.to_owned(),
+            LABEL_RELEASE_INFO.to_owned(),
+        );
+        call_keys_params.ciphersuite = CIPHERSUITE;
+        call_keys_params.ciphersuites = vec![CIPHERSUITE];
+        call_keys_params.key_ring_size = u32::from(KEY_RING_SIZE);
+        call_keys_params.retire_after_ms = d.retire_after_ms;
+        call_keys_params.client_activate_fallback_ms = d.client_activate_fallback_ms;
+        call_keys_params.key_package_max_lifetime_s = d.key_package_max_lifetime_s;
+        call_keys_params.unknown_call_buffer_ms = d.unknown_call_buffer_ms;
+        call_keys_params.securing_indicator_after_ms = d.securing_indicator_after_ms;
+        call_keys_params
     }
 }

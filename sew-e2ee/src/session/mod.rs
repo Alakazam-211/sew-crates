@@ -44,7 +44,8 @@ use crate::wire::{ApiFailure, KeyReply, KeyRequest};
 
 pub use buffer::{UnknownCallBuffer, call_id_of};
 pub use io::{
-    E2eeStatus, EngineAttack, Input, LeftReason, Output, SessionState, Transition, UndecryptReason,
+    E2eeStatus, EngineMisbehaviour, Input, LeftReason, Output, SessionState, Transition,
+    UndecryptReason,
 };
 #[cfg(feature = "testing")]
 pub use mls::CraftCommit;
@@ -55,6 +56,7 @@ use roster::RosterWatch;
 
 /// Counts and ids only, for the app's metrics.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Counters {
     /// Epochs activated.
     pub epochs_activated: u64,
@@ -90,6 +92,13 @@ pub struct Counters {
     pub reports_limited: u64,
     /// Last commit processing time (ms of the caller's clock; 0 in tests with a fixed clock).
     pub last_commit_ms: u64,
+}
+
+impl Counters {
+    /// Every count 0 and no recoveries (the same as `Counters::default()`).
+    pub fn new() -> Counters {
+        Counters::default()
+    }
 }
 
 /// The epoch whose keys senders use now.
@@ -382,7 +391,9 @@ impl CallSession {
                 Ok(())
             }
             Input::SenderSlotObserved { observed } => self.on_sender_slot(now, observed),
-            Input::EngineAttack { kind, identity } => self.on_engine_attack(now, kind, identity),
+            Input::EngineMisbehaviour { kind, identity } => {
+                self.on_engine_misbehaviour(now, kind, identity)
+            }
             Input::MediaParticipants(ids) => self.on_media_participants(now, ids),
             Input::VoiceMembers(members) => self.on_voice_members(now, members),
         };
@@ -843,7 +854,8 @@ impl CallSession {
                         self.start_readd(now, sew_proto::e2ee::InvalidReason::Behind);
                         Ok(())
                     }
-                    KeyResyncReason::Unknown => Ok(()),
+                    // Unknown and any value added later.
+                    _ => Ok(()),
                 }
             }
             CallKeysMessage::Unknown => Ok(()),
@@ -1093,19 +1105,19 @@ impl CallSession {
         Ok(())
     }
 
-    fn on_engine_attack(
+    fn on_engine_misbehaviour(
         &mut self,
         now: Millis,
-        kind: EngineAttack,
+        kind: EngineMisbehaviour,
         _identity: Option<LkIdentity>,
     ) -> Result<(), SessionError> {
         let k = match kind {
-            EngineAttack::UnencryptedTrack => {
+            EngineMisbehaviour::UnencryptedTrack => {
                 self.counters.unencrypted_track_refused += 1;
                 sew_proto::e2ee::ReportKind::EngineUnencryptedTrack
             }
-            EngineAttack::SifTrailer => sew_proto::e2ee::ReportKind::EngineSifTrailer,
-            EngineAttack::EncryptionDowngrade => {
+            EngineMisbehaviour::SifTrailer => sew_proto::e2ee::ReportKind::EngineSifTrailer,
+            EngineMisbehaviour::EncryptionDowngrade => {
                 sew_proto::e2ee::ReportKind::EngineEncryptionDowngrade
             }
         };

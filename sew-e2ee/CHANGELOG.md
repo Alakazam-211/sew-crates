@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.0 (2026-11-19)
+
+### Breaking
+
+- **More public types are `#[non_exhaustive]`**, so later additions are not breaking changes.
+  Outside this crate, a `match` on one of these enums needs a wildcard arm, and these structs
+  are built with their constructors instead of struct literals (their fields stay public; set
+  them on the value the constructor returns).
+  - The session enums: `Input`, `Output`, `E2eeStatus`, `SessionState`, `Transition`,
+    `LeftReason`, `UndecryptReason` and `EngineMisbehaviour`.
+  - The error enums: `DecodeError`, `TrustError`, `IdentityError`, `SessionError`,
+    `JoinError`, `ReleaseError`, `BindingError`, `ChunkError`, `RecorderCertError` and
+    `LeafCheckError`.
+  - `Counters`: `Counters::new()` or `Counters::default()` (every count 0).
+  - `E2eeConfig`: `E2eeConfig::new()` or `E2eeConfig::default()` (the default timings and
+    limits).
+  - `ApiFailure`: `ApiFailure::new(status, reason)` and `ApiFailure::transport()` as before,
+    and the new `ApiFailure::from_status(status)` (no reason, detail or retry delay) with the
+    setters `with_reason`, `with_detail` and `with_retry_after_ms`.
+- **Renamed:** the enum `EngineAttack` is `EngineMisbehaviour` (same variants:
+  `UnencryptedTrack`, `SifTrailer`, `EncryptionDowngrade`), and the session input
+  `Input::EngineAttack { kind, identity }` is `Input::EngineMisbehaviour { kind, identity }`.
+
 ## 0.10.6 (2026-11-19)
 
 - The version follows Sew 0.10.6. No API or behaviour change.

@@ -407,15 +407,11 @@ impl VoiceService {
         self.use_devices();
         let deafened = args.deafened.unwrap_or(false);
         let own_muted = args.muted.unwrap_or(false);
-        let req = JoinRequest {
-            target: args.target,
-            room: args.room,
-            muted: args.muted.unwrap_or(false) || deafened,
-            deafened,
-            rejoin: None,
-            // Answered later, with `consent`, when Sew holds the join for its notice.
-            recording_notice: None,
-        };
+        // No `recording_notice`: answered later, with `consent`, when Sew holds the join for
+        // its notice.
+        let req = JoinRequest::new(args.target, args.room)
+            .with_muted(args.muted.unwrap_or(false) || deafened)
+            .with_deafened(deafened);
         let generation = {
             let mut slot = self.lock();
             if slot.state.is_live() {

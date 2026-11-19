@@ -82,12 +82,10 @@ fn failure_from(status: u16, retry_after_s: Option<u64>, body: &[u8]) -> ApiFail
         .and_then(|d| d.get("retry_after_ms"))
         .and_then(Value::as_u64)
         .or_else(|| retry_after_s.map(|s| s.saturating_mul(1000)));
-    ApiFailure {
-        status,
-        reason: s("reason"),
-        detail: s("check").or_else(|| s("unsupported")),
-        retry_after_ms,
-    }
+    ApiFailure::from_status(status)
+        .with_reason(s("reason"))
+        .with_detail(s("check").or_else(|| s("unsupported")))
+        .with_retry_after_ms(retry_after_ms)
 }
 
 fn retryable(f: &ApiFailure) -> bool {

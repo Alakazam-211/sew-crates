@@ -72,7 +72,7 @@ pub use keys::{FrameIkm, ikm_context, lk_frame_key};
 pub use recorder::{RecorderKeyPair, ReleaseOpener, Released};
 pub use roster::{MediaLabel, RosterEntry, RosterState};
 pub use session::{
-    CallSession, Counters, E2eeStatus, EngineAttack, Input, LeftReason, Output, SessionState,
+    CallSession, Counters, E2eeStatus, EngineMisbehaviour, Input, LeftReason, Output, SessionState,
     Transition, UndecryptReason, UnknownCallBuffer,
 };
 pub use store::{DeviceStore, MemoryDeviceStore, Pins, StoredDevice};

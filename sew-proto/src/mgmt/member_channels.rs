@@ -55,6 +55,7 @@ fn check_channels(field: &str, ids: &[Id]) -> Result<(), ValidationError> {
 /// Body of `POST /mgmt/v1/spaces/{space_id}/members/{external_id}/channels`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MgmtMemberChannelsRequest {
     /// The Space's governing App; absent for the server-governed Space (governance
     /// `server`), where levels stop at `moderator`.
@@ -70,6 +71,17 @@ pub struct MgmtMemberChannelsRequest {
     /// The person's level: `member` (`@everyone`), `moderator` or `admin` (the managed roles),
     /// at most the App's `max_level`.
     pub level: SpaceLevel,
+}
+
+impl MgmtMemberChannelsRequest {
+    /// A `MgmtMemberChannelsRequest` with its required fields: every optional field unset.
+    pub fn new(level: SpaceLevel) -> Self {
+        MgmtMemberChannelsRequest {
+            app_id: None,
+            channel_ids: None,
+            level,
+        }
+    }
 }
 
 impl Validate for MgmtMemberChannelsRequest {
@@ -88,6 +100,7 @@ impl Validate for MgmtMemberChannelsRequest {
 /// One item of a bulk sync.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MgmtMemberChannelsItem {
     /// The person.
     pub external_id: ExternalId,
@@ -96,6 +109,17 @@ pub struct MgmtMemberChannelsItem {
     pub channel_ids: Option<Vec<Id>>,
     /// As [`MgmtMemberChannelsRequest::level`].
     pub level: SpaceLevel,
+}
+
+impl MgmtMemberChannelsItem {
+    /// A `MgmtMemberChannelsItem` with its required fields: every optional field unset.
+    pub fn new(external_id: ExternalId, level: SpaceLevel) -> Self {
+        MgmtMemberChannelsItem {
+            external_id,
+            channel_ids: None,
+            level,
+        }
+    }
 }
 
 /// Body of `POST /mgmt/v1/spaces/{space_id}/members/channels`.

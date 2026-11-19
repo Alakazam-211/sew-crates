@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 (2026-11-19, Sew 0.11.0)
+
+No change to this crate's own API or behaviour. It moves to tauri-plugin-sew-voice 0.9.0,
+whose types it uses in its API (`LaneJoinProvider` implements the voice plugin's
+`JoinProvider`), so the breaking changes there reach it: see tauri-plugin-sew-voice's and
+sew-call-client's CHANGELOGs.
+
+### Dependencies
+
+- Requires tauri-plugin-sew-voice 0.9.0.
+
 ## 0.5.3 (2026-11-19, Sew 0.10.6)
 
 No API or behaviour change.

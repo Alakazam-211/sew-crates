@@ -28,6 +28,7 @@ pub(crate) fn check_space_slug(field: &str, slug: &Slug) -> Result<(), Validatio
 
 /// A space: a group of channels with its own roles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct Space {
     /// The space id.
     pub id: Id,
@@ -105,6 +106,42 @@ pub struct Space {
         skip_serializing_if = "SpaceGovernance::is_sew"
     )]
     pub governance: SpaceGovernance,
+}
+
+impl Space {
+    /// A `Space` with its required fields: every count 0, every flag `false`, every list
+    /// empty, the other fields at their serde defaults and every optional field unset.
+    pub fn new(
+        id: Id,
+        slug: Slug,
+        name: impl Into<String>,
+        owner_id: Id,
+        created_at: Timestamp,
+    ) -> Self {
+        Space {
+            id,
+            slug,
+            name: name.into(),
+            icon_url: None,
+            icon_thumb_url: None,
+            owner_id,
+            member_count: 0,
+            created_at,
+            join_policy: SpaceJoinPolicy::default_invite(),
+            my_perms: None,
+            default_channel_ids: Vec::new(),
+            description: None,
+            rules_channel_id: None,
+            welcome_channel_id: None,
+            app_id: None,
+            app_display_name: None,
+            participant_app_ids: Vec::new(),
+            orphaned_from: None,
+            hidden: false,
+            private: false,
+            governance: SpaceGovernance::default_sew(),
+        }
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

@@ -43,10 +43,7 @@ unit_enum! {
 unit_enum! {
     /// An audited action, `<entity>.<verb>` in `lower_snake`. New actions are added over time.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-    #[non_exhaustive]
     pub enum Action {
-        // `Unknown` keeps the discriminant it had in 0.10.5; later variants take explicit ones.
-        @unknown = 211;
         /// A session was created.
         SessionCreate = "session.create",
         /// A session was renewed.
@@ -505,7 +502,13 @@ unit_enum! {
         /// K2 set a person's notification level or mute in one channel or DM over mgmt
         /// (`details {channel_id, level, muted, muted_until}`, the values after the write; the
         /// target is the person).
-        NotifyPrefsSet = "notify.prefs_set" @ 212,
+        NotifyPrefsSet = "notify.prefs_set",
+        /// A person in a voice room invited a member in (`details {channel_id, invite_id,
+        /// invitee_id, silent, reason}`; one row per invite made, none for a refusal).
+        VoiceInvite = "voice.invite",
+        /// A voice invite was declined by the invitee or cancelled by the inviter
+        /// (`details {channel_id, invite_id, invitee_id, invited_by, state}`; the actor did it).
+        VoiceInviteStop = "voice.invite_stop",
     }
 }
 
@@ -747,7 +750,9 @@ impl Action {
             | A::MeetingRedeem
             | A::LobbyKnock
             | A::LobbyAdmit
-            | A::LobbyDeny => AuditVisibility::Space,
+            | A::LobbyDeny
+            | A::VoiceInvite
+            | A::VoiceInviteStop => AuditVisibility::Space,
             // A newer peer's action: only the fullest readers see it.
             A::Unknown => AuditVisibility::Sealed,
         }

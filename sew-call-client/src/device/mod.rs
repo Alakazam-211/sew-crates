@@ -706,6 +706,7 @@ enum Keys {
 
 /// Where a vault lives.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct VaultConfig {
     /// The host's app data directory.
     pub data_dir: PathBuf,
@@ -718,6 +719,25 @@ pub struct VaultConfig {
     pub label: String,
     /// The platform the device enrols as (default [`default_platform`], from `target_os`).
     pub platform: DevicePlatform,
+}
+
+impl VaultConfig {
+    /// A vault in `data_dir` for `app_id`, labelled `label`: the default store
+    /// ([`StoreChoice::Auto`]) and the platform of [`default_platform`] (set `store` and
+    /// `platform` on the result to choose others).
+    pub fn new(
+        data_dir: impl Into<PathBuf>,
+        app_id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> VaultConfig {
+        VaultConfig {
+            data_dir: data_dir.into(),
+            app_id: app_id.into(),
+            store: StoreChoice::default(),
+            label: label.into(),
+            platform: default_platform(),
+        }
+    }
 }
 
 /// One install's and login lineage's device: the public file, the secret store, and the

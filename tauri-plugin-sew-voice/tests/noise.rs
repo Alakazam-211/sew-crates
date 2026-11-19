@@ -94,12 +94,7 @@ async fn set_and_get_before_and_during_a_call_with_events() {
 
     // During a call: the setting is the engine's, so it holds across the join.
     w.svc
-        .join(JoinArgs {
-            target: "k2:acme".into(),
-            room: "48831765147549698".into(),
-            muted: None,
-            deafened: None,
-        })
+        .join(JoinArgs::new("k2:acme", "48831765147549698"))
         .await
         .expect("join");
     assert_eq!(get(&w).await, json!({"mode": "off", "active": "off"}));

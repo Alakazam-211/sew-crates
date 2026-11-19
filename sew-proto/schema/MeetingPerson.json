@@ -17,7 +17,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "One person in a meeting channel, as everyone in that channel sees them: the\ndisplay name and whether they are a link guest, nothing else (no handle, email, role,\nstatus, profile field or Space membership). Answered by `GET /api/v1/channels/{id}/people`\nand carried as `person` by a meeting channel's `channel_member_added`. A link guest's name is\nattacker-chosen text: show it as plain text, after a fixed \"Guest\" badge.",
+  "description": "One person in a meeting channel, as everyone in that channel sees them: the\ndisplay name and whether they are a link guest, nothing else (no handle, email, role,\nstatus, profile field or Space membership). Answered by `GET /api/v1/channels/{id}/people`\nand carried as `person` by a meeting channel's `channel_member_added`. A link guest's name is\ntext the guest chooses: treat it as untrusted, and show it as plain text, after a fixed\n\"Guest\" badge.",
   "properties": {
     "display_name": {
       "description": "Their display name.",

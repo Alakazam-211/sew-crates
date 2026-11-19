@@ -6,14 +6,18 @@
 //!   with prost + pbjson (binary and LiveKit's JSON, unknown JSON fields ignored) without
 //!   `protoc` (protox builds the descriptors). Sew's own tests regenerate them and fail on
 //!   drift.
+//! - [`Timestamp`]: `google.protobuf.Timestamp`, the type of the generated timestamp fields,
+//!   with the protobuf JSON mapping's RFC 3339 strings.
 //! - [`version`]: Sew's protocol-version gates (rewritten from a written
 //!   behaviour specification), with the gate table as data ([`version::GATES`]).
 //!
 //! The generated sources are `include!`d so `cargo fmt` leaves them alone; they carry no
 //! `unsafe`.
 
+mod timestamp;
 pub mod version;
 
+pub use timestamp::Timestamp;
 pub use version::{BelowFloor, CURRENT_PROTOCOL, MIN_CLIENT_PROTOCOL, ProtocolVersion};
 
 /// The `livekit/protocol` commit the protos come from (protocol 17).

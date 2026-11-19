@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.11.0 (2026-11-19)
+
+### Breaking
+
+- **The generated `google.protobuf.Timestamp` fields change type**, from
+  `Option<pbjson_types::Timestamp>` to `Option<sew_lkproto::Timestamp>` (the new
+  `sew_lkproto::Timestamp`). The fields (14):
+  - `MetricsBatch.normalized_timestamp`
+  - `MetricSample.normalized_timestamp`
+  - `EventMetric.normalized_start_timestamp` and `EventMetric.normalized_end_timestamp`
+  - `MetricsRecordingHeader.start_time` and `MetricsRecordingHeader.room_start_time`
+  - `RtpDrift.start_time` and `RtpDrift.end_time`
+  - `RtpStats.start_time`, `RtpStats.end_time`, `RtpStats.last_pli`, `RtpStats.last_fir`,
+    `RtpStats.last_key_frame` and `RtpStats.last_layer_lock_pli`
+
+  The protobuf and JSON encoding is unchanged: `Timestamp` has the same fields (`seconds`,
+  `nanos`), the same protobuf message (`seconds` field 1, `nanos` field 2) and the same JSON
+  (an RFC 3339 string in UTC with a `+00:00` offset and as many fraction digits as the value
+  needs: none, 3, 6 or 9). Code that names `pbjson_types::Timestamp` for these fields uses
+  `sew_lkproto::Timestamp` instead. The crate no longer depends on `pbjson-types` (nor,
+  through it, on `chrono`).
+
 ## 0.10.6 (2026-11-19)
 
 - The version follows Sew 0.10.6. No API or behaviour change.

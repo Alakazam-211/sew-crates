@@ -31,6 +31,7 @@ pub use trickle::{CandidateInit, trickle_for};
 
 /// How this client describes itself in the join request's `ClientInfo`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ClientInfoOpts {
     /// The SDK family reported to the server (Rust by default).
     pub sdk: client_info::Sdk,
@@ -54,6 +55,12 @@ impl Default for ClientInfoOpts {
 }
 
 impl ClientInfoOpts {
+    /// The Rust SDK family, an empty version, the current protocol and this OS (the same as
+    /// `ClientInfoOpts::default()`): set `version` and the rest on the result.
+    pub fn new() -> ClientInfoOpts {
+        ClientInfoOpts::default()
+    }
+
     /// The protobuf `ClientInfo`: these four fields set, everything else left at its default.
     pub fn to_proto(&self) -> ClientInfo {
         ClientInfo {
@@ -71,6 +78,7 @@ impl ClientInfoOpts {
 /// A first join and a full reconnect use `reconnect = false`; a resume sets `reconnect = true`
 /// and `participant_sid` to the sid the server gave us before.
 #[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct JoinParams {
     /// Access token (the original grant, or the latest refresh token).
     pub token: String,

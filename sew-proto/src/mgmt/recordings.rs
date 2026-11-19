@@ -247,6 +247,8 @@ impl MgmtRecordingParticipant {
 /// One recording as an App's server sees it: no content, no audio.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
+// `transcript_failure` is deprecated; the derives still read and write it.
+#[allow(deprecated)]
 pub struct MgmtRecordingSummary {
     /// The recording.
     pub id: Id,
@@ -273,8 +275,15 @@ pub struct MgmtRecordingSummary {
     pub record_message_id: Id,
     /// The transcript.
     pub transcript_state: TranscriptState,
-    /// Why the transcript is `failed` or `partial`, as a stable code and plain words; absent
-    /// otherwise, when no cause is known, and from servers that predate it.
+    /// Deprecated: moves into `recording.transcript.failure` of the record message
+    /// (`record_message_id`), [`SummaryTranscript::failure`](crate::recording::SummaryTranscript::failure);
+    /// kept for at least one more release, then removed in a later breaking release. Until then
+    /// the server writes both, with the same value: why the transcript is `failed` or `partial`,
+    /// as a stable code and plain words; absent otherwise, when no cause is known, and from
+    /// servers that predate it.
+    #[deprecated(
+        note = "moves into `recording.transcript.failure`; kept for at least one more release, then removed in a later breaking release"
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_failure: Option<TranscriptFailure>,
     /// The audio (never served to an App).
@@ -288,6 +297,7 @@ pub struct MgmtRecordingSummary {
 impl MgmtRecordingSummary {
     /// A summary of a manual recording that is starting, with a pending transcript and
     /// available audio, no keep days and no participants; set the other fields.
+    #[allow(deprecated)]
     pub fn new(
         id: Id,
         channel_id: Id,

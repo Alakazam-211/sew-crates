@@ -112,6 +112,17 @@
     "SummaryTranscript": {
       "description": "The transcript part of a [`RecordingSummary`].",
       "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TranscriptFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the transcript is `failed` or `partial`, as a stable code and plain words for the\nperson (`{\"code\": \"transcriber_error\", \"message\": \"...\"}`). Absent otherwise, when no\ncause is known, and from servers that predate it."
+        },
         "gaps_ms": {
           "description": "Total gap time.",
           "format": "uint64",
@@ -142,6 +153,49 @@
         "gaps_ms"
       ],
       "type": "object"
+    },
+    "TranscriptFailure": {
+      "description": "Why a recording's transcript could not be made (`failed`) or is incomplete (`partial`):\n`{\"code\": \"transcriber_error\", \"message\": \"The transcription service could not process the\naudio.\"}`. `message` is plain words for the person, written by the server; `code` is stable\nfor a client that picks its own words.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/TranscriptFailureCode",
+          "description": "The cause."
+        },
+        "message": {
+          "description": "Plain words for the person.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "TranscriptFailureCode": {
+      "description": "Why a transcript is `failed` or `partial` ([`TranscriptFailure::code`]). Stored in\n`recordings.transcript_failure`. Later releases add codes: show\n[`TranscriptFailure::message`] for a code this build does not know.",
+      "oneOf": [
+        {
+          "const": "audio_gone",
+          "description": "The audio was deleted (expired, purged, or its record message deleted) before it was\ntranscribed.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported_language",
+          "description": "The transcriber does not support the language spoken, even when asked to detect it.",
+          "type": "string"
+        },
+        {
+          "const": "transcriber_error",
+          "description": "The transcriber could not transcribe the audio (it timed out, failed or gave an\nanswer Sew could not read) after its retries.",
+          "type": "string"
+        },
+        {
+          "const": "audio_not_captured",
+          "description": "Part of the call's audio never reached the recording (the recorder restarted or\nreconnected, storage was full, a key was missing, and the like). Only on `partial`.",
+          "type": "string"
+        }
+      ]
     },
     "TranscriptState": {
       "description": "The transcript. Stored in `recordings.transcript_state`.",

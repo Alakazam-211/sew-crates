@@ -595,28 +595,22 @@ pub(crate) fn sample(w: &StatsWindow, terms: &CallStatsBeacon) -> Result<CallSta
             .and_then(CallStatsRelayProtocol::from_wire),
         _ => None,
     };
-    let s = CallStatsSample {
-        interval_ms: w.interval_ms,
-        client: if audio {
-            CallStatsClient::Native
-        } else {
-            CallStatsClient::Other
-        },
-        frames_decoded: 0,
-        frames_dropped: 0,
-        freezes: 0,
-        freeze_ms: 0,
-        decrypt_failures: w.decrypt_failures,
-        candidate,
-        relay_protocol,
-        rtt_ms: w.rtt_ms,
-        audio_played_ms: audio.then_some(w.audio_played_ms),
-        audio_concealed_ms: audio.then_some(w.audio_concealed_ms),
-        audio_packets_expected: audio.then_some(w.audio_packets_expected),
-        audio_packets_lost: audio.then_some(w.audio_packets_lost),
-        audio_jitter_ms: audio.then_some(w.audio_jitter_ms),
-        audio_longest_gap_ms: audio.then_some(w.audio_longest_gap_ms),
-    };
+    let mut s = CallStatsSample::new(if audio {
+        CallStatsClient::Native
+    } else {
+        CallStatsClient::Other
+    });
+    s.interval_ms = w.interval_ms;
+    s.decrypt_failures = w.decrypt_failures;
+    s.candidate = candidate;
+    s.relay_protocol = relay_protocol;
+    s.rtt_ms = w.rtt_ms;
+    s.audio_played_ms = audio.then_some(w.audio_played_ms);
+    s.audio_concealed_ms = audio.then_some(w.audio_concealed_ms);
+    s.audio_packets_expected = audio.then_some(w.audio_packets_expected);
+    s.audio_packets_lost = audio.then_some(w.audio_packets_lost);
+    s.audio_jitter_ms = audio.then_some(w.audio_jitter_ms);
+    s.audio_longest_gap_ms = audio.then_some(w.audio_longest_gap_ms);
     s.validate().map_err(|e| format!("invalid sample: {e}"))?;
     Ok(s)
 }

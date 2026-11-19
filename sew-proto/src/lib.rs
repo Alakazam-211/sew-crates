@@ -40,6 +40,7 @@ pub mod search;
 pub mod time;
 pub mod token;
 pub mod voice;
+pub mod voice_notify;
 pub mod when;
 
 mod examples;

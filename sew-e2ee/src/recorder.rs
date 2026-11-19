@@ -42,6 +42,7 @@ pub const RECORDER_CERT_MAX_S: u64 = 24 * 3600;
 
 /// Why a recorder announcement was refused (no release is ever sent for it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum RecorderCertError {
     /// Malformed or over the size cap.
     #[error("recorder certificate: decode")]

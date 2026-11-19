@@ -2278,13 +2278,9 @@ impl Engine {
             .refresh_token()
             .map(str::to_owned)
             .unwrap_or_else(|| self.answer.join.token.clone());
-        let mut p = JoinParams::new(
-            &token,
-            ClientInfoOpts {
-                version: concat!("sew-call-client/", env!("CARGO_PKG_VERSION")).to_owned(),
-                ..ClientInfoOpts::default()
-            },
-        );
+        let mut client_info = ClientInfoOpts::new();
+        client_info.version = concat!("sew-call-client/", env!("CARGO_PKG_VERSION")).to_owned();
+        let mut p = JoinParams::new(&token, client_info);
         if kind == Kind::Resume {
             p.reconnect = true;
             p.participant_sid = self.sid.clone();

@@ -50,12 +50,7 @@ fn world() -> World {
 }
 
 fn args(target: &str, room: &str) -> JoinArgs {
-    JoinArgs {
-        target: target.into(),
-        room: room.into(),
-        muted: None,
-        deafened: None,
-    }
+    JoinArgs::new(target, room)
 }
 
 fn fixture() -> Value {

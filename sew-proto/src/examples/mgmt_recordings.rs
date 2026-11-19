@@ -131,6 +131,7 @@ impl Example for MgmtRecordingParticipant {
     }
 }
 
+#[allow(deprecated)]
 fn summary_full() -> MgmtRecordingSummary {
     MgmtRecordingSummary {
         id: ID_RECORDING,
@@ -153,6 +154,7 @@ fn summary_full() -> MgmtRecordingSummary {
     }
 }
 
+#[allow(deprecated)]
 fn summary_min() -> MgmtRecordingSummary {
     MgmtRecordingSummary {
         space_id: None,

@@ -58,15 +58,13 @@ impl Caps {
     /// The wire object: `{sender_key_index, kdf: "hkdf", key_ring_size: 64, sdk,
     /// sdk_version, browser?, lib: "sew-e2ee/<ver>", ciphersuites: [1]}`.
     pub fn to_wire(&self) -> E2eeCaps {
-        E2eeCaps {
-            sender_key_index: self.sender_key_index,
-            kdf: KDF.to_owned(),
-            key_ring_size: u32::from(KEY_RING_SIZE),
-            sdk: self.sdk.clone(),
-            sdk_version: self.sdk_version.clone(),
-            browser: self.browser.clone(),
-            lib: Some(LIB.to_owned()),
-            ciphersuites: Some(vec![CIPHERSUITE]),
-        }
+        let mut e2ee_caps =
+            E2eeCaps::new(KDF.to_owned(), self.sdk.clone(), self.sdk_version.clone());
+        e2ee_caps.sender_key_index = self.sender_key_index;
+        e2ee_caps.key_ring_size = u32::from(KEY_RING_SIZE);
+        e2ee_caps.browser = self.browser.clone();
+        e2ee_caps.lib = Some(LIB.to_owned());
+        e2ee_caps.ciphersuites = Some(vec![CIPHERSUITE]);
+        e2ee_caps
     }
 }

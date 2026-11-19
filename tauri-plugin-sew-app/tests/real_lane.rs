@@ -78,14 +78,7 @@ async fn a_real_lane_signs_in_hands_off_joins_and_signs_out() {
     if let Some(room) = room {
         let provider = LaneJoinProvider::new(svc.clone());
         let answer = provider
-            .join(JoinRequest {
-                target: "real-lane".into(),
-                room,
-                muted: true,
-                deafened: false,
-                rejoin: None,
-                recording_notice: None,
-            })
+            .join(JoinRequest::new("real-lane", room).with_muted(true))
             .await
             .unwrap();
         assert!(

@@ -11,6 +11,11 @@ use serde_json::Value;
 
 use crate::error::Validate;
 
+/// The discriminant of every wire unit enum's `Unknown` (`Unknown as isize`), the same in
+/// every enum and in every release. The known variants are numbered 0, 1, 2, … in wire order,
+/// well below it, so adding a variant never moves `Unknown`.
+pub const UNKNOWN_DISCRIMINANT: isize = 0xFFFF;
+
 /// Implemented by every wire unit enum (via the internal `unit_enum!` macro).
 pub trait UnitEnum: Copy + Sized + 'static {
     /// Every known value, without `Unknown`.
@@ -262,6 +267,8 @@ pub const NESTED: &[&str] = &[
     "AppQuotaUsage",
     // One item of the person notification feed.
     "PersonNotification",
+    // One member's result of a voice invite request.
+    "VoiceInviteResult",
     "PresenceEntry",
     "ProfileFieldValue",
     // Retention.
@@ -387,6 +394,7 @@ pub fn all() -> Vec<WireType> {
     use crate::recording::*;
     use crate::search::query::{FilterName, HasValue, IsValue};
     use crate::voice::*;
+    use crate::voice_notify::*;
     use crate::when::*;
 
     vec![
@@ -3163,6 +3171,56 @@ pub fn all() -> Vec<WireType> {
             "event media_policy_updated, join answers, READY install.media"
         ),
         wire!(Record, "voice", VoiceMediaStatus, "status.voice.media"),
+        // Voice room notifications: the room start and invites.
+        wire!(
+            Event,
+            "voice_notify",
+            VoiceStartedEvent,
+            "event voice_started"
+        ),
+        wire!(
+            Request,
+            "voice_notify",
+            VoiceInviteRequest,
+            "POST /api/v1/channels/{id}/voice/invite"
+        ),
+        wire!(
+            Response,
+            "voice_notify",
+            VoiceInviteResults,
+            "POST /api/v1/channels/{id}/voice/invite"
+        ),
+        wire!(
+            Enum,
+            "voice_notify",
+            VoiceInviteResultState,
+            "VoiceInviteResult.state"
+        ),
+        wire!(
+            Request,
+            "voice_notify",
+            VoiceInviteDeclineRequest,
+            "POST /api/v1/channels/{id}/voice/invite/decline"
+        ),
+        wire!(
+            Request,
+            "voice_notify",
+            VoiceInviteCancelRequest,
+            "POST /api/v1/channels/{id}/voice/invite/cancel"
+        ),
+        wire!(
+            Event,
+            "voice_notify",
+            VoiceInvite,
+            "event voice_invite, the decline and cancel answers, ReadyChannel.voice_invites"
+        ),
+        wire!(Enum, "voice_notify", VoiceInviteState, "VoiceInvite.state"),
+        wire!(
+            Response,
+            "voice_notify",
+            MyVoiceInvites,
+            "GET /api/v1/me/voice/invites"
+        ),
         wire!(Enum, "calls", CallState, "Call.state"),
         wire!(Enum, "calls", RingState, "CallRing.state"),
         wire!(
@@ -3284,7 +3342,7 @@ pub fn all() -> Vec<WireType> {
             Enum,
             "recording",
             TranscriptFailureCode,
-            "Message.transcript_failure.code, MgmtRecordingSummary.transcript_failure.code"
+            "RecordingSummary.transcript.failure.code (Message.transcript_failure.code, MgmtRecordingSummary.transcript_failure.code until they are removed)"
         ),
         wire!(Enum, "recording", Playback, "RecordingAudio.playback"),
         wire!(Enum, "recording", DownloadWhat, "DownloadRequest.what"),

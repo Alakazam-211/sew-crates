@@ -11,6 +11,9 @@ engine can join its calls. This crate is that protocol's wire format for Rust:
   byte-for-byte from livekit/protocol and ship in `proto/`. The Rust in `src/gen/` is generated
   from them with prost and pbjson (the binary encoding and LiveKit's JSON; unknown JSON fields
   are ignored), without `protoc`, and is not edited by hand.
+- `Timestamp`: `google.protobuf.Timestamp`, the type of the generated timestamp fields, with
+  the protobuf JSON mapping's RFC 3339 strings (UTC, `+00:00`). It is the crate's own type, so
+  the crate's dependencies are `prost`, `pbjson` and `serde`.
 - `PROTOCOL_COMMIT`: the livekit/protocol commit the `.proto` files were copied from
   (`a4f4b5c0c23f167d0c07de1e1d7652125882e73c`), so you can compare them with upstream.
 - `version`: the protocol-version gates (`ProtocolVersion`, `CURRENT_PROTOCOL` = 17,
@@ -36,7 +39,7 @@ Not affiliated with or endorsed by LiveKit.
 
 ```toml
 [dependencies]
-sew-lkproto = "0.10.6"
+sew-lkproto = "0.11.0"
 prost = "0.14"
 ```
 

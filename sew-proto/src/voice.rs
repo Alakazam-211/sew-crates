@@ -103,6 +103,7 @@ coded_enum! {
 
 /// A member's voice state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct VoiceState {
     /// The member.
     pub member_id: Id,
@@ -136,6 +137,34 @@ pub struct VoiceState {
     /// The member holds a screen-share lease.
     #[serde(default)]
     pub self_stream: bool,
+}
+
+impl VoiceState {
+    /// A `VoiceState` with its required fields: every flag `false` and every optional field
+    /// unset.
+    pub fn new(
+        member_id: Id,
+        channel_id: Id,
+        connection: VoiceConnection,
+        joined_at: Timestamp,
+    ) -> Self {
+        VoiceState {
+            member_id,
+            space_id: None,
+            channel_id,
+            connection,
+            secure: false,
+            self_mute: false,
+            self_deaf: false,
+            server_mute: false,
+            server_deaf: false,
+            speak_denied: false,
+            joined_at,
+            call_id: None,
+            self_video: false,
+            self_stream: false,
+        }
+    }
 }
 
 /// `POST /api/v1/channels/{id}/voice/join` body.
@@ -209,6 +238,7 @@ pub(crate) fn check_credential_join(
 
 /// The join answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct VoiceJoinResponse {
     /// The signalling URL (`wss://voice.<host>`).
     pub url: String,
@@ -242,6 +272,31 @@ pub struct VoiceJoinResponse {
     /// (`call_credential: true`); such an answer has no `e2ee` (a deferred key join).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_credential: Option<CallCredential>,
+}
+
+impl VoiceJoinResponse {
+    /// A `VoiceJoinResponse` with its required fields: every optional field unset.
+    pub fn new(
+        url: impl Into<String>,
+        token: impl Into<String>,
+        expires_at: Timestamp,
+        room: CallId,
+        state: VoiceState,
+    ) -> Self {
+        VoiceJoinResponse {
+            url: url.into(),
+            token: token.into(),
+            expires_at,
+            room,
+            state,
+            e2ee: None,
+            media: None,
+            call_id: None,
+            recording: None,
+            stats: None,
+            call_credential: None,
+        }
+    }
 }
 
 /// A call-scoped credential, minted with a voice or DM call join. It is valid only
@@ -440,6 +495,7 @@ unit_enum! {
 /// `/metrics` families and keeps nothing per person or per call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct CallStatsSample {
     /// The window the counts cover, ms (1..=120,000).
     pub interval_ms: u32,
@@ -483,6 +539,31 @@ pub struct CallStatsSample {
     /// The longest stretch of the window with no audio played, ms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_longest_gap_ms: Option<u32>,
+}
+
+impl CallStatsSample {
+    /// A `CallStatsSample` with its required fields: every count 0 and every optional field
+    /// unset.
+    pub fn new(client: CallStatsClient) -> Self {
+        CallStatsSample {
+            interval_ms: 0,
+            client,
+            frames_decoded: 0,
+            frames_dropped: 0,
+            freezes: 0,
+            freeze_ms: 0,
+            decrypt_failures: 0,
+            candidate: None,
+            relay_protocol: None,
+            rtt_ms: None,
+            audio_played_ms: None,
+            audio_concealed_ms: None,
+            audio_packets_expected: None,
+            audio_packets_lost: None,
+            audio_jitter_ms: None,
+            audio_longest_gap_ms: None,
+        }
+    }
 }
 
 impl Validate for CallStatsSample {
@@ -762,6 +843,7 @@ pub struct VoiceServerUpdated {
 
 /// A public voice channel in READY that the member can VIEW but has not joined.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ReadyVoiceChannel {
     /// The channel.
     pub id: Id,
@@ -780,6 +862,35 @@ pub struct ReadyVoiceChannel {
     pub user_limit: u8,
     /// The member's effective permissions there.
     pub my_perms: Perms,
+    /// The member's incoming pending voice invites into this room (flag `voice_invites`),
+    /// oldest first; absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voice_invites: Vec<crate::voice_notify::VoiceInvite>,
+}
+
+impl ReadyVoiceChannel {
+    /// A READY voice channel with its required fields: no category, no user limit, no
+    /// invites (set them on the value).
+    pub fn new(
+        id: Id,
+        space_id: Id,
+        slug: Slug,
+        name: String,
+        position: u32,
+        my_perms: Perms,
+    ) -> Self {
+        ReadyVoiceChannel {
+            id,
+            space_id,
+            category_id: None,
+            slug,
+            name,
+            position,
+            user_limit: 0,
+            my_perms,
+            voice_invites: Vec::new(),
+        }
+    }
 }
 
 /// `GET /api/v1/me/voice`.
@@ -812,6 +923,7 @@ unit_enum! {
 
 /// `status.voice.engine` (the media engine's health).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct VoiceEngineStatus {
     /// The engine's state.
     pub state: VoiceEngineState,
@@ -837,9 +949,28 @@ pub struct VoiceEngineStatus {
     pub drift_fixes_1h: u64,
 }
 
+impl VoiceEngineStatus {
+    /// A `VoiceEngineStatus` with its required fields: every count 0 and every optional
+    /// field unset.
+    pub fn new(state: VoiceEngineState) -> Self {
+        VoiceEngineStatus {
+            state,
+            version: None,
+            rooms: 0,
+            participants: 0,
+            panics_1h: 0,
+            down_since: None,
+            last_event_at: None,
+            last_snapshot_at: None,
+            drift_fixes_1h: 0,
+        }
+    }
+}
+
 /// `status.voice`. Absent when voice is off
 /// and was never configured.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct VoiceStatus {
     /// `[voice] enabled`.
     pub enabled: bool,
@@ -869,8 +1000,28 @@ pub struct VoiceStatus {
     pub media: Option<VoiceMediaStatus>,
 }
 
+impl VoiceStatus {
+    /// A `VoiceStatus` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(engine: VoiceEngineStatus) -> Self {
+        VoiceStatus {
+            enabled: false,
+            public_url: None,
+            calls: 0,
+            participants: 0,
+            secure_participants: 0,
+            reconnecting: 0,
+            engine,
+            e2ee: None,
+            media_path: None,
+            media: None,
+        }
+    }
+}
+
 /// The video, DM call and media budget part of `status.voice`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct VoiceMediaStatus {
     /// Active DM calls.
     pub calls_active: u64,
@@ -892,6 +1043,25 @@ pub struct VoiceMediaStatus {
     pub engine_cpu_pct: Option<f64>,
     /// `[voice.video] enabled` (and voice enabled).
     pub video_enabled: bool,
+}
+
+impl VoiceMediaStatus {
+    /// A `VoiceMediaStatus` with its required fields: every count 0, every flag `false` and
+    /// every optional field unset.
+    pub fn new(media_tier: MediaTier, budget_source: BudgetSource) -> Self {
+        VoiceMediaStatus {
+            calls_active: 0,
+            video_publishers: 0,
+            screen_publishers: 0,
+            media_tier,
+            budget_source,
+            egress_mbps: 0.0,
+            egress_budget_mbps: 0,
+            forward_estimate_mbps: 0.0,
+            engine_cpu_pct: None,
+            video_enabled: false,
+        }
+    }
 }
 
 unit_enum! {

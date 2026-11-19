@@ -52,6 +52,8 @@ mod extras;
 // Read state, changes and sync types.
 mod read_receipts;
 mod read_state;
+// Voice room notifications: the room start and invites.
+mod voice_notify;
 // Search.
 mod search;
 // Guest conversion and the guest list.
@@ -869,6 +871,7 @@ fn thread_min() -> ThreadSummary {
     }
 }
 
+#[allow(deprecated)]
 fn message_full() -> Message {
     Message {
         id: ID_REPLY,
@@ -960,6 +963,7 @@ fn message_system() -> Message {
     m
 }
 
+#[allow(deprecated)]
 fn message_min() -> Message {
     Message {
         id: ID_MESSAGE,
@@ -1957,6 +1961,7 @@ fn ready_full() -> Ready {
                 recording_rule: crate::recording::RecordingRule::None,
                 members_can_leave: true,
                 dm_seen: vec![],
+                voice_invites: vec![],
             },
             ReadyChannel {
                 id: ID_DM,
@@ -1983,6 +1988,7 @@ fn ready_full() -> Ready {
                 recording_rule: crate::recording::RecordingRule::None,
                 members_can_leave: false,
                 dm_seen: vec![read_receipts::dm_seen_full()],
+                voice_invites: vec![],
             },
             // An auto-record voice channel.
             ReadyChannel {
@@ -2010,6 +2016,7 @@ fn ready_full() -> Ready {
                 recording_rule: crate::recording::RecordingRule::Auto,
                 members_can_leave: false,
                 dm_seen: vec![],
+                voice_invites: vec![voice_notify::invite_in(ID_OTHER_CHANNEL)],
             },
         ],
         read_states: vec![read_state::ready_read_state()],
@@ -2963,41 +2970,62 @@ impl Example for PersonNotificationsQuery {
 
 impl Example for PersonNotificationsPage {
     fn examples() -> Vec<(&'static str, Self)> {
-        let full = PersonNotificationsPage {
-            items: vec![
-                PersonNotification {
-                    seq: 78,
-                    kind: PersonNotificationKind::Mention,
-                    at: t(60_000),
-                    space_id: Some(ID_SPACE),
-                    channel_id: ID_CHANNEL,
-                    message_id: Some(ID_MESSAGE),
-                    call_id: None,
-                    from_member_id: ID_BOB,
-                    app_id: Some("atrium".into()),
-                    participant_app_ids: vec!["jobs".into()],
-                    preview: Some("@bob can you check the deploy log?".into()),
-                },
-                PersonNotification {
-                    seq: 80,
-                    kind: PersonNotificationKind::CallRing,
-                    at: t(120_000),
-                    space_id: None,
-                    channel_id: ID_DM,
-                    message_id: Some(ID_REPLY),
-                    call_id: Some(ID_JOB),
-                    from_member_id: ID_CAROL,
-                    app_id: None,
-                    participant_app_ids: vec![],
-                    preview: None,
-                },
-            ],
-            next: 81,
-        };
-        let min = PersonNotificationsPage {
-            items: vec![],
-            next: 77,
-        };
+        let mut mention = PersonNotification::new(
+            PersonNotificationKind::Mention,
+            t(60_000),
+            ID_CHANNEL,
+            ID_BOB,
+        );
+        mention.seq = 78;
+        mention.space_id = Some(ID_SPACE);
+        mention.message_id = Some(ID_MESSAGE);
+        mention.from_external_id = Some("k2:principal:5b1c0000-0000-4000-8000-000000000004".into());
+        mention.app_id = Some("atrium".into());
+        mention.participant_app_ids = vec!["jobs".into()];
+        mention.preview = Some("@bob can you check the deploy log?".into());
+        let mut ring = PersonNotification::new(
+            PersonNotificationKind::CallRing,
+            t(120_000),
+            ID_DM,
+            ID_CAROL,
+        );
+        ring.seq = 80;
+        ring.message_id = Some(ID_REPLY);
+        ring.call_id = Some(ID_JOB);
+        ring.from_external_id = Some("k2:principal:5b1c0000-0000-4000-8000-000000000016".into());
+        let mut reply = PersonNotification::new(
+            PersonNotificationKind::ReplyToMe,
+            t(180_000),
+            ID_CHANNEL,
+            ID_BOB,
+        );
+        reply.seq = 82;
+        reply.space_id = Some(ID_SPACE);
+        reply.message_id = Some(ID_REPLY);
+        reply.thread_root_id = Some(ID_MESSAGE);
+        reply.from_external_id = Some("k2:principal:5b1c0000-0000-4000-8000-000000000004".into());
+        reply.app_id = Some("atrium".into());
+        let mut read =
+            PersonNotification::new(PersonNotificationKind::Read, t(240_000), ID_CHANNEL, ID_ME);
+        read.seq = 83;
+        read.space_id = Some(ID_SPACE);
+        read.message_id = Some(ID_REPLY);
+        read.thread_root_id = Some(ID_MESSAGE);
+        read.app_id = Some("atrium".into());
+        let mut invite = PersonNotification::new(
+            PersonNotificationKind::VoiceInvite,
+            t(300_000),
+            ID_OTHER_CHANNEL,
+            ID_BOB,
+        );
+        invite.seq = 84;
+        invite.space_id = Some(ID_SPACE);
+        invite.invite_id = Some(ID_JOB);
+        invite.expires_at = Some(t(600_000));
+        invite.from_external_id = Some("k2:principal:5b1c0000-0000-4000-8000-000000000004".into());
+        invite.app_id = Some("atrium".into());
+        let full = PersonNotificationsPage::new(vec![mention, ring, reply, read, invite], 84, 90);
+        let min = PersonNotificationsPage::new(vec![], 77, 77);
         vec![("full", full), ("min", min)]
     }
 }

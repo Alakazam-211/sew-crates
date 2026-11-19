@@ -61,6 +61,11 @@
       "const": "transcript_ready",
       "description": "A call transcript is ready.",
       "type": "string"
+    },
+    {
+      "const": "inline_reply",
+      "description": "An inline reply (a `reply` reference, not a quote or a forward) to one of the\nmember's messages. People only.",
+      "type": "string"
     }
   ],
   "title": "NotificationReason"

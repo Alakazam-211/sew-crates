@@ -78,19 +78,18 @@ fn scope() -> CallScope {
 
 fn init(install: &Install, create: bool) -> CallKeysInit {
     let j = JoinIdHex::from_bytes([1; 16]);
-    CallKeysInit {
-        call_id: call_id(),
-        lk_identity: j.lk_identity(),
-        join_id: j,
-        scope: scope(),
-        group_id: B64::new(GROUP.to_vec()),
-        epoch: 0,
-        create,
-        activate_on_create: create,
-        slot_base: 0,
-        external_sender: B64::new(install.external_sender()),
-        params: Params::default_wire(),
-    }
+    let mut call_keys_init = CallKeysInit::new(
+        call_id(),
+        j.clone(),
+        j.lk_identity(),
+        scope(),
+        B64::new(GROUP.to_vec()),
+        B64::new(install.external_sender()),
+        Params::default_wire(),
+    );
+    call_keys_init.create = create;
+    call_keys_init.activate_on_create = create;
+    call_keys_init
 }
 
 /// A fresh session of the fixture device (`create`: the creator of a fresh call; else joining).

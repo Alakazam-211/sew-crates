@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Where a voice invite stands. `pending` until it stops; every other value is a stop.",
+  "oneOf": [
+    {
+      "const": "pending",
+      "description": "Waiting for the invitee.",
+      "type": "string"
+    },
+    {
+      "const": "accepted",
+      "description": "The invitee joined the room (on any device).",
+      "type": "string"
+    },
+    {
+      "const": "declined",
+      "description": "The invitee declined.",
+      "type": "string"
+    },
+    {
+      "const": "cancelled",
+      "description": "The inviter cancelled.",
+      "type": "string"
+    },
+    {
+      "const": "inviter_left",
+      "description": "The inviter left the room (left, was moved out or disconnected).",
+      "type": "string"
+    },
+    {
+      "const": "expired",
+      "description": "Nobody answered before `expires_at`.",
+      "type": "string"
+    },
+    {
+      "const": "room_ended",
+      "description": "The room ended: archived, closing, its session ended, voice turned off or the media\npath down.",
+      "type": "string"
+    },
+    {
+      "const": "revoked",
+      "description": "The invitee can no longer join the room: no longer able to connect, deactivated,\nout of the Space, or erased.",
+      "type": "string"
+    }
+  ],
+  "title": "VoiceInviteState"
+}
