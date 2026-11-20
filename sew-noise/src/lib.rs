@@ -37,6 +37,7 @@ mod stage;
 mod standard;
 mod stream;
 mod strong;
+mod thread_clock;
 
 pub use resample::Linear;
 #[cfg(feature = "dfn3")]

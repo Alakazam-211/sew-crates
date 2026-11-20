@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.9.1 (2026-11-20, Sew 0.11.1)
+
+Additive: new optional fields, enum values and three new enums; no other change to the API.
+
+### Added
+
+- `NoiseRemovalState` carries the audio pipeline's own grace window for the noise removal
+  stage, for a call's log: `capture_stage_grace` (a window is open now),
+  `capture_stage_grace_blocks`, `capture_stage_grace_over_budget` (slow blocks the window
+  excused) and `capture_stage_last_transient` (the last busy moment reported to the pipeline,
+  `CaptureTransient`: `call_start`, `audio_session_activated`, `route_change`, `camera_start`,
+  `app_scene_change`, `other`). Each is absent while unset, so older readers are unaffected.
+  Like the other counters they ride along with each change of state and do not make one by
+  themselves.
+- `NoiseRemovalState` also says how the pipeline times the stage: `capture_stage_clock`
+  (`CaptureStageClock`: `thread_cpu`, `wall`), `capture_stage_max_wall_us`,
+  `capture_stage_preempted_over_budget` (blocks over the budget on the wall clock but not in
+  the thread's CPU time) and `capture_stage_starved`. Additive and absent while unset, riding
+  along like the counters.
+- `NoiseRemovalState` carries, where DeepFilterNet3 is in play during a call: `dfn3_state`
+  (`NoiseDfn3State`: `idle`, `warming`, `running`, `stepped_down`, `retired`), `retry_in_ms`
+  while it is stepped down, `grace_step_downs` (step-downs tied to a grace window or a restart
+  of the capture stage, which do not count towards retiring the model), and the stage's
+  blocks by the audio thread's CPU time beside the wall clock: `slowest_block_cpu_us`,
+  `p99_block_us` and `p99_block_cpu_us`. Each is absent while unset, so an older reader is
+  unaffected. `dfn3_state` and `grace_step_downs` make a change of state (an event);
+  `retry_in_ms` and the block times ride along without making one.
+- `NoiseStepDownReason::Starved` (`"starved"`): the audio thread kept falling behind real
+  time.
+
+### Changed
+
+- The audio pipeline holds its timing rule for the noise removal stage back during the busy
+  moments of a call, as the stage already does for its own. Its grace window is as long as
+  the stage's own, and it hears of the call's start (each join or rejoin), a camera starting
+  or switching through `VideoBridge::set_camera` and `switch_camera`, and the app's scene
+  (`NoiseRemovalControl::app_scene_changed`); it opens the window by itself when the stage or
+  a capture stream starts, when the phone's audio session activates and when the route
+  changes. A fault still bypasses the stage at once.
+- The pipeline times the stage on the processing thread's CPU time where the platform has it
+  (kessel-audio's default clock, kept), so time the device spends on other threads while the
+  stage waits no longer counts against it; a block that waits long enough on the wall clock
+  still counts as slow.
+- Noise removal's DeepFilterNet3 step-down judges the audio thread's CPU time where the
+  platform has a clock for it, so a busy moment elsewhere in the app (a camera starting, for
+  example) no longer steps the model down; see sew-noise's CHANGELOG.
+
+### Dependencies
+
+- Requires kessel-audio 0.2.3 (the capture stage's grace window and its thread CPU clock).
+- Requires the Sew crates at 0.11.1 (sew-noise 0.11.1 for `StepDownReason::Starved` and the new
+  stage statistics).
+
 ## 0.9.0 (2026-11-19, Sew 0.11.0)
 
 ### Breaking

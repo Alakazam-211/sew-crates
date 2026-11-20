@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.11.1 (2026-11-20)
+
+### Changed
+
+- Strong's step-down rules judge each block by the audio thread's CPU time where the platform
+  has a clock for it (Linux, Android, macOS, iOS), so a block that only waited for a core while
+  another part of the app ran (a camera starting, for example) no longer counts against the
+  model. Other targets, and a stage given a clock with `Stage::set_clock`, judge that clock's
+  time as before. The counters that were wall time stay wall time.
+- A new rule steps the model down when the thread keeps falling behind real time by the wall
+  clock for several blocks in a row, whatever the cause, in a grace window too:
+  `StepDownReason::Starved`.
+- A timing step-down in a grace window, or just after `Stage::reset`, no longer counts towards
+  the step-downs that leave the stage on Standard for good; a separate, larger bound applies
+  to those, so a device that is always busy still settles on Standard.
+- A retry waits while a recent block went over one of the audio pipeline's own lines, and a
+  retry's warm-up is judged as a whole at its end, on its percentile and median, instead of
+  block by block.
+- The rules' window covers the stage's recent blocks, whether the model ran in them or not,
+  and is kept across a step-down and a retry; it starts afresh at a reset.
+
+### Added
+
+- `StepDownReason::Starved`.
+- `StageStats::cpu_timed`, `max_block_cpu_ns`, `last_block_cpu_ns`, `p99_block_ns`,
+  `p99_block_cpu_ns`, `grace_step_downs` and `retry_held`.
+
+### Dependencies
+
+- On Linux, Android, macOS and iOS: rustix (its `time` feature) for the thread's CPU clock.
+
 ## 0.11.0 (2026-11-19)
 
 ### Breaking

@@ -217,8 +217,8 @@ impl std::fmt::Display for NoiseModel {
 /// Why the call's stage last stepped down from DeepFilterNet3 to RNNoise
 /// ([`NoiseRemovalState::step_down_reason`]): the stage's own rule names.
 ///
-/// Its JSON is `"slow_block"`, `"slow_window"`, `"heavy"`, `"fault"` or `"forced"`. More may
-/// come in a later version.
+/// Its JSON is `"slow_block"`, `"slow_window"`, `"heavy"`, `"fault"`, `"forced"` or
+/// `"starved"`. More may come in a later version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -234,10 +234,14 @@ pub enum NoiseStepDownReason {
     Fault,
     /// Asked for by a measurement.
     Forced,
+    /// The audio thread fell behind real time for several blocks in a row by the wall clock,
+    /// whatever the cause.
+    Starved,
 }
 
 impl NoiseStepDownReason {
-    /// The reason's name: `slow_block`, `slow_window`, `heavy`, `fault` or `forced`.
+    /// The reason's name: `slow_block`, `slow_window`, `heavy`, `fault`, `forced` or
+    /// `starved`.
     pub fn as_str(self) -> &'static str {
         match self {
             NoiseStepDownReason::SlowBlock => "slow_block",
@@ -245,7 +249,48 @@ impl NoiseStepDownReason {
             NoiseStepDownReason::Heavy => "heavy",
             NoiseStepDownReason::Fault => "fault",
             NoiseStepDownReason::Forced => "forced",
+            NoiseStepDownReason::Starved => "starved",
         }
+    }
+}
+
+/// Where the call's stage is with DeepFilterNet3 ([`NoiseRemovalState::dfn3_state`]).
+///
+/// Its JSON is `"idle"`, `"warming"`, `"running"`, `"stepped_down"` or `"retired"`. More may
+/// come in a later version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum NoiseDfn3State {
+    /// Not asked for (the setting is Off), or not started yet.
+    Idle,
+    /// The model runs on the microphone while RNNoise's output goes on: the call's start, or
+    /// a retry after a step-down.
+    Warming,
+    /// The model's output goes on.
+    Running,
+    /// Stepped down to RNNoise; retried later (`retry_in_ms`).
+    SteppedDown,
+    /// Stepped down for the rest of the call.
+    Retired,
+}
+
+impl NoiseDfn3State {
+    /// The state's name: `idle`, `warming`, `running`, `stepped_down` or `retired`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NoiseDfn3State::Idle => "idle",
+            NoiseDfn3State::Warming => "warming",
+            NoiseDfn3State::Running => "running",
+            NoiseDfn3State::SteppedDown => "stepped_down",
+            NoiseDfn3State::Retired => "retired",
+        }
+    }
+}
+
+impl std::fmt::Display for NoiseDfn3State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -255,10 +300,89 @@ impl std::fmt::Display for NoiseStepDownReason {
     }
 }
 
+/// A busy moment of the device reported to the audio pipeline, which opens its grace window
+/// for the stage ([`NoiseRemovalState::capture_stage_last_transient`]).
+///
+/// Its JSON is `"call_start"`, `"audio_session_activated"`, `"route_change"`,
+/// `"camera_start"`, `"app_scene_change"` or `"other"`. More may come in a later version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CaptureTransient {
+    /// The call's audio started (a join or a rejoin).
+    CallStart,
+    /// The phone's audio session became active.
+    AudioSessionActivated,
+    /// The audio route changed.
+    RouteChange,
+    /// A camera started or restarted.
+    CameraStart,
+    /// The app changed scene (foreground, background, focus).
+    AppSceneChange,
+    /// Anything else.
+    Other,
+}
+
+impl CaptureTransient {
+    /// The moment's name: `call_start`, `audio_session_activated`, `route_change`,
+    /// `camera_start`, `app_scene_change` or `other`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureTransient::CallStart => "call_start",
+            CaptureTransient::AudioSessionActivated => "audio_session_activated",
+            CaptureTransient::RouteChange => "route_change",
+            CaptureTransient::CameraStart => "camera_start",
+            CaptureTransient::AppSceneChange => "app_scene_change",
+            CaptureTransient::Other => "other",
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureTransient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The clock the audio pipeline times the noise removal stage by
+/// ([`NoiseRemovalState::capture_stage_clock`]).
+///
+/// Its JSON is `"thread_cpu"` or `"wall"`. More may come in a later version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CaptureStageClock {
+    /// The processing thread's own CPU time: time the device spends on other threads while the
+    /// stage waits does not count.
+    ThreadCpu,
+    /// The wall clock: everything between a block's start and end counts.
+    Wall,
+}
+
+impl CaptureStageClock {
+    /// The clock's name: `thread_cpu` or `wall`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureStageClock::ThreadCpu => "thread_cpu",
+            CaptureStageClock::Wall => "wall",
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureStageClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The noise removal setting and what runs: `{mode, active, reason?, model?, model_reason?,
 /// step_downs?, phone_mode?, phone_mode_reason?, phone_mode_switches?, phone_mode_gap_ms?,
 /// step_down_reason?, last_step_down_ms_ago?, slowest_block_us?, blocks_over_budget?,
-/// in_grace?, capture_stage_strikes?, capture_stage_bypassed?, capture_stage_p99_us?}`.
+/// in_grace?, dfn3_state?, retry_in_ms?, grace_step_downs?, slowest_block_cpu_us?,
+/// p99_block_us?, p99_block_cpu_us?, capture_stage_strikes?, capture_stage_bypassed?,
+/// capture_stage_p99_us?, capture_stage_grace?, capture_stage_grace_blocks?,
+/// capture_stage_grace_over_budget?, capture_stage_last_transient?, capture_stage_clock?,
+/// capture_stage_max_wall_us?, capture_stage_preempted_over_budget?, capture_stage_starved?}`.
 ///
 /// `mode` is what was asked, `active` what the microphone's audio goes through now, and
 /// `reason` (absent when `active` is `mode`) why they differ. With no call, `active` is what a
@@ -285,12 +409,27 @@ impl std::fmt::Display for NoiseStepDownReason {
 /// carries the stage's timing: `step_down_reason` (the stage's rule at the latest step-down),
 /// `last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget` and `in_grace` (a grace
 /// window is open: the timing rules are held back while the device is busy with something
-/// else, see `NoiseRemovalControl::app_scene_changed`); and kessel-audio's view of the
-/// stage: `capture_stage_strikes`, `capture_stage_bypassed` (why the pipeline last bypassed
-/// the stage, kept after a retry brought it back) and `capture_stage_p99_us`. Each is absent
-/// while unset or zero. The counters (`last_step_down_ms_ago`, `slowest_block_us`,
-/// `blocks_over_budget`, `capture_stage_p99_us`) are read with the state and ride along with
-/// each change; they do not make a change by themselves.
+/// else, see `NoiseRemovalControl::app_scene_changed`); where DeepFilterNet3 is
+/// (`dfn3_state`), how long until its retry while it is stepped down (`retry_in_ms`), the
+/// step-downs tied to a grace window or a reset (`grace_step_downs`: they do not count towards
+/// retiring the model), and the stage's blocks by the audio thread's CPU time beside the wall
+/// clock (`slowest_block_cpu_us`, `p99_block_us`, `p99_block_cpu_us`: the stage judges CPU
+/// time where the platform has a clock for it, so a block that waited for a core does not
+/// count against the model); and kessel-audio's view of the stage: `capture_stage_strikes`,
+/// `capture_stage_bypassed` (why the pipeline last bypassed the stage, kept after a retry
+/// brought it back) and `capture_stage_p99_us`, and the audio pipeline's own grace window for
+/// the stage: `capture_stage_grace` (open now: its slow blocks do not count toward a bypass),
+/// `capture_stage_grace_blocks`, `capture_stage_grace_over_budget` (slow blocks the window
+/// excused) and `capture_stage_last_transient` (the last busy moment reported to it,
+/// [`CaptureTransient`]), and how it times the stage: `capture_stage_clock`
+/// ([`CaptureStageClock`]), `capture_stage_max_wall_us` (the slowest block on the wall
+/// clock), `capture_stage_preempted_over_budget` (blocks over the budget on the wall clock but
+/// not in the thread's CPU time) and `capture_stage_starved` (blocks long enough on the wall
+/// clock to count as slow whatever their CPU time). Each is absent while unset or zero. The
+/// counters (`last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget`,
+/// `retry_in_ms`, `slowest_block_cpu_us`, `p99_block_us`, `p99_block_cpu_us`,
+/// `capture_stage_p99_us`) and the pipeline's grace and clock fields are read with the state
+/// and ride along with each change; they do not make a change by themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct NoiseRemovalState {
@@ -341,6 +480,28 @@ pub struct NoiseRemovalState {
     /// app switch).
     #[serde(default, skip_serializing_if = "is_false")]
     pub in_grace: bool,
+    /// Where the call's stage is with DeepFilterNet3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dfn3_state: Option<NoiseDfn3State>,
+    /// While `dfn3_state` is `stepped_down`: how long until the retry may start, in the call's
+    /// audio (ms; 0 when it is due and waits for the device to settle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_in_ms: Option<u64>,
+    /// Step-downs (of `step_downs`) tied to a grace window or to a restart of the capture
+    /// stage: they do not count towards retiring DeepFilterNet3 for the call.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub grace_step_downs: u32,
+    /// The call's slowest stage block by the audio thread's CPU time, microseconds (absent
+    /// where the platform has no clock for it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slowest_block_cpu_us: Option<u64>,
+    /// The 99th percentile of the stage's last 100 blocks by the wall clock, microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p99_block_us: Option<u64>,
+    /// The same by the audio thread's CPU time (absent where the platform has no clock for
+    /// it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p99_block_cpu_us: Option<u64>,
     /// kessel-audio's budget strikes and faults against the stage so far.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub capture_stage_strikes: u32,
@@ -351,6 +512,34 @@ pub struct NoiseRemovalState {
     /// kessel-audio's 99th percentile of the stage's last 100 blocks, microseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_stage_p99_us: Option<u32>,
+    /// kessel-audio's grace window for the stage is open now: its slow blocks do not count
+    /// toward a bypass.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub capture_stage_grace: bool,
+    /// kessel-audio's stage blocks inside its grace windows so far.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub capture_stage_grace_blocks: u64,
+    /// Of those, the blocks over the budget that a grace window excused.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub capture_stage_grace_over_budget: u64,
+    /// The last busy moment reported to kessel-audio (absent before any).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_last_transient: Option<CaptureTransient>,
+    /// The clock kessel-audio times the stage by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_clock: Option<CaptureStageClock>,
+    /// kessel-audio's slowest stage block on the wall clock so far, microseconds, whatever
+    /// the clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_max_wall_us: Option<u32>,
+    /// With the thread's CPU time: blocks over the budget on the wall clock that were not over
+    /// it in CPU time (the thread waited; the stage was not slow).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub capture_stage_preempted_over_budget: u64,
+    /// With the thread's CPU time: blocks long enough on the wall clock to count as slow
+    /// whatever their CPU time.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub capture_stage_starved: u64,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -388,21 +577,48 @@ impl NoiseRemovalState {
             slowest_block_us: None,
             blocks_over_budget: 0,
             in_grace: false,
+            dfn3_state: None,
+            retry_in_ms: None,
+            grace_step_downs: 0,
+            slowest_block_cpu_us: None,
+            p99_block_us: None,
+            p99_block_cpu_us: None,
             capture_stage_strikes: 0,
             capture_stage_bypassed: None,
             capture_stage_p99_us: None,
+            capture_stage_grace: false,
+            capture_stage_grace_blocks: 0,
+            capture_stage_grace_over_budget: 0,
+            capture_stage_last_transient: None,
+            capture_stage_clock: None,
+            capture_stage_max_wall_us: None,
+            capture_stage_preempted_over_budget: 0,
+            capture_stage_starved: 0,
         }
     }
 
     /// This state without the counters that change with every block
-    /// (`last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget`,
-    /// `capture_stage_p99_us`): what a change of state is judged on.
+    /// (`last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget`, `retry_in_ms`,
+    /// `slowest_block_cpu_us`, `p99_block_us`, `p99_block_cpu_us`, `capture_stage_p99_us`) and
+    /// the pipeline's grace and clock fields: what a change of state is judged on.
     #[cfg_attr(not(feature = "audio-core"), allow(dead_code))]
     pub(crate) fn change_key(mut self) -> NoiseRemovalState {
         self.last_step_down_ms_ago = None;
         self.slowest_block_us = None;
         self.blocks_over_budget = 0;
+        self.retry_in_ms = None;
+        self.slowest_block_cpu_us = None;
+        self.p99_block_us = None;
+        self.p99_block_cpu_us = None;
         self.capture_stage_p99_us = None;
+        self.capture_stage_grace = false;
+        self.capture_stage_grace_blocks = 0;
+        self.capture_stage_grace_over_budget = 0;
+        self.capture_stage_last_transient = None;
+        self.capture_stage_clock = None;
+        self.capture_stage_max_wall_us = None;
+        self.capture_stage_preempted_over_budget = 0;
+        self.capture_stage_starved = 0;
         self
     }
 
@@ -543,17 +759,37 @@ mod tests {
         s.slowest_block_us = Some(7_100);
         s.blocks_over_budget = 3;
         s.in_grace = true;
+        s.dfn3_state = Some(NoiseDfn3State::SteppedDown);
+        s.retry_in_ms = Some(4_200);
+        s.grace_step_downs = 1;
+        s.slowest_block_cpu_us = Some(1_300);
+        s.p99_block_us = Some(6_900);
+        s.p99_block_cpu_us = Some(900);
         s.capture_stage_strikes = 1;
         s.capture_stage_bypassed = Some(NoiseRemovalReason::Budget);
         s.capture_stage_p99_us = Some(6_200);
+        s.capture_stage_grace = true;
+        s.capture_stage_grace_blocks = 150;
+        s.capture_stage_grace_over_budget = 4;
+        s.capture_stage_last_transient = Some(CaptureTransient::CameraStart);
+        s.capture_stage_clock = Some(CaptureStageClock::ThreadCpu);
+        s.capture_stage_max_wall_us = Some(21_000);
+        s.capture_stage_preempted_over_budget = 5;
+        s.capture_stage_starved = 1;
         let v = serde_json::to_value(s).unwrap();
         assert_eq!(
             v,
             serde_json::json!({"mode": "standard", "active": "standard",
                 "step_down_reason": "slow_window", "last_step_down_ms_ago": 1234,
                 "slowest_block_us": 7100, "blocks_over_budget": 3, "in_grace": true,
+                "dfn3_state": "stepped_down", "retry_in_ms": 4200, "grace_step_downs": 1,
+                "slowest_block_cpu_us": 1300, "p99_block_us": 6900, "p99_block_cpu_us": 900,
                 "capture_stage_strikes": 1, "capture_stage_bypassed": "budget",
-                "capture_stage_p99_us": 6200})
+                "capture_stage_p99_us": 6200, "capture_stage_grace": true,
+                "capture_stage_grace_blocks": 150, "capture_stage_grace_over_budget": 4,
+                "capture_stage_last_transient": "camera_start",
+                "capture_stage_clock": "thread_cpu", "capture_stage_max_wall_us": 21000,
+                "capture_stage_preempted_over_budget": 5, "capture_stage_starved": 1})
         );
         let back: NoiseRemovalState = serde_json::from_value(v).unwrap();
         assert_eq!(back, s);
@@ -563,18 +799,80 @@ mod tests {
             (NoiseStepDownReason::Heavy, "heavy"),
             (NoiseStepDownReason::Fault, "fault"),
             (NoiseStepDownReason::Forced, "forced"),
+            (NoiseStepDownReason::Starved, "starved"),
         ] {
             assert_eq!(r.as_str(), n);
             assert_eq!(r.to_string(), n);
             assert_eq!(serde_json::to_value(r).unwrap(), serde_json::json!(n));
         }
+        for (d, n) in [
+            (NoiseDfn3State::Idle, "idle"),
+            (NoiseDfn3State::Warming, "warming"),
+            (NoiseDfn3State::Running, "running"),
+            (NoiseDfn3State::SteppedDown, "stepped_down"),
+            (NoiseDfn3State::Retired, "retired"),
+        ] {
+            assert_eq!(d.as_str(), n);
+            assert_eq!(d.to_string(), n);
+            assert_eq!(serde_json::to_value(d).unwrap(), serde_json::json!(n));
+        }
+        // An older reader's JSON (none of the new fields) reads with them unset.
+        let old: NoiseRemovalState = serde_json::from_value(serde_json::json!({
+            "mode": "standard", "active": "standard", "slowest_block_us": 7100}))
+        .unwrap();
+        assert_eq!(
+            (old.dfn3_state, old.retry_in_ms, old.grace_step_downs),
+            (None, None, 0)
+        );
         // The counters ride along; the reason, the grace and the strikes make a change.
         let mut counters = base;
         counters.last_step_down_ms_ago = Some(10);
         counters.slowest_block_us = Some(1);
         counters.blocks_over_budget = 9;
         counters.capture_stage_p99_us = Some(5);
+        counters.retry_in_ms = Some(3_000);
+        counters.slowest_block_cpu_us = Some(2);
+        counters.p99_block_us = Some(3);
+        counters.p99_block_cpu_us = Some(4);
+        counters.capture_stage_grace = true;
+        counters.capture_stage_grace_blocks = 7;
+        counters.capture_stage_grace_over_budget = 2;
+        counters.capture_stage_last_transient = Some(CaptureTransient::AppSceneChange);
+        counters.capture_stage_clock = Some(CaptureStageClock::Wall);
+        counters.capture_stage_max_wall_us = Some(9);
+        counters.capture_stage_preempted_over_budget = 3;
+        counters.capture_stage_starved = 1;
         assert_eq!(counters.change_key(), base.change_key());
+        for (c, n) in [
+            (CaptureStageClock::ThreadCpu, "thread_cpu"),
+            (CaptureStageClock::Wall, "wall"),
+        ] {
+            assert_eq!(c.as_str(), n);
+            assert_eq!(c.to_string(), n);
+            assert_eq!(serde_json::to_value(c).unwrap(), serde_json::json!(n));
+        }
+        for (t, n) in [
+            (CaptureTransient::CallStart, "call_start"),
+            (
+                CaptureTransient::AudioSessionActivated,
+                "audio_session_activated",
+            ),
+            (CaptureTransient::RouteChange, "route_change"),
+            (CaptureTransient::CameraStart, "camera_start"),
+            (CaptureTransient::AppSceneChange, "app_scene_change"),
+            (CaptureTransient::Other, "other"),
+        ] {
+            assert_eq!(t.as_str(), n);
+            assert_eq!(t.to_string(), n);
+            assert_eq!(serde_json::to_value(t).unwrap(), serde_json::json!(n));
+        }
+        // Where DeepFilterNet3 is, and the step-downs tied to grace, make a change.
+        let mut state = base;
+        state.dfn3_state = Some(NoiseDfn3State::Warming);
+        assert_ne!(state.change_key(), base.change_key());
+        let mut tied = base;
+        tied.grace_step_downs = 1;
+        assert_ne!(tied.change_key(), base.change_key());
         let mut grace = base;
         grace.in_grace = true;
         assert_ne!(grace.change_key(), base.change_key());

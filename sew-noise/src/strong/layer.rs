@@ -7,9 +7,10 @@ use std::sync::Arc;
 use crate::FRAME;
 use crate::dfn3::{Dfn3Model, Dfn3Stream, tail_weight};
 
-/// One block at or over this steps down at once (ns).
+/// One block at or over this steps down at once (ns of the thread's CPU time).
 pub(crate) const SLOW_BLOCK: u64 = 6_000_000;
-/// The rolling window, in model blocks.
+/// The rolling window, in the stage's blocks (1 s): the length of the audio pipeline's own
+/// window over the stage's calls.
 pub(crate) const WINDOW: usize = 100;
 /// A block over this counts towards [`WINDOW_SLOW_COUNT`] (ns).
 pub(crate) const WINDOW_SLOW: u64 = 4_000_000;
@@ -23,12 +24,12 @@ pub(crate) const WINDOW_HEAVY_COUNT: u32 = 50;
 pub(crate) const PROBE_BLOCKS: u32 = 50;
 /// The first retry waits this many blocks (30 s); each later one twice as long.
 pub(crate) const RETRY_BLOCKS: u64 = 3_000;
-/// The step-down that is final.
+/// The counted step-down that is final.
 pub(crate) const MAX_STEP_DOWNS: u32 = 3;
 /// In a grace window a block over this counts towards [`GRACE_SLOW_COUNT`] (ns): the line of
 /// the audio pipeline's own percentile rule.
 pub(crate) const GRACE_SLOW: u64 = 6_000_000;
-/// This many blocks over [`GRACE_SLOW`] among the last [`WINDOW`] model blocks step down in a
+/// This many blocks over [`GRACE_SLOW`] among the last [`WINDOW`] blocks step down in a
 /// grace window: the pipeline's percentile rule strikes at the same count.
 pub(crate) const GRACE_SLOW_COUNT: u32 = 2;
 /// A step-down in a grace window, or within this many blocks (5 s) after one closed, is
@@ -36,6 +37,34 @@ pub(crate) const GRACE_SLOW_COUNT: u32 = 2;
 pub(crate) const GRACE_TAIL_BLOCKS: u64 = 500;
 /// The retry of a step-down tied to a grace window waits this many blocks (5 s).
 pub(crate) const SHORT_RETRY_BLOCKS: u64 = 500;
+/// The audio pipeline's own percentile line for one call of the stage, on the clock the rules
+/// judge (ns): a retry does not start while a block of the last [`WINDOW`] went over it.
+pub(crate) const PIPELINE_LINE: u64 = 6_000_000;
+/// The audio pipeline's starvation line, by the wall clock (ns): it counts a call this long as
+/// slow whatever its CPU time, so a retry does not start while a block of the last [`WINDOW`]
+/// reached it either.
+pub(crate) const PIPELINE_STARVED_WALL: u64 = 20_000_000;
+/// A model block over this by the wall clock counts towards [`STARVED_BLOCKS`] (ns).
+///
+/// The starvation cutoff is the one rule on wall time: the thread is not getting the time it
+/// needs, whatever the cause, and running the model makes that worse. 10 ms is one block's
+/// own period: a block over it means the audio thread falls behind real time, which a
+/// pre-emption that only delays a block (as a camera starting does) does not.
+pub(crate) const STARVED_WALL: u64 = 10_000_000;
+/// This many model blocks in a row over [`STARVED_WALL`] step down, in a grace window too.
+/// Three in a row is a run of falling behind, not one late block; fewer would trip on the
+/// single long pre-emptions this cutoff is meant to let through.
+pub(crate) const STARVED_BLOCKS: u32 = 3;
+/// A step-down within this many blocks (1 s) after a reset of the stage counts as one in a
+/// grace window: the audio pipeline restarts its own window at a reset, and its first second
+/// of blocks is judged on very few of them.
+pub(crate) const RESET_TIE_BLOCKS: u64 = WINDOW as u64;
+/// Step-downs tied to a grace window or a reset that are final: such a step-down does not
+/// count towards [`MAX_STEP_DOWNS`] (it says the device was busy, not that the model is too
+/// slow for it), so this separate bound keeps a device that is busy all the time from trying
+/// the model again for the whole call. Each is retried after [`SHORT_RETRY_BLOCKS`], so this
+/// many give the model a few dozen seconds of tries before it is set aside.
+pub(crate) const MAX_GRACE_STEP_DOWNS: u32 = 8;
 /// Blocks of test signal a new layer's stream runs before it is cleared and used.
 const WARM_UP_BLOCKS: u32 = 40;
 
@@ -69,11 +98,27 @@ pub(crate) struct Strong {
     out: [f32; FRAME],
     run: Run,
     rules: Rules,
+    /// Every step-down so far.
     pub(crate) step_downs: u32,
+    /// Step-downs that count towards [`MAX_STEP_DOWNS`] (those not tied to a grace window or
+    /// a reset); the retry schedule doubles with these.
+    counted: u32,
+    /// Step-downs tied to a grace window or a reset ([`MAX_GRACE_STEP_DOWNS`]).
+    pub(crate) grace_step_downs: u32,
     pub(crate) last: Option<StepDownReason>,
     pub(crate) last_block: u64,
     retry_at: u64,
     retired: bool,
+    /// A retry is due but held back: a recent block went over the pipeline's own line.
+    pub(crate) held: bool,
+    /// The rules applied at the latest block (off for measurement: then no retry is held).
+    rules_on: bool,
+    /// The block count at the latest reset ([`Self::reset`]).
+    last_reset: Option<u64>,
+    /// A retry's warm-up is being judged: its blocks' times so far.
+    probing: bool,
+    probe_times: [u64; PROBE_BLOCKS as usize],
+    probe_n: usize,
     /// Warm-up blocks still to run before the layer is used ([`Self::warm_up_step`]).
     pub(crate) warm_left: u32,
     /// Warm-up blocks run so far (the test signal's position).
@@ -127,10 +172,18 @@ impl Strong {
             run: Run::Idle,
             rules: Rules::new(),
             step_downs: 0,
+            counted: 0,
+            grace_step_downs: 0,
             last: None,
             last_block: 0,
             retry_at: 0,
             retired: false,
+            held: false,
+            rules_on: true,
+            last_reset: None,
+            probing: false,
+            probe_times: [0; PROBE_BLOCKS as usize],
+            probe_n: 0,
             warm_left: WARM_UP_BLOCKS,
             warm_done: 0,
             warm_seed: 0x2545_f491,
@@ -188,13 +241,17 @@ impl Strong {
         while !self.warm_up_step() {}
     }
 
-    /// Forget held audio (a reset): the model starts again from a clear state, with a
-    /// one-block warm-up, unless it is stepped down. The step-down history stays.
-    pub(crate) fn reset(&mut self) {
+    /// Forget held audio (a reset, at the stage's block count `block_no`): the model starts
+    /// again from a clear state, with a one-block warm-up, unless it is stepped down. The
+    /// step-down history stays. The rules' window starts afresh, as the audio pipeline's own
+    /// does at a reset.
+    pub(crate) fn reset(&mut self, block_no: u64) {
         self.plan = Plan::Idle;
         self.stream.clear();
         self.rules.clear();
         self.run = Run::Idle;
+        self.probing = false;
+        self.last_reset = Some(block_no);
     }
 
     pub(crate) fn state(&self, block: u64) -> StrongState {
@@ -204,7 +261,9 @@ impl Strong {
         match self.run {
             Run::Warm { .. } => StrongState::Warming,
             Run::FadeIn | Run::Active | Run::Leaving => StrongState::Running,
-            Run::Idle if self.step_downs > 0 && block < self.retry_at => StrongState::SteppedDown,
+            Run::Idle if self.step_downs > 0 && (block < self.retry_at || self.held) => {
+                StrongState::SteppedDown
+            }
             Run::Idle => StrongState::Idle,
         }
     }
@@ -222,15 +281,23 @@ impl Strong {
         self.plan = Plan::Idle;
         if self.run == Run::Idle {
             if !want || self.retired || block_no < self.retry_at {
+                self.held = false;
+                return;
+            }
+            let retry = self.step_downs > 0;
+            // The audio pipeline still holds a block over its line among its recent ones: one
+            // more during the warm-up would make it bypass the whole stage. Wait until it has
+            // aged out of the window.
+            self.held = retry && self.rules_on && self.rules.over_pipeline_line();
+            if self.held {
                 return;
             }
             self.stream.clear();
-            self.rules.clear();
-            let left = if self.step_downs == 0 {
-                1
-            } else {
-                PROBE_BLOCKS
-            };
+            // The rules' window is kept: it covers the stage's recent blocks, as the
+            // pipeline's own window does across a retry.
+            self.probing = retry;
+            self.probe_n = 0;
+            let left = if retry { PROBE_BLOCKS } else { 1 };
             self.run = Run::Warm { left };
         }
         if !want && matches!(self.run, Run::Active) {
@@ -360,19 +427,31 @@ impl Strong {
         self.retired = true;
     }
 
-    /// After a block in which the model ran, with the block's time: steps down if a rule
-    /// says so (`judge`: the rules apply; off for measurement). `force`: step down now.
-    /// `grace_until`: the stage's grace window runs until this block count (0: none was
-    /// opened); inside it only the grace rule applies.
+    /// After every block of the stage, with its times: `judged` is what the rules judge (the
+    /// thread's CPU time where there is a clock for it), `wall` the wall time (the
+    /// starvation cutoff's, and what the audio pipeline sees). `ran`: the model ran this
+    /// block. Steps down if a rule says so (`judge`: the rules apply; off for measurement).
+    /// `force`: step down now. `grace_until`: the stage's grace window runs until this block
+    /// count (0: none was opened); inside it only the grace rule and the starvation cutoff
+    /// apply.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn judge(
         &mut self,
-        ns: u64,
+        judged: u64,
+        wall: u64,
+        ran: bool,
         block_no: u64,
         judge: bool,
         force: bool,
         grace_until: u64,
     ) {
-        if !matches!(self.run, Run::Warm { .. } | Run::FadeIn | Run::Active) {
+        self.rules_on = judge;
+        let grace = block_no < grace_until;
+        let model = ran && matches!(self.run, Run::Warm { .. } | Run::FadeIn | Run::Active);
+        // Every block goes into the window, the model's or not, so it ages as the pipeline's
+        // own window over the stage's calls does.
+        let verdict = self.rules.push(judged, wall, model, grace);
+        if !model {
             return;
         }
         if force {
@@ -382,7 +461,27 @@ impl Strong {
         if !judge {
             return;
         }
-        if let Some(r) = self.rules.push(ns, block_no < grace_until) {
+        if self.probing {
+            // A retry's warm-up is judged as a whole at its end, on its 99th percentile (and
+            // its median outside a grace window); only the starvation cutoff acts at once.
+            if verdict == Some(StepDownReason::Starved) {
+                self.step_down(StepDownReason::Starved, block_no, grace_until);
+                return;
+            }
+            if let Some(t) = self.probe_times.get_mut(self.probe_n) {
+                *t = judged;
+                self.probe_n += 1;
+            }
+            if matches!(self.run, Run::Warm { .. }) {
+                return;
+            }
+            self.probing = false;
+            if let Some(r) = probe_verdict(&self.probe_times[..self.probe_n], grace) {
+                self.step_down(r, block_no, grace_until);
+            }
+            return;
+        }
+        if let Some(r) = verdict {
             self.step_down(r, block_no, grace_until);
         }
     }
@@ -397,12 +496,60 @@ impl Strong {
         self.step_downs += 1;
         self.last = Some(reason);
         self.last_block = block_no;
-        self.rules.clear();
-        if self.step_downs >= MAX_STEP_DOWNS {
+        self.probing = false;
+        // The window is kept: its slow blocks age out within a second, before any retry.
+        let timing = matches!(
+            reason,
+            StepDownReason::SlowBlock
+                | StepDownReason::SlowWindow
+                | StepDownReason::Heavy
+                | StepDownReason::Starved
+        );
+        let after_reset = self
+            .last_reset
+            .is_some_and(|r| block_no < r.saturating_add(RESET_TIE_BLOCKS));
+        if timing && (block_no < grace_until || after_reset) {
+            // The device was busy: not counted towards retiring the model, but bounded.
+            self.grace_step_downs += 1;
+            if self.grace_step_downs >= MAX_GRACE_STEP_DOWNS {
+                self.retired = true;
+            } else {
+                self.retry_at = block_no + SHORT_RETRY_BLOCKS;
+            }
+            return;
+        }
+        self.counted += 1;
+        if self.counted >= MAX_STEP_DOWNS {
             self.retired = true;
         } else {
-            self.retry_at = block_no + retry_wait(self.step_downs, block_no, grace_until);
+            self.retry_at = block_no + retry_wait(self.counted, block_no, grace_until);
         }
+    }
+}
+
+/// A retry's warm-up, judged on its blocks' `times` (ns): its 99th percentile over
+/// [`WINDOW_SLOW`] ([`GRACE_SLOW`] in a grace window) steps down as
+/// [`StepDownReason::SlowWindow`], and outside a grace window its median over
+/// [`WINDOW_HEAVY`] as [`StepDownReason::Heavy`]. The percentile is the sorted times' value
+/// at `(n - 1) * 99 / 100`: of 50 blocks, the second slowest, so one slow block alone passes.
+fn probe_verdict(times: &[u64], grace: bool) -> Option<StepDownReason> {
+    let n = times.len();
+    if n == 0 {
+        return None;
+    }
+    let mut sorted = [0u64; PROBE_BLOCKS as usize];
+    let sorted = &mut sorted[..n];
+    sorted.copy_from_slice(times);
+    sorted.sort_unstable();
+    let p99 = sorted[(n - 1) * 99 / 100];
+    let p50 = sorted[(n - 1) / 2];
+    let line = if grace { GRACE_SLOW } else { WINDOW_SLOW };
+    if p99 > line {
+        Some(StepDownReason::SlowWindow)
+    } else if !grace && p50 > WINDOW_HEAVY {
+        Some(StepDownReason::Heavy)
+    } else {
+        None
     }
 }
 
@@ -418,16 +565,26 @@ pub(crate) const fn retry_wait(step_downs: u32, block_no: u64, grace_until: u64)
     }
 }
 
-/// The step-down rules over the model blocks' times.
+/// Per block in the window: over [`WINDOW_SLOW`], [`WINDOW_HEAVY`], [`GRACE_SLOW`] (the
+/// judged time), and over one of the audio pipeline's lines ([`PIPELINE_LINE`] judged, or
+/// [`PIPELINE_STARVED_WALL`] by the wall clock).
+const BIT_SLOW: u8 = 1;
+const BIT_HEAVY: u8 = 2;
+const BIT_GRACE: u8 = 4;
+const BIT_LINE: u8 = 8;
+
+/// The step-down rules over the stage's recent blocks' times.
 #[derive(Debug, Clone)]
 struct Rules {
-    /// Per model block in the window: bit 0 over [`WINDOW_SLOW`], bit 1 over
-    /// [`WINDOW_HEAVY`], bit 2 over [`GRACE_SLOW`].
+    /// Per block of the last [`WINDOW`]: the `BIT_*` lines it went over.
     ring: [u8; WINDOW],
     pos: usize,
     slow: u32,
     heavy: u32,
     grace_slow: u32,
+    line: u32,
+    /// Model blocks in a row over [`STARVED_WALL`].
+    starved: u32,
     /// The latest block was in a grace window.
     grace: bool,
 }
@@ -440,6 +597,8 @@ impl Rules {
             slow: 0,
             heavy: 0,
             grace_slow: 0,
+            line: 0,
+            starved: 0,
             grace: false,
         }
     }
@@ -448,30 +607,72 @@ impl Rules {
         *self = Self::new();
     }
 
-    /// One model block's time (ns); `grace`: the block is in a grace window. The rule it
-    /// trips, if any. In a grace window only the grace rule applies (the pipeline's own line);
-    /// the window's blocks are forgotten when it closes, so the usual rules start afresh.
-    fn push(&mut self, ns: u64, grace: bool) -> Option<StepDownReason> {
+    /// Forgets the judged times (a grace window closed): the usual rules start afresh. The
+    /// pipeline's line stays: the pipeline's window does not forget it.
+    fn forget_judged(&mut self) {
+        for b in &mut self.ring {
+            *b &= BIT_LINE;
+        }
+        self.slow = 0;
+        self.heavy = 0;
+        self.grace_slow = 0;
+    }
+
+    /// A block of the window went over one of the pipeline's own lines.
+    fn over_pipeline_line(&self) -> bool {
+        self.line > 0
+    }
+
+    /// One block's times (ns): `judged` (the thread's CPU time where there is a clock for it)
+    /// and `wall`; `model`: the model ran in it; `grace`: the block is in a grace window. The
+    /// rule it trips, if any (only a model block trips one). The starvation cutoff applies
+    /// everywhere; in a grace window only the grace rule beside it (the pipeline's own line);
+    /// the window's judged times are forgotten when it closes, so the usual rules start afresh.
+    fn push(&mut self, judged: u64, wall: u64, model: bool, grace: bool) -> Option<StepDownReason> {
         if self.grace && !grace {
-            self.clear();
+            self.forget_judged();
         }
         self.grace = grace;
         let old = self.ring[self.pos];
-        self.slow -= u32::from(old & 1);
-        self.heavy -= u32::from((old >> 1) & 1);
-        self.grace_slow -= u32::from((old >> 2) & 1);
-        let new = u8::from(ns > WINDOW_SLOW)
-            | (u8::from(ns > WINDOW_HEAVY) << 1)
-            | (u8::from(ns > GRACE_SLOW) << 2);
+        self.slow -= u32::from(old & BIT_SLOW != 0);
+        self.heavy -= u32::from(old & BIT_HEAVY != 0);
+        self.grace_slow -= u32::from(old & BIT_GRACE != 0);
+        self.line -= u32::from(old & BIT_LINE != 0);
+        let mut new = 0;
+        if judged > WINDOW_SLOW {
+            new |= BIT_SLOW;
+        }
+        if judged > WINDOW_HEAVY {
+            new |= BIT_HEAVY;
+        }
+        if judged > GRACE_SLOW {
+            new |= BIT_GRACE;
+        }
+        if judged > PIPELINE_LINE || wall >= PIPELINE_STARVED_WALL {
+            new |= BIT_LINE;
+        }
         self.ring[self.pos] = new;
-        self.slow += u32::from(new & 1);
-        self.heavy += u32::from((new >> 1) & 1);
-        self.grace_slow += u32::from((new >> 2) & 1);
+        self.slow += u32::from(new & BIT_SLOW != 0);
+        self.heavy += u32::from(new & BIT_HEAVY != 0);
+        self.grace_slow += u32::from(new & BIT_GRACE != 0);
+        self.line += u32::from(new & BIT_LINE != 0);
         self.pos = (self.pos + 1) % WINDOW;
+        if !model {
+            self.starved = 0;
+            return None;
+        }
+        self.starved = if wall > STARVED_WALL {
+            self.starved + 1
+        } else {
+            0
+        };
+        if self.starved >= STARVED_BLOCKS {
+            return Some(StepDownReason::Starved);
+        }
         if grace {
             return (self.grace_slow >= GRACE_SLOW_COUNT).then_some(StepDownReason::SlowWindow);
         }
-        if ns >= SLOW_BLOCK {
+        if judged >= SLOW_BLOCK {
             Some(StepDownReason::SlowBlock)
         } else if self.slow >= WINDOW_SLOW_COUNT {
             Some(StepDownReason::SlowWindow)
@@ -484,50 +685,61 @@ impl Rules {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const MS: u64 = 1_000_000;
 
-    /// The rules trip strictly before kessel-audio's strike rule (two blocks in a row of 9 ms
+    impl Rules {
+        /// A model block whose judged time and wall time are both `ns`.
+        fn model(&mut self, ns: u64, grace: bool) -> Option<StepDownReason> {
+            self.push(ns, ns, true, grace)
+        }
+    }
+
+    /// On the judged time, the rules trip strictly before kessel-audio's strike rule (two blocks in a row of 9 ms
     /// or more, or over 6 ms at the 99th percentile of 100: two blocks over 6 ms) could.
     #[test]
     fn rules() {
         let mut r = Rules::new();
         for _ in 0..1_000 {
-            assert_eq!(r.push(MS, false), None, "1 ms blocks never trip");
+            assert_eq!(r.model(MS, false), None, "1 ms blocks never trip");
         }
-        assert_eq!(r.push(6 * MS, false), Some(StepDownReason::SlowBlock));
+        assert_eq!(r.model(6 * MS, false), Some(StepDownReason::SlowBlock));
         r.clear();
-        assert_eq!(r.push(5_999_999, false), None, "one slow block under 6 ms");
+        assert_eq!(r.model(5_999_999, false), None, "one slow block under 6 ms");
         for _ in 0..98 {
-            assert_eq!(r.push(MS, false), None);
+            assert_eq!(r.model(MS, false), None);
         }
         assert_eq!(
-            r.push(4 * MS + 1, false),
+            r.model(4 * MS + 1, false),
             Some(StepDownReason::SlowWindow),
             "the second over 4 ms within 100"
         );
         r.clear();
-        assert_eq!(r.push(5 * MS, false), None);
+        assert_eq!(r.model(5 * MS, false), None);
         for _ in 0..99 {
-            assert_eq!(r.push(MS, false), None);
-        }
-        assert_eq!(r.push(5 * MS, false), None, "the first one left the window");
-        r.clear();
-        for i in 0..49 {
-            assert_eq!(r.push(3 * MS + 1, false), None, "{i}");
-            assert_eq!(r.push(MS, false), None);
+            assert_eq!(r.model(MS, false), None);
         }
         assert_eq!(
-            r.push(3 * MS + 1, false),
+            r.model(5 * MS, false),
+            None,
+            "the first one left the window"
+        );
+        r.clear();
+        for i in 0..49 {
+            assert_eq!(r.model(3 * MS + 1, false), None, "{i}");
+            assert_eq!(r.model(MS, false), None);
+        }
+        assert_eq!(
+            r.model(3 * MS + 1, false),
             Some(StepDownReason::Heavy),
             "half the window over 3 ms"
         );
         // kessel-audio's first possible strike needs a second block of 6 ms or more; the
         // first one has already stepped down.
         r.clear();
-        assert_eq!(r.push(9 * MS, false), Some(StepDownReason::SlowBlock));
+        assert_eq!(r.model(9 * MS, false), Some(StepDownReason::SlowBlock));
     }
 
     /// In a grace window the single-block, percentile and median rules do not trip: one block
@@ -538,44 +750,48 @@ mod tests {
     #[test]
     fn grace() {
         let mut r = Rules::new();
-        assert_eq!(r.push(9 * MS, true), None, "a single slow block in grace");
+        assert_eq!(r.model(9 * MS, true), None, "a single slow block in grace");
         for _ in 0..99 {
-            assert_eq!(r.push(5 * MS, true), None, "p99 and median blocks in grace");
+            assert_eq!(
+                r.model(5 * MS, true),
+                None,
+                "p99 and median blocks in grace"
+            );
         }
         assert_eq!(
-            r.push(6 * MS + 1, true),
+            r.model(6 * MS + 1, true),
             None,
             "the 9 ms block left the window: one over 6 ms again"
         );
         assert_eq!(
-            r.push(7 * MS, true),
+            r.model(7 * MS, true),
             Some(StepDownReason::SlowWindow),
             "the second over 6 ms within 100, in grace"
         );
         // The same blocks after the window: each rule trips as usual.
         r.clear();
-        assert_eq!(r.push(9 * MS, false), Some(StepDownReason::SlowBlock));
+        assert_eq!(r.model(9 * MS, false), Some(StepDownReason::SlowBlock));
         r.clear();
-        assert_eq!(r.push(5 * MS, false), None);
-        assert_eq!(r.push(5 * MS, false), Some(StepDownReason::SlowWindow));
+        assert_eq!(r.model(5 * MS, false), None);
+        assert_eq!(r.model(5 * MS, false), Some(StepDownReason::SlowWindow));
         r.clear();
         for _ in 0..49 {
-            assert_eq!(r.push(3 * MS + 1, false), None);
+            assert_eq!(r.model(3 * MS + 1, false), None);
         }
-        assert_eq!(r.push(3 * MS + 1, false), Some(StepDownReason::Heavy));
+        assert_eq!(r.model(3 * MS + 1, false), Some(StepDownReason::Heavy));
         // The window's blocks do not count after it closes.
         r.clear();
-        assert_eq!(r.push(7 * MS, true), None);
+        assert_eq!(r.model(7 * MS, true), None);
         for _ in 0..30 {
-            assert_eq!(r.push(5 * MS, true), None);
+            assert_eq!(r.model(5 * MS, true), None);
         }
-        assert_eq!(r.push(MS, false), None, "grace closed: a fresh window");
+        assert_eq!(r.model(MS, false), None, "grace closed: a fresh window");
         assert_eq!(
-            r.push(5 * MS, false),
+            r.model(5 * MS, false),
             None,
             "the grace window's 5 ms blocks are gone"
         );
-        assert_eq!(r.push(5 * MS, false), Some(StepDownReason::SlowWindow));
+        assert_eq!(r.model(5 * MS, false), Some(StepDownReason::SlowWindow));
     }
 
     /// A step-down inside a grace window, or within 5 s after it closed, is retried after 5 s;
@@ -601,7 +817,7 @@ mod tests {
     /// the directory is absent: the test says so loudly and skips. In the repository a missing
     /// or altered file fails.
     #[allow(clippy::print_stderr)]
-    fn model() -> Option<Arc<Dfn3Model>> {
+    pub(crate) fn model() -> Option<Arc<Dfn3Model>> {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/dfn3");
         if !dir.is_dir() {
             eprintln!(
@@ -628,9 +844,7 @@ mod tests {
         let mut one = |s: &mut Strong, b: u64| {
             s.begin(&input, true, b);
             let o = s.end(&mut block, b);
-            if o.ran {
-                s.judge(MS, b, true, false, grace_until);
-            }
+            s.judge(MS, MS, o.ran, b, true, false, grace_until);
             o
         };
         for b in 0..20 {
@@ -649,5 +863,258 @@ mod tests {
             assert!(!o.ran, "never retried");
         }
         assert_eq!(s.state(2_000), StrongState::Retired);
+    }
+
+    /// The rules judge the judged time (the thread's CPU time): blocks that are long only by
+    /// the wall clock, because the thread waited for a core, do not trip them, however many,
+    /// short of the starvation cutoff. The same times as CPU time do.
+    #[test]
+    fn wall_time_alone_does_not_trip_the_rules() {
+        let mut r = Rules::new();
+        for i in 0..1_000 {
+            // 9 ms by the wall clock, 1 ms of CPU: a pre-empted block, every block.
+            assert_eq!(r.push(MS, 9 * MS, true, false), None, "{i}");
+        }
+        for i in 0..1_000 {
+            // Every other block over the starvation line: never three in a row.
+            let wall = if i % 3 == 2 { MS } else { 30 * MS };
+            assert_eq!(r.push(MS, wall, true, false), None, "{i}");
+        }
+        r.clear();
+        assert_eq!(
+            r.push(6 * MS, 6 * MS, true, false),
+            Some(StepDownReason::SlowBlock),
+            "6 ms of CPU still steps down"
+        );
+        r.clear();
+        assert_eq!(r.push(5 * MS, 5 * MS, true, false), None);
+        assert_eq!(
+            r.push(5 * MS, 5 * MS, true, false),
+            Some(StepDownReason::SlowWindow),
+            "the percentile on CPU time"
+        );
+    }
+
+    /// The starvation cutoff: three model blocks in a row over 10 ms by the wall clock step
+    /// down, in a grace window too, whatever their CPU time; a block under the line, or a
+    /// block without the model, starts the count again.
+    #[test]
+    fn starvation_cutoff() {
+        let mut r = Rules::new();
+        assert_eq!(r.push(MS, 11 * MS, true, false), None);
+        assert_eq!(r.push(MS, 11 * MS, true, false), None);
+        assert_eq!(
+            r.push(MS, 11 * MS, true, false),
+            Some(StepDownReason::Starved),
+            "the third in a row"
+        );
+        r.clear();
+        assert_eq!(r.push(MS, 11 * MS, true, true), None);
+        assert_eq!(r.push(MS, 11 * MS, true, true), None);
+        assert_eq!(
+            r.push(MS, 11 * MS, true, true),
+            Some(StepDownReason::Starved),
+            "in a grace window too"
+        );
+        r.clear();
+        assert_eq!(r.push(MS, 11 * MS, true, false), None);
+        assert_eq!(r.push(MS, 11 * MS, true, false), None);
+        assert_eq!(
+            r.push(MS, 10 * MS, true, false),
+            None,
+            "at the line: not over"
+        );
+        assert_eq!(r.push(MS, 11 * MS, true, false), None);
+        assert_eq!(r.push(MS, 11 * MS, true, false), None);
+        assert_eq!(
+            r.push(MS, 11 * MS, false, false),
+            None,
+            "no model: never trips"
+        );
+        assert_eq!(r.push(MS, 11 * MS, true, false), None, "counted afresh");
+        assert_eq!(STARVED_WALL, 10 * MS);
+        assert_eq!(STARVED_BLOCKS, 3);
+    }
+
+    /// The window covers the stage's last 100 blocks, the model's or not: a block over one of
+    /// the pipeline's lines (6 ms judged, or 20 ms by the wall clock) is seen for 100 blocks,
+    /// then gone; a grace window closing forgets the judged times but not that line.
+    #[test]
+    fn the_window_ages_with_every_block() {
+        let mut r = Rules::new();
+        assert_eq!(r.push(MS, 19 * MS, false, false), None);
+        assert!(
+            !r.over_pipeline_line(),
+            "long by the wall clock only, under the starvation line"
+        );
+        assert_eq!(r.push(MS, 20 * MS, false, false), None);
+        assert!(r.over_pipeline_line(), "the starvation line");
+        r.clear();
+        assert_eq!(r.push(7 * MS, 7 * MS, false, false), None);
+        for _ in 0..100 {
+            assert!(r.over_pipeline_line());
+            assert_eq!(r.push(MS, MS, false, false), None);
+        }
+        assert!(!r.over_pipeline_line(), "aged out after 100 blocks");
+        r.clear();
+        assert_eq!(r.push(7 * MS, 7 * MS, true, true), None, "one in grace");
+        assert_eq!(r.push(MS, MS, false, false), None, "grace closed");
+        assert!(r.over_pipeline_line(), "the pipeline's line is kept");
+        assert_eq!(
+            r.model(5 * MS, false),
+            None,
+            "the judged times were forgotten"
+        );
+    }
+
+    /// A retry's warm-up is judged at its end on its 99th percentile (of 50 blocks, the second
+    /// slowest) and, outside a grace window, its median.
+    #[test]
+    fn a_warm_up_is_judged_by_its_percentile() {
+        let mut t = [MS; PROBE_BLOCKS as usize];
+        assert_eq!(probe_verdict(&t, false), None);
+        t[7] = 9 * MS;
+        assert_eq!(
+            probe_verdict(&t, false),
+            None,
+            "one slow block alone passes"
+        );
+        t[30] = 4 * MS + 1;
+        assert_eq!(
+            probe_verdict(&t, false),
+            Some(StepDownReason::SlowWindow),
+            "two over 4 ms"
+        );
+        assert_eq!(probe_verdict(&t, true), None, "in grace the line is 6 ms");
+        t[30] = 6 * MS + 1;
+        assert_eq!(probe_verdict(&t, true), Some(StepDownReason::SlowWindow));
+        let mut m = [MS; PROBE_BLOCKS as usize];
+        for v in m.iter_mut().take(25) {
+            *v = 3 * MS + 1;
+        }
+        assert_eq!(probe_verdict(&m, false), None, "under half over 3 ms");
+        m[25] = 3 * MS + 1;
+        assert_eq!(probe_verdict(&m, false), Some(StepDownReason::Heavy));
+        assert_eq!(probe_verdict(&m, true), None, "no median rule in grace");
+        assert_eq!(probe_verdict(&[], false), None);
+    }
+
+    /// Runs one block of `s` at `b`: the model's blocks take `model_ns`, the others 1 ms, by
+    /// both clocks.
+    fn block(s: &mut Strong, b: u64, model_ns: u64, grace_until: u64) {
+        let input = [0.01f32; FRAME];
+        let mut out = [0.0f32; FRAME];
+        s.begin(&input, true, b);
+        let o = s.end(&mut out, b);
+        let ns = if o.ran { model_ns } else { MS };
+        s.judge(ns, ns, o.ran, b, true, false, grace_until);
+    }
+
+    /// Step-downs in a grace window do not count towards retiring the model: each is retried
+    /// after 5 s, past the three that retire it outside a window, until the separate bound
+    /// for them. Outside a window the third step-down is final, as before.
+    #[test]
+    fn step_downs_in_grace_do_not_retire_the_model() {
+        let Some(model) = model() else { return };
+        // Every model block is over 6 ms in a window that never closes here.
+        let grace_until = 1_000_000;
+        let mut s = Strong::new(Arc::clone(&model));
+        let mut seen = 0;
+        for b in 0..20_000 {
+            block(&mut s, b, 7 * MS, grace_until);
+            if s.step_downs != seen {
+                seen = s.step_downs;
+                assert_eq!(s.grace_step_downs, seen);
+                if seen < MAX_GRACE_STEP_DOWNS {
+                    assert_ne!(s.state(b + 1), StrongState::Retired, "{seen}");
+                    assert_eq!(s.retry_at(), b + SHORT_RETRY_BLOCKS);
+                }
+            }
+            if s.state(b + 1) == StrongState::Retired {
+                break;
+            }
+        }
+        assert_eq!(s.step_downs, MAX_GRACE_STEP_DOWNS);
+        assert_eq!(s.grace_step_downs, MAX_GRACE_STEP_DOWNS);
+        const { assert!(MAX_GRACE_STEP_DOWNS > MAX_STEP_DOWNS) };
+        assert_eq!(s.state(u64::MAX), StrongState::Retired, "bounded");
+
+        // No window: the third is final.
+        let mut s = Strong::new(model);
+        for b in 0..20_000 {
+            block(&mut s, b, 7 * MS, 0);
+            if s.state(b + 1) == StrongState::Retired {
+                break;
+            }
+        }
+        assert_eq!(s.step_downs, MAX_STEP_DOWNS);
+        assert_eq!(s.grace_step_downs, 0);
+        assert_eq!(s.state(u64::MAX), StrongState::Retired);
+    }
+
+    /// A step-down within a second after a reset counts as one in a grace window (5 s retry,
+    /// not counted); later ones count as usual.
+    #[test]
+    fn a_step_down_just_after_a_reset_does_not_count() {
+        let Some(model) = model() else { return };
+        let mut s = Strong::new(model);
+        for b in 0..1_000 {
+            block(&mut s, b, MS, 0);
+        }
+        s.reset(1_000);
+        block(&mut s, 1_000, MS, 0);
+        block(&mut s, 1_001, 7 * MS, 0);
+        assert_eq!((s.step_downs, s.grace_step_downs), (1, 1));
+        assert_eq!(s.retry_at(), 1_001 + SHORT_RETRY_BLOCKS);
+        // The retry (its 0.5 s warm-up passes), then a slow block well after the reset.
+        for b in 1_002..2_000 {
+            block(&mut s, b, MS, 0);
+        }
+        assert_eq!(s.state(2_000), StrongState::Running);
+        block(&mut s, 2_000, 7 * MS, 0);
+        assert_eq!((s.step_downs, s.grace_step_downs), (2, 1));
+        assert_eq!(
+            s.retry_at(),
+            2_000 + RETRY_BLOCKS,
+            "the first counted one: 30 s"
+        );
+    }
+
+    /// A retry does not start while a block of the last 100 went over the audio pipeline's
+    /// percentile line; the state stays stepped down meanwhile. Its warm-up is judged
+    /// on its percentile: one slow block in it passes.
+    #[test]
+    fn a_retry_waits_for_the_pipeline_window() {
+        let Some(model) = model() else { return };
+        let mut s = Strong::new(model);
+        let input = [0.01f32; FRAME];
+        let mut out = [0.0f32; FRAME];
+        block(&mut s, 0, 7 * MS, 0);
+        assert_eq!(s.step_downs, 1);
+        let retry = s.retry_at();
+        for b in 1..retry - 10 {
+            block(&mut s, b, MS, 0);
+        }
+        // A block over 6 ms (not the model's: it is not running), 10 blocks before the retry
+        // is due.
+        s.begin(&input, true, retry - 10);
+        let o = s.end(&mut out, retry - 10);
+        assert!(!o.ran);
+        s.judge(7 * MS, 7 * MS, false, retry - 10, true, false, 0);
+        for b in retry - 9..retry + 90 {
+            block(&mut s, b, MS, 0);
+            if b >= retry {
+                assert!(s.held, "{b}");
+                assert_eq!(s.state(b + 1), StrongState::SteppedDown, "{b}");
+            }
+        }
+        // 100 blocks after it, the retry starts; one block of its warm-up over 6 ms of CPU.
+        for b in retry + 90..retry + 400 {
+            let ns = if b == retry + 100 { 9 * MS } else { MS };
+            block(&mut s, b, ns, 0);
+        }
+        assert!(!s.held);
+        assert_eq!(s.step_downs, 1, "the warm-up's one slow block passed");
+        assert_eq!(s.state(retry + 400), StrongState::Running);
     }
 }

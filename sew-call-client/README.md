@@ -119,12 +119,17 @@ What each one does:
   processing alone). The state then also says which `model` runs, why it is RNNoise
   (`model_reason`) and how often the call's stage stepped down (`step_downs`), with the
   stage's timing for a call's log (`step_down_reason`, `last_step_down_ms_ago`,
-  `slowest_block_us`, `blocks_over_budget`, `in_grace`, and kessel-audio's
-  `capture_stage_strikes`, `capture_stage_bypassed`, `capture_stage_p99_us`). The call's start
-  and its busy moments (the session activating, a route change, a device switch, a camera
-  starting, and the app's lifecycle through `NoiseRemovalControl::app_scene_changed`) open a
-  grace window in which the stage keeps the model through the load. Which files to ship and
-  where: [tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app"](https://github.com/Alakazam-211/sew-crates/tree/main/tauri-plugin-sew-voice#shipping-deepfilternet3-in-your-app).
+  `slowest_block_us`, `blocks_over_budget`, `in_grace`, `dfn3_state`, `retry_in_ms`,
+  `grace_step_downs`, `slowest_block_cpu_us`, `p99_block_us`, `p99_block_cpu_us`, and
+  kessel-audio's `capture_stage_strikes`, `capture_stage_bypassed`, `capture_stage_p99_us`,
+  `capture_stage_grace`, `capture_stage_grace_blocks`, `capture_stage_grace_over_budget`,
+  `capture_stage_last_transient`, `capture_stage_clock`, `capture_stage_max_wall_us`,
+  `capture_stage_preempted_over_budget`, `capture_stage_starved`). The call's start and its
+  busy moments (the session activating, a route change, a device switch, a camera starting,
+  and the app's lifecycle through `NoiseRemovalControl::app_scene_changed`) open a grace
+  window in which the stage keeps the model through the load, and kessel-audio holds its own
+  timing rule for the stage back for as long. Which files to ship and where:
+  [tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app"](https://github.com/Alakazam-211/sew-crates/tree/main/tauri-plugin-sew-voice#shipping-deepfilternet3-in-your-app).
 - `noise-bench` (debug builds only, never in `default`): `noise_bench::run`, the stage on the
   device's microphone for a while, reported as JSON.
 - `video-core` and `video` (off by default): `kessel-video`, K2's cameras, screen capture and
@@ -170,7 +175,7 @@ needs a Sew server to join calls on (see the
 
 ```toml
 [dependencies]
-sew-call-client = "0.9.0"
+sew-call-client = "0.9.1"
 ```
 
 An app also needs, for its `JoinProvider` and to run a call:

@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.9.1 (2026-11-20, Sew 0.11.1)
+
+Additive: new optional fields in the `noise_removal` state, event and answer; no other
+change to the API, the commands or their JSON.
+
+### Added
+
+- The `noise_removal` state carries the audio pipeline's own grace window for the noise
+  removal stage, for a call's log: `capture_stage_grace`, `capture_stage_grace_blocks`,
+  `capture_stage_grace_over_budget` and `capture_stage_last_transient` (`call_start`,
+  `audio_session_activated`, `route_change`, `camera_start`, `app_scene_change`, `other`;
+  `CaptureTransient` in Rust), and how it times the stage: `capture_stage_clock`
+  (`thread_cpu`, `wall`; `CaptureStageClock` in Rust), `capture_stage_max_wall_us`,
+  `capture_stage_preempted_over_budget` and `capture_stage_starved`. Each is absent while
+  unset, so older readers are unaffected.
+- The `noise_removal` state and event carry, where DeepFilterNet3 is in play during a call:
+  `dfn3_state` (`"idle"`, `"warming"`, `"running"`, `"stepped_down"`, `"retired"`),
+  `retry_in_ms` while it is stepped down, `grace_step_downs`, and `slowest_block_cpu_us`,
+  `p99_block_us` and `p99_block_cpu_us` beside `slowest_block_us`. Each is absent while unset;
+  a host that does not read them is unaffected. `step_down_reason` may be `"starved"`. From
+  sew-call-client, `NoiseDfn3State`, `CaptureTransient` and `CaptureStageClock` are
+  re-exported.
+
+### Changed
+
+- Through sew-call-client, noise removal keeps running through a call's busy moments: the
+  call's start, the camera starting or switching, and the app's scene
+  (`VoiceControl::app_scene`, Tauri's resumed and focus events) reach the audio pipeline,
+  which holds its timing rule for the stage back then. A fault still bypasses the stage at
+  once. The pipeline also times the stage on the processing thread's CPU time where the
+  platform has it, so time the device spends on other threads does not count against it.
+- Noise removal keeps DeepFilterNet3 through busy moments elsewhere in the app (a camera
+  starting, for example): the stage judges the audio thread's CPU time where the platform has
+  a clock for it. See sew-call-client's CHANGELOG.
+
+### Dependencies
+
+- Requires sew-call-client 0.9.1 and sew-proto 0.11.1.
+
 ## 0.9.0 (2026-11-19, Sew 0.11.0)
 
 ### Breaking

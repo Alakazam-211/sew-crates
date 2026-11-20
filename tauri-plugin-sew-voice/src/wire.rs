@@ -1121,11 +1121,14 @@ pub use sew_call_client::{CodecPreferenceReason, VideoCodecPreference};
 /// The microphone's noise removal: the setting (`"off"`, `"standard"`), why what runs is less
 /// (`"budget"`, `"fault"`, `"unavailable"`, `"loading"`; `"switch_failed"` for a phone's
 /// capture), the phone's capture (`"os"`, `"raw"`), the stage's step-down rule (`"slow_block"`,
-/// `"slow_window"`, `"heavy"`, `"fault"`, `"forced"`) and `{mode, active, reason?, …}`
+/// `"slow_window"`, `"heavy"`, `"fault"`, `"forced"`, `"starved"`), where DeepFilterNet3 is
+/// (`"idle"`, `"warming"`, `"running"`, `"stepped_down"`, `"retired"`), the last busy moment
+/// reported to the audio pipeline (`"call_start"`, `"camera_start"`, `"app_scene_change"`, …),
+/// the clock it times the stage by (`"thread_cpu"`, `"wall"`) and `{mode, active, reason?, …}`
 /// (sew-call-client's).
 pub use sew_call_client::{
-    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason,
-    PhoneAudioMode,
+    CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel, NoiseRemoval,
+    NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
 };
 
 /// `set_noise_removal`'s arguments: `{mode}`, `"off"` or `"standard"`. `"strong"` is a mode

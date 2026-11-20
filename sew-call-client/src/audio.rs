@@ -452,7 +452,7 @@ impl AudioBridge {
         noise: Option<(NoiseRemovalControl, u64)>,
     ) -> Result<AudioBridge, AudioBridgeError> {
         let frames = call.frames().ok_or(AudioBridgeError::FramesTaken)?;
-        let (engine, deferred) = start_engine(cfg)?;
+        let (engine, deferred) = start_call_engine(cfg)?;
         let engine = Arc::new(engine);
         // The noise removal first: a change of the setting since `configure` reaches the
         // phone's capture before the session's replayed `Activated` opens the device (iOS), so
@@ -559,6 +559,17 @@ pub(crate) fn start_engine(
         return Ok((AudioEngine::start_when_session_active(cfg)?, true));
     }
     Ok((AudioEngine::start(cfg)?, false))
+}
+
+/// [`start_engine`] for a call's capture (a join or a rejoin): the device is busy for a
+/// moment, so the pipeline also holds its timing rule for the noise removal stage back
+/// (kessel-audio's `TransientEvent::CallStart`; nothing without a stage).
+pub(crate) fn start_call_engine(
+    cfg: EngineConfig,
+) -> Result<(AudioEngine, bool), kessel_audio::AudioError> {
+    let (engine, deferred) = start_engine(cfg)?;
+    engine.transient_event(kessel_audio::TransientEvent::CallStart);
+    Ok((engine, deferred))
 }
 
 /// kessel-audio's per-participant playout counters for the stats windows (none once the
@@ -915,5 +926,36 @@ mod tests {
         assert_eq!(got, 10, "the desktop engine stopped producing frames");
         session.detach(id);
         engine.shutdown();
+    }
+
+    /// A call's capture reports its start to the pipeline: the noise removal stage's grace
+    /// window opens with `CallStart` as its reason.
+    #[test]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    fn a_calls_capture_reports_its_start() {
+        let noise = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        let (cfg, id) = noise.configure(EngineConfig::null(NullDevice {
+            input: Some(tone()),
+            ..NullDevice::default()
+        }));
+        let (engine, deferred) = start_call_engine(cfg).unwrap();
+        assert!(!deferred);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let st = engine.stats().capture_stage;
+            if let Some(s) = st
+                && s.last_transient == Some(kessel_audio::TransientEvent::CallStart)
+                && s.grace_blocks > 0
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the call's start never reached the pipeline: {st:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        engine.shutdown();
+        noise.detach(id);
     }
 }

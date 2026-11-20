@@ -75,11 +75,22 @@ step-down, on desktop and, after the OS's voice processing, on phones; see "Ship
 DeepFilterNet3 in your app" below. Without the weights `standard` is RNNoise. The state then
 also carries `model` (`dfn3`, `rnnoise`), `model_reason` (why it is RNNoise) and `step_downs`,
 and for a call's log the stage's timing: `step_down_reason`, `last_step_down_ms_ago`,
-`slowest_block_us`, `blocks_over_budget`, `in_grace` and kessel-audio's
-`capture_stage_strikes`, `capture_stage_bypassed` and `capture_stage_p99_us`. A call's start,
+`slowest_block_us`, `blocks_over_budget`, `in_grace`, `dfn3_state` (`idle`, `warming`,
+`running`, `stepped_down`, `retired`), `retry_in_ms`, `grace_step_downs`,
+`slowest_block_cpu_us`, `p99_block_us`, `p99_block_cpu_us` and kessel-audio's
+`capture_stage_strikes`, `capture_stage_bypassed`, `capture_stage_p99_us`, and its grace
+window for the stage: `capture_stage_grace`, `capture_stage_grace_blocks`,
+`capture_stage_grace_over_budget` and `capture_stage_last_transient` (`call_start`,
+`camera_start`, `app_scene_change`, …), and how it times the stage: `capture_stage_clock`
+(`thread_cpu`, `wall`), `capture_stage_max_wall_us`, `capture_stage_preempted_over_budget` and
+`capture_stage_starved`. The stage judges its blocks by the audio thread's CPU time where the
+platform has a clock for it, so a block that waited for a core while another part of the app
+ran does not count against the model. A call's start,
 the audio session activating, a route change, a camera starting and the app's lifecycle
 (Tauri's resumed event, a window's focus, `VoiceControl::app_scene`) each open a short grace
-window in which the stage keeps the model through the moment's load (`in_grace: true`).
+window in which the stage keeps the model through the moment's load (`in_grace: true`), and
+the audio pipeline holds its own timing rule for the stage back for as long
+(`capture_stage_grace: true`).
 
 Not affiliated with or endorsed by LiveKit.
 
@@ -158,7 +169,7 @@ join calls on (see the [sew-crates](https://github.com/Alakazam-211/sew-crates) 
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.9.0"
+tauri-plugin-sew-voice = "0.9.1"
 # For a JoinProvider like sew-call-client's example (its JoinProvider docs):
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
@@ -360,7 +371,7 @@ low-latency model, by Hendrik Schröter and the DeepFilterNet authors
 inference. Its weights are not in any crate: your app ships them.
 
 ```toml
-tauri-plugin-sew-voice = { version = "0.9.0", features = ["dfn3"] }
+tauri-plugin-sew-voice = { version = "0.9.1", features = ["dfn3"] }
 ```
 
 The four files come in a GitHub release asset of the Sew release the plugin belongs to, on
@@ -371,8 +382,8 @@ https://github.com/Alakazam-211/sew-releases/releases/download/v<sew-version>/se
 ```
 
 where `<sew-version>` is the Sew version in the heading of this release's CHANGELOG entry.
-For plugin 0.9.0 that is Sew 0.11.0:
-<https://github.com/Alakazam-211/sew-releases/releases/download/v0.11.0/sew-dfn3-0.11.0.tar.gz>
+For plugin 0.9.1 that is Sew 0.11.1:
+<https://github.com/Alakazam-211/sew-releases/releases/download/v0.11.1/sew-dfn3-0.11.1.tar.gz>
 (sha256 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). Each release's
 `SHA256SUMS` and `release.json` carry the asset's sha256. The tarball holds a `dfn3/` folder
 with these files:
@@ -387,7 +398,7 @@ Fetch and check it at build time (the weights are not committed to your reposito
 example from `src-tauri/`:
 
 ```sh
-v=0.11.0
+v=0.11.1
 curl -fLO "https://github.com/Alakazam-211/sew-releases/releases/download/v$v/sew-dfn3-$v.tar.gz"
 echo "153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697  sew-dfn3-$v.tar.gz" | sha256sum -c -
 tar -xzf "sew-dfn3-$v.tar.gz"   # writes dfn3/

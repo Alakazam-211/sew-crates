@@ -23,8 +23,9 @@ use tauri_plugin_sew_voice::{
     VideoPaused, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoSource, VideoTrack,
 };
 use tauri_plugin_sew_voice::{
-    NOISE_COMMANDS, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason,
-    PhoneAudioMode, SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
+    CaptureStageClock, CaptureTransient, NOISE_COMMANDS, NoiseDfn3State, NoiseRemoval,
+    NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
+    SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
 };
 
 /// `v` serializes to exactly `want` and `want` parses back to `v`.
@@ -1249,6 +1250,12 @@ fn noise_removal_shapes() {
     timed.slowest_block_us = Some(9_300);
     timed.blocks_over_budget = 2;
     timed.in_grace = true;
+    timed.dfn3_state = Some(NoiseDfn3State::SteppedDown);
+    timed.retry_in_ms = Some(2_500);
+    timed.grace_step_downs = 1;
+    timed.slowest_block_cpu_us = Some(1_400);
+    timed.p99_block_us = Some(8_800);
+    timed.p99_block_cpu_us = Some(1_100);
     timed.capture_stage_strikes = 1;
     timed.capture_stage_bypassed = Some(NoiseRemovalReason::Budget);
     timed.capture_stage_p99_us = Some(6_400);
@@ -1257,9 +1264,67 @@ fn noise_removal_shapes() {
         json!({"mode": "standard", "active": "off", "reason": "budget",
             "step_down_reason": "slow_block", "last_step_down_ms_ago": 4500,
             "slowest_block_us": 9300, "blocks_over_budget": 2, "in_grace": true,
+            "dfn3_state": "stepped_down", "retry_in_ms": 2500, "grace_step_downs": 1,
+            "slowest_block_cpu_us": 1400, "p99_block_us": 8800, "p99_block_cpu_us": 1100,
             "capture_stage_strikes": 1, "capture_stage_bypassed": "budget",
             "capture_stage_p99_us": 6400}),
     );
+    // kessel-audio's own grace window for the stage: additive, absent while unset.
+    timed.capture_stage_grace = true;
+    timed.capture_stage_grace_blocks = 300;
+    timed.capture_stage_grace_over_budget = 3;
+    timed.capture_stage_last_transient = Some(CaptureTransient::CallStart);
+    exact(
+        &timed,
+        json!({"mode": "standard", "active": "off", "reason": "budget",
+            "step_down_reason": "slow_block", "last_step_down_ms_ago": 4500,
+            "slowest_block_us": 9300, "blocks_over_budget": 2, "in_grace": true,
+            "dfn3_state": "stepped_down", "retry_in_ms": 2500, "grace_step_downs": 1,
+            "slowest_block_cpu_us": 1400, "p99_block_us": 8800, "p99_block_cpu_us": 1100,
+            "capture_stage_strikes": 1, "capture_stage_bypassed": "budget",
+            "capture_stage_p99_us": 6400, "capture_stage_grace": true,
+            "capture_stage_grace_blocks": 300, "capture_stage_grace_over_budget": 3,
+            "capture_stage_last_transient": "call_start"}),
+    );
+    // How kessel-audio times the stage: additive, absent while unset.
+    timed.capture_stage_clock = Some(CaptureStageClock::ThreadCpu);
+    timed.capture_stage_max_wall_us = Some(22_000);
+    timed.capture_stage_preempted_over_budget = 4;
+    timed.capture_stage_starved = 1;
+    exact(
+        &timed,
+        json!({"mode": "standard", "active": "off", "reason": "budget",
+            "step_down_reason": "slow_block", "last_step_down_ms_ago": 4500,
+            "slowest_block_us": 9300, "blocks_over_budget": 2, "in_grace": true,
+            "dfn3_state": "stepped_down", "retry_in_ms": 2500, "grace_step_downs": 1,
+            "slowest_block_cpu_us": 1400, "p99_block_us": 8800, "p99_block_cpu_us": 1100,
+            "capture_stage_strikes": 1, "capture_stage_bypassed": "budget",
+            "capture_stage_p99_us": 6400, "capture_stage_grace": true,
+            "capture_stage_grace_blocks": 300, "capture_stage_grace_over_budget": 3,
+            "capture_stage_last_transient": "call_start",
+            "capture_stage_clock": "thread_cpu", "capture_stage_max_wall_us": 22000,
+            "capture_stage_preempted_over_budget": 4, "capture_stage_starved": 1}),
+    );
+    exact(&CaptureStageClock::ThreadCpu, json!("thread_cpu"));
+    exact(&CaptureStageClock::Wall, json!("wall"));
+    for (t, n) in [
+        (CaptureTransient::CallStart, "call_start"),
+        (
+            CaptureTransient::AudioSessionActivated,
+            "audio_session_activated",
+        ),
+        (CaptureTransient::RouteChange, "route_change"),
+        (CaptureTransient::CameraStart, "camera_start"),
+        (CaptureTransient::AppSceneChange, "app_scene_change"),
+        (CaptureTransient::Other, "other"),
+    ] {
+        exact(&t, json!(n));
+    }
+    exact(&NoiseStepDownReason::Starved, json!("starved"));
+    exact(&NoiseDfn3State::Idle, json!("idle"));
+    exact(&NoiseDfn3State::Warming, json!("warming"));
+    exact(&NoiseDfn3State::Running, json!("running"));
+    exact(&NoiseDfn3State::Retired, json!("retired"));
     exact(&NoiseStepDownReason::SlowWindow, json!("slow_window"));
     exact(&NoiseStepDownReason::Heavy, json!("heavy"));
     exact(&NoiseStepDownReason::Fault, json!("fault"));

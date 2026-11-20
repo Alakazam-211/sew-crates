@@ -13,8 +13,8 @@ use tokio::sync::broadcast;
 
 use super::hook::{self, Bypass, CaptureStage};
 use super::{
-    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseSource,
-    NoiseStepDownReason, PhoneAudioMode,
+    CaptureTransient, NoiseDfn3State, NoiseModel, NoiseRemoval, NoiseRemovalReason,
+    NoiseRemovalState, NoiseSource, NoiseStepDownReason, PhoneAudioMode,
 };
 use crate::audio::{PhoneOs, PhoneStart};
 
@@ -172,6 +172,19 @@ fn step_down_reason(r: StepDownReason) -> Option<NoiseStepDownReason> {
         StepDownReason::Heavy => Some(NoiseStepDownReason::Heavy),
         StepDownReason::Fault => Some(NoiseStepDownReason::Fault),
         StepDownReason::Forced => Some(NoiseStepDownReason::Forced),
+        StepDownReason::Starved => Some(NoiseStepDownReason::Starved),
+        _ => None,
+    }
+}
+
+/// The stage's Strong state as the state names it.
+fn dfn3_state(s: StrongState) -> Option<NoiseDfn3State> {
+    match s {
+        StrongState::Idle => Some(NoiseDfn3State::Idle),
+        StrongState::Warming => Some(NoiseDfn3State::Warming),
+        StrongState::Running => Some(NoiseDfn3State::Running),
+        StrongState::SteppedDown => Some(NoiseDfn3State::SteppedDown),
+        StrongState::Retired => Some(NoiseDfn3State::Retired),
         _ => None,
     }
 }
@@ -193,9 +206,25 @@ fn with_timing(
     }
     if st.blocks > 0 {
         state.slowest_block_us = Some(st.max_block_ns / 1_000);
+        state.p99_block_us = Some(st.p99_block_ns / 1_000);
+        if st.max_block_cpu_ns > 0 {
+            state.slowest_block_cpu_us = Some(st.max_block_cpu_ns / 1_000);
+            state.p99_block_cpu_us = Some(st.p99_block_cpu_ns / 1_000);
+        }
     }
     state.blocks_over_budget = st.over_budget;
     state.in_grace = st.in_grace;
+    if stage.strong_available() {
+        state.dfn3_state = dfn3_state(st.strong_state);
+        if st.strong_state == StrongState::SteppedDown {
+            state.retry_in_ms = Some(
+                st.retry_at_block
+                    .saturating_sub(st.blocks)
+                    .saturating_mul(10),
+            );
+        }
+        state.grace_step_downs = u32::try_from(st.grace_step_downs).unwrap_or(u32::MAX);
+    }
     if let Some(p) = audio.and_then(|a| a.pipeline_stage()) {
         state.capture_stage_strikes = p.strikes;
         state.capture_stage_bypassed = p.bypassed.map(|b| match b {
@@ -203,6 +232,14 @@ fn with_timing(
             Bypass::Fault => NoiseRemovalReason::Fault,
         });
         state.capture_stage_p99_us = Some(p.p99_us);
+        state.capture_stage_grace = p.grace;
+        state.capture_stage_grace_blocks = p.grace_blocks;
+        state.capture_stage_grace_over_budget = p.grace_over_budget;
+        state.capture_stage_last_transient = p.last_transient;
+        state.capture_stage_clock = p.clock;
+        state.capture_stage_max_wall_us = Some(p.max_wall_us);
+        state.capture_stage_preempted_over_budget = p.preempted_over_budget;
+        state.capture_stage_starved = p.starved;
     }
     state
 }
@@ -325,6 +362,11 @@ pub(crate) trait LiveAudio: Send + Sync {
     fn pipeline_stage(&self) -> Option<hook::PipelineStage> {
         None
     }
+    /// A busy moment of the device: the pipeline opens (or extends) its grace window for the
+    /// stage (never blocks).
+    fn transient(&self, event: CaptureTransient) {
+        let _ = event;
+    }
 }
 
 impl LiveAudio for AudioEngine {
@@ -334,6 +376,10 @@ impl LiveAudio for AudioEngine {
 
     fn pipeline_stage(&self) -> Option<hook::PipelineStage> {
         hook::pipeline_stage(self)
+    }
+
+    fn transient(&self, event: CaptureTransient) {
+        self.transient_event(hook::transient_event(event));
     }
 
     #[cfg(all(feature = "mobile", any(target_os = "ios", target_os = "android")))]
@@ -1005,15 +1051,19 @@ impl NoiseRemovalControl {
     }
 
     /// Opens (or extends) a grace window on the live call's stage (`id`: only if it is that
-    /// call's) and sends the state's change at once. Nothing without a live stage.
-    fn open_grace(&self, id: Option<u64>) {
+    /// call's) and sends the state's change at once. Nothing without a live stage. With
+    /// `event`, the call's audio pipeline hears of the moment too and opens its own window
+    /// for the stage (`None`: one the pipeline sees by itself, such as a stream reopening).
+    fn open_grace(&self, id: Option<u64>, event: Option<CaptureTransient>) {
         let opened = {
             let live = lock(&self.inner.live);
-            match live
-                .as_ref()
-                .filter(|l| id.is_none_or(|i| l.id == i))
-                .and_then(|l| l.stage.as_ref())
-            {
+            let Some(l) = live.as_ref().filter(|l| id.is_none_or(|i| l.id == i)) else {
+                return;
+            };
+            if let (Some(event), Some(audio)) = (event, l.audio()) {
+                audio.transient(event);
+            }
+            match l.stage.as_ref() {
                 Some(stage) => {
                     stage.grace(GRACE);
                     true
@@ -1034,7 +1084,9 @@ impl NoiseRemovalControl {
     /// (about 3 s, `sew_noise::DEFAULT_GRACE`): its timing rules are held back to the audio
     /// pipeline's own line, so the switch does not cost the call DeepFilterNet3, and a
     /// step-down that happens anyway is retried after 5 s instead of 30 s. The state says
-    /// `in_grace` while it lasts. Nothing happens without a call.
+    /// `in_grace` while it lasts. The call's audio pipeline holds its own timing rule for the
+    /// stage back for as long (`capture_stage_grace`, `capture_stage_last_transient:
+    /// app_scene_change`). Nothing happens without a call.
     ///
     /// The call's own events open the same window by themselves: its audio starting, the
     /// phone's audio session activating or resuming, an audio route change
@@ -1042,25 +1094,26 @@ impl NoiseRemovalControl {
     /// ([`crate::AudioBridge::events`]), a switch of the phone's capture, and a camera starting
     /// through `VideoBridge::set_camera` (feature `video-core`).
     pub fn app_scene_changed(&self) {
-        self.open_grace(None);
+        self.open_grace(None, Some(CaptureTransient::AppSceneChange));
     }
 
     /// The phone's audio session reported `event` to the call `id`'s audio: the device is busy
-    /// for a moment when the session activates or resumes and when the route changes.
+    /// for a moment when the session activates or resumes and when the route changes. The
+    /// audio pipeline opens its own window for these when the event reaches it.
     pub(crate) fn session_event(&self, id: u64, event: crate::audio::SessionEvent) {
         use crate::audio::SessionEvent;
         match event {
             SessionEvent::Activated | SessionEvent::Resume | SessionEvent::RouteChanged => {
-                self.open_grace(Some(id));
+                self.open_grace(Some(id), None);
             }
             SessionEvent::Deactivated | SessionEvent::Suspend => {}
         }
     }
 
     /// kessel-audio switched the call `id`'s devices (a hot-plug, a default change, a fallback
-    /// after a loss): the streams reopened.
+    /// after a loss): the streams reopened (the pipeline opened its own window for that).
     pub(crate) fn devices_changed(&self, id: u64) {
-        self.open_grace(Some(id));
+        self.open_grace(Some(id), None);
     }
 
     /// The setting and what runs now.
@@ -1337,7 +1390,8 @@ impl NoiseSource for CallNoise {
 
     fn grace(&self) {
         if let Some(inner) = self.inner.upgrade() {
-            NoiseRemovalControl { inner }.open_grace(Some(self.id));
+            NoiseRemovalControl { inner }
+                .open_grace(Some(self.id), Some(CaptureTransient::CameraStart));
         }
     }
 }
@@ -1461,6 +1515,19 @@ mod tests {
                 2 => Some(Bypass::Fault),
                 _ => None,
             }
+        }
+    }
+
+    /// A pipeline that records the busy moments it hears of.
+    #[derive(Default)]
+    struct FakeTransients(Mutex<Vec<CaptureTransient>>);
+
+    impl LiveAudio for FakeTransients {
+        fn bypass(&self) -> Option<Bypass> {
+            None
+        }
+        fn transient(&self, event: CaptureTransient) {
+            lock(&self.0).push(event);
         }
     }
 
@@ -2130,8 +2197,9 @@ mod tests {
         control.detach(id);
     }
 
-    /// A stage that sleeps 10 ms per block (a strike on the second call, and on every second
-    /// one after a retry) or answers NaN (a fault).
+    /// A stage that works 12 ms per block, on the CPU (kessel-audio times the stage on the
+    /// thread's CPU time; a strike on the second call, and on every second one after a retry)
+    /// or answers NaN (a fault).
     struct Bad {
         nan: bool,
     }
@@ -2141,7 +2209,10 @@ mod tests {
             if self.nan {
                 block[7] = f32::NAN;
             } else {
-                std::thread::sleep(Duration::from_millis(10));
+                let until = Instant::now() + Duration::from_millis(12);
+                while Instant::now() < until {
+                    std::hint::spin_loop();
+                }
             }
         }
         fn latency_samples(&self) -> usize {
@@ -2202,7 +2273,8 @@ mod tests {
     /// and a route change (through the bridge's session sink, before kessel-audio hears it),
     /// a device switch, a camera starting (the call's noise source) and the app's scene
     /// changing. A suspend or a deactivation does not, nor another call's events, nor anything
-    /// without a call.
+    /// without a call. The audio pipeline hears of a camera starting and of the app's scene
+    /// (it sees the session's events and a device switch by itself).
     #[test]
     fn the_calls_events_open_grace() {
         let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
@@ -2210,6 +2282,10 @@ mod tests {
         let ctl = stage.control();
         ctl.set_auto_grace(Duration::ZERO);
         let id = control.live_with(Some(ctl.clone()));
+        let pipeline = Arc::new(FakeTransients::default());
+        let weak: Weak<FakeTransients> = Arc::downgrade(&pipeline);
+        control.attach(id, weak);
+        let heard = || std::mem::take(&mut *lock(&pipeline.0));
         let session = crate::AudioSession::new();
         let sink = Arc::new(crate::audio::BridgeSink {
             engine: Weak::new(),
@@ -2238,11 +2314,52 @@ mod tests {
         keeps_closed("another call's device switch", &|| {
             control.devices_changed(id + 1)
         });
+        assert!(heard().is_empty(), "the pipeline sees these by itself");
         opens("a camera starting", &|| control.source(id).grace());
+        assert_eq!(heard(), [CaptureTransient::CameraStart]);
         opens("the app's scene", &|| control.app_scene_changed());
+        assert_eq!(heard(), [CaptureTransient::AppSceneChange]);
         control.detach(id);
         control.app_scene_changed();
         assert!(!ctl.in_grace(), "no call: nothing");
+        assert!(heard().is_empty(), "no call: nothing");
+    }
+
+    /// The call's pipeline takes the stage's grace window: it holds its timing rule back for
+    /// the stage's own window after its start, and a camera starting or the app's scene
+    /// reaches it, with the state carrying its grace fields where they are read.
+    #[test]
+    fn the_pipeline_takes_the_stages_grace() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        let (cfg, id) = control.configure(null_cfg());
+        assert_eq!(cfg.processing.stage_grace, sew_noise::DEFAULT_GRACE);
+        let engine = Arc::new(AudioEngine::start(cfg).unwrap());
+        let weak: Weak<AudioEngine> = Arc::downgrade(&engine);
+        control.attach(id, weak);
+        wait_for("the stage runs in its start window", || {
+            engine
+                .stats()
+                .capture_stage
+                .is_some_and(|s| s.grace_blocks > 0)
+        });
+        control.app_scene_changed();
+        wait_for("the app's scene reaches the pipeline", || {
+            engine.stats().capture_stage.is_some_and(|s| {
+                s.last_transient == Some(kessel_audio::TransientEvent::AppSceneChange)
+            })
+        });
+        control.source(id).grace();
+        wait_for("a camera starting reaches the pipeline", || {
+            engine.stats().capture_stage.is_some_and(|s| {
+                s.last_transient == Some(kessel_audio::TransientEvent::CameraStart)
+            })
+        });
+        let p = hook::pipeline_stage(&engine).expect("a stage is set");
+        assert_eq!(p.last_transient, Some(CaptureTransient::CameraStart));
+        assert!(p.clock.is_some(), "{p:?}");
+        assert!(p.grace_blocks > 0, "{p:?}");
+        engine.shutdown();
+        control.detach(id);
     }
 }
 

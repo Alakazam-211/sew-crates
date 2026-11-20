@@ -116,6 +116,30 @@ const WINDOW_P99_BLOCKS: u32 = WINDOW_BLOCKS / 100;
 const DEFAULT_BUDGET: Duration = Duration::from_millis(6);
 /// One block, in nanoseconds.
 const BLOCK_NS: u128 = 10_000_000;
+/// The blocks the 99th percentiles in [`StageStats`] are over (1 s): the audio pipeline's own
+/// window over the stage's calls.
+const RECENT: usize = 100;
+
+/// A block's times, in nanoseconds.
+#[derive(Debug, Clone, Copy)]
+struct BlockTimes {
+    /// The wall time (or the time a caller gave): the counters' time.
+    wall: u64,
+    /// The thread's CPU time, where it was measured.
+    cpu: Option<u64>,
+    /// What Strong's rules judge.
+    #[cfg_attr(not(feature = "dfn3"), allow(dead_code))]
+    judged: u64,
+}
+
+/// Where a block's timing started.
+#[derive(Debug, Clone, Copy)]
+struct Mark {
+    #[cfg(not(target_arch = "wasm32"))]
+    started: std::time::Instant,
+    given: Option<u64>,
+    cpu: Option<u64>,
+}
 
 /// The grace window a stage opens by itself ([`StageControl::set_auto_grace`]): at its first
 /// block, at [`Stage::reset`] and when it takes a model layer handed over during a call.
@@ -157,6 +181,14 @@ struct Shared {
     last_step_down: AtomicU8,
     last_step_down_block: AtomicU64,
     retry_at_block: AtomicU64,
+    grace_step_downs: AtomicU64,
+    retry_held: AtomicBool,
+    max_block_cpu_ns: AtomicU64,
+    last_block_cpu_ns: AtomicU64,
+    p99_block_ns: AtomicU64,
+    p99_block_cpu_ns: AtomicU64,
+    /// The blocks are timed by the thread's CPU time ([`StageStats::cpu_timed`]).
+    cpu_timed: AtomicBool,
     /// Measurement: the step-down rules apply (on by default).
     step_down_rules: AtomicBool,
     /// Measurement: step down at the next model block.
@@ -220,9 +252,11 @@ impl Dfn3Layer {
 
 /// A snapshot of a stage's timing counters ([`StageControl::stats`]).
 ///
-/// Times are the wall time of [`Stage::process`], measured on the thread that runs it. On
-/// `wasm32` there is no clock unless one is given ([`Stage::set_clock`]): without it the block
-/// counts advance and every time is 0.
+/// Times are the wall time of [`Stage::process`], measured on the thread that runs it, except
+/// the `*_cpu_ns` fields: the thread's CPU time for the block where the target has a clock for
+/// it ([`Self::cpu_timed`]), which is what Strong's step-down rules judge. On `wasm32` there is
+/// no clock unless one is given ([`Stage::set_clock`]): without it the block counts advance
+/// and every time is 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct StageStats {
@@ -268,6 +302,29 @@ pub struct StageStats {
     pub grace_until_block: u64,
     /// Grace windows opened or extended so far, the stage's own included.
     pub grace_opens: u64,
+    /// Step-downs tied to a grace window or to a reset of the stage (counted in
+    /// [`Self::step_downs`] too): they do not count towards the three that retire Strong; a
+    /// separate, larger bound applies to them.
+    pub grace_step_downs: u64,
+    /// A retry of Strong is due but held back: a block of the last 100 went over one of the
+    /// audio pipeline's own lines (6 ms on the clock the rules judge, or 20 ms by the wall
+    /// clock).
+    pub retry_held: bool,
+    /// The blocks are timed by the thread's CPU time too (the target has a clock for it and
+    /// no clock was given with [`Stage::set_clock`]): the `*_cpu_ns` fields are set and
+    /// Strong's rules judge them. False: the rules judge the wall time.
+    pub cpu_timed: bool,
+    /// The slowest block by the thread's CPU time, in nanoseconds (0 without
+    /// [`Self::cpu_timed`]).
+    pub max_block_cpu_ns: u64,
+    /// The latest block by the thread's CPU time, in nanoseconds (0 without
+    /// [`Self::cpu_timed`]).
+    pub last_block_cpu_ns: u64,
+    /// The 99th percentile (nearest rank) of the last 100 blocks' wall times, or of all
+    /// blocks if fewer, in nanoseconds: what the audio pipeline's own percentile rule sees.
+    pub p99_block_ns: u64,
+    /// The same over the blocks' CPU times (0 without [`Self::cpu_timed`]).
+    pub p99_block_cpu_ns: u64,
 }
 
 impl StageStats {
@@ -345,11 +402,14 @@ impl StageControl {
     ///
     /// In a grace window Strong's timing rules do not step the model down for one slow block,
     /// for its 99th percentile or for its median. It steps down only at the second block over
-    /// 6 ms among the last 100 model blocks ([`StepDownReason::SlowWindow`]), the count at which
-    /// the audio pipeline's own percentile rule would bypass the whole stage. A model output
-    /// that is not finite is still a fault, final at once. The window's blocks are forgotten
-    /// when it closes, so the usual rules start afresh. A step-down inside a window, or within
-    /// 5 s after it closed, is retried after 5 s instead of the usual wait.
+    /// 6 ms among the last 100 blocks ([`StepDownReason::SlowWindow`]), the count at which
+    /// the audio pipeline's own percentile rule would bypass the whole stage, or when the
+    /// thread falls behind real time for several blocks in a row ([`StepDownReason::Starved`]).
+    /// A model output that is not finite is still a fault, final at once. The window's block
+    /// times are forgotten when it closes, so the usual rules start afresh. A step-down inside
+    /// a window, or within 5 s after it closed, is retried after 5 s instead of the usual
+    /// wait; one inside a window does not count towards the step-downs that retire Strong for
+    /// the stage's life (a separate, larger bound applies to those).
     ///
     /// Counted in the stage's blocks (10 ms each). A few atomic operations: any thread.
     pub fn grace(&self, duration: Duration) {
@@ -439,6 +499,13 @@ impl StageControl {
             in_grace: self.in_grace(),
             grace_until_block: s.grace_until.load(Ordering::Relaxed),
             grace_opens: s.grace_opens.load(Ordering::Relaxed),
+            grace_step_downs: s.grace_step_downs.load(Ordering::Relaxed),
+            retry_held: s.retry_held.load(Ordering::Relaxed),
+            cpu_timed: s.cpu_timed.load(Ordering::Relaxed),
+            max_block_cpu_ns: s.max_block_cpu_ns.load(Ordering::Relaxed),
+            last_block_cpu_ns: s.last_block_cpu_ns.load(Ordering::Relaxed),
+            p99_block_ns: s.p99_block_ns.load(Ordering::Relaxed),
+            p99_block_cpu_ns: s.p99_block_cpu_ns.load(Ordering::Relaxed),
         }
     }
 }
@@ -472,8 +539,9 @@ enum Run {
 ///     is the look-ahead, so this adds no latency. [`StageStats::guard_opens`] counts it.
 /// - [`Mode::Strong`] (cargo feature `dfn3`, a stage built by `Stage::with_dfn3`) is
 ///   DeepFilterNet3's low-latency model's output, with Standard running beside it. The stage
-///   times its own blocks and steps down to Standard before the audio pipeline would stop it
-///   for being slow, without a click and without running the model again; it retries later,
+///   times its own blocks (by the thread's CPU time where the target has a clock for it, so
+///   time spent waiting for a core is not counted against the model) and steps down to
+///   Standard when the model is too slow for the device, without a click and without running the model again; it retries later,
 ///   and after repeated step-downs it stays on Standard. [`StageStats`] says where Strong is
 ///   and why it stepped down. While the device is busy with something else (the stage's
 ///   start, a reset, a model handed over, or a moment an app reports with
@@ -521,6 +589,19 @@ pub struct Stage {
     strong: Option<Box<crate::strong::Strong>>,
     /// A clock given by [`Self::set_clock`], used in place of the standard library's.
     clock: Option<fn() -> u64>,
+    /// The thread's CPU time, in nanoseconds (`None`: no such clock on this target).
+    cpu_clock: fn() -> Option<u64>,
+    /// A clock given by [`Self::set_clock`] is what the rules judge (tests turn this off to
+    /// give a CPU clock beside a wall clock).
+    judge_given: bool,
+    /// CPU time spent in the begun block's [`Self::begin_block`] and [`Self::step_block`]
+    /// calls so far (`None`: not timed).
+    pending_cpu: Option<u64>,
+    /// The last [`RECENT`] blocks' wall and CPU times, for the 99th percentiles.
+    recent_wall: [u64; RECENT],
+    recent_cpu: [u64; RECENT],
+    recent_pos: usize,
+    recent_len: usize,
     /// The block begun by [`Self::begin_block`]: Standard's output for it so far, what it was,
     /// and whether one is begun.
     pending: [f32; FRAME],
@@ -577,6 +658,13 @@ impl Stage {
                 last_step_down: AtomicU8::new(0),
                 last_step_down_block: AtomicU64::new(0),
                 retry_at_block: AtomicU64::new(0),
+                grace_step_downs: AtomicU64::new(0),
+                retry_held: AtomicBool::new(false),
+                max_block_cpu_ns: AtomicU64::new(0),
+                last_block_cpu_ns: AtomicU64::new(0),
+                p99_block_ns: AtomicU64::new(0),
+                p99_block_cpu_ns: AtomicU64::new(0),
+                cpu_timed: AtomicBool::new(crate::thread_clock::AVAILABLE),
                 step_down_rules: AtomicBool::new(true),
                 force_step_down: AtomicBool::new(false),
                 grace_until: AtomicU64::new(0),
@@ -594,6 +682,13 @@ impl Stage {
             #[cfg(feature = "dfn3")]
             strong: None,
             clock: None,
+            cpu_clock: crate::thread_clock::thread_cpu_ns,
+            judge_given: true,
+            pending_cpu: None,
+            recent_wall: [0; RECENT],
+            recent_cpu: [0; RECENT],
+            recent_pos: 0,
+            recent_len: 0,
             pending: [0.0; FRAME],
             pending_active: Mode::Off,
             pending_begun: false,
@@ -661,8 +756,52 @@ impl Stage {
     /// clock. For targets that have none, such as `wasm32-unknown-unknown`, where a stage
     /// otherwise counts every block as taking no time and so never steps down from Strong.
     /// The clock is called twice a block, on the audio thread: it must not allocate or block.
+    /// Strong's rules then judge this clock's times, in place of the thread's CPU time.
     pub fn set_clock(&mut self, clock: fn() -> u64) {
         self.clock = Some(clock);
+        if self.judge_given {
+            self.shared.cpu_timed.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Starts timing a block.
+    fn mark(&self) -> Mark {
+        Mark {
+            #[cfg(not(target_arch = "wasm32"))]
+            started: std::time::Instant::now(),
+            given: self.clock.map(|c| c()),
+            cpu: (self.cpu_clock)(),
+        }
+    }
+
+    /// The CPU time since `mark` (`None` without a CPU clock).
+    fn cpu_since(&self, mark: &Mark) -> Option<u64> {
+        let t0 = mark.cpu?;
+        Some((self.cpu_clock)()?.saturating_sub(t0))
+    }
+
+    /// The block's times from `mark` to now; `cpu_before`: CPU time the block spent before
+    /// `mark` (its begin and steps); `block_ns`: the time a caller counts for it.
+    fn times(&self, mark: &Mark, cpu_before: Option<u64>, block_ns: Option<u64>) -> BlockTimes {
+        #[cfg(not(target_arch = "wasm32"))]
+        let std_ns = u64::try_from(mark.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        #[cfg(target_arch = "wasm32")]
+        let std_ns = 0u64;
+        let given = match (self.clock, mark.given) {
+            (Some(c), Some(t0)) => Some(c().saturating_sub(t0)),
+            _ => None,
+        };
+        let wall = block_ns.or(given).unwrap_or(std_ns);
+        let cpu = self
+            .cpu_since(mark)
+            .map(|c| c.saturating_add(cpu_before.unwrap_or(0)));
+        let judged = match (block_ns, given, cpu) {
+            (Some(ns), _, _) => ns,
+            (None, Some(g), _) if self.judge_given => g,
+            (None, _, Some(c)) => c,
+            _ => wall,
+        };
+        BlockTimes { wall, cpu, judged }
     }
 
     /// [`Self::LATENCY`]: fixed for the stage's life.
@@ -685,9 +824,10 @@ impl Stage {
         self.run = Run::Dry;
         self.standard = Standard::new(0.0);
         self.pending_begun = false;
+        self.pending_cpu = None;
         #[cfg(feature = "dfn3")]
         if let Some(strong) = self.strong.as_mut() {
-            strong.reset();
+            strong.reset(self.shared.blocks.load(Ordering::Relaxed));
         }
         self.shared.active.store(Mode::Off as u8, Ordering::Relaxed);
     }
@@ -695,20 +835,11 @@ impl Stage {
     /// Processes one block in place: on return `block` holds the block that went in one call
     /// earlier, with the noise removed when the mode says so.
     pub fn process(&mut self, block: &mut [f32; FRAME]) {
-        #[cfg(not(target_arch = "wasm32"))]
-        let started = std::time::Instant::now();
-        let clock_started = self.clock.map(|c| c());
-        self.begin_block(block);
+        let mark = self.mark();
+        self.begin_inner(block);
         let ran = self.end_inner(block);
-        #[cfg(not(target_arch = "wasm32"))]
-        let std_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        #[cfg(target_arch = "wasm32")]
-        let std_ns = 0u64;
-        let ns = match (self.clock, clock_started) {
-            (Some(c), Some(t0)) => c().saturating_sub(t0),
-            _ => std_ns,
-        };
-        self.after_block(ran, ns);
+        let t = self.times(&mark, None, None);
+        self.after_block(ran, t);
     }
 
     /// Starts a block, for a caller that spreads the model's work over time (an audio thread
@@ -720,6 +851,13 @@ impl Stage {
     /// `end_block` runs any part left and finishes. A block begun and not ended is dropped by
     /// the next `begin_block` (its model work is lost) or by [`Self::reset`].
     pub fn begin_block(&mut self, input: &[f32; FRAME]) {
+        let cpu0 = (self.cpu_clock)();
+        self.begin_inner(input);
+        self.pending_cpu = cpu0.and_then(|t0| Some((self.cpu_clock)()?.saturating_sub(t0)));
+    }
+
+    /// [`Self::begin_block`]'s work, untimed.
+    fn begin_inner(&mut self, input: &[f32; FRAME]) {
         if !WARM.get() {
             // The model's first frame on this thread makes (allocates) its FFT plans.
             WARM.set(true);
@@ -822,7 +960,14 @@ impl Stage {
         if self.pending_begun
             && let Some(strong) = self.strong.as_mut()
         {
-            return strong.step();
+            let cpu0 = (self.cpu_clock)();
+            let done = strong.step();
+            if let (Some(t0), Some(before)) = (cpu0, self.pending_cpu)
+                && let Some(t1) = (self.cpu_clock)()
+            {
+                self.pending_cpu = Some(before.saturating_add(t1.saturating_sub(t0)));
+            }
+            return done;
         }
         true
     }
@@ -833,24 +978,22 @@ impl Stage {
     /// ran the block's work in, scaled to a block); the counters and Strong's step-down use it.
     /// `None`: the time of this call. Without a begun block, `out` gets silence.
     pub fn end_block(&mut self, out: &mut [f32; FRAME], block_ns: Option<u64>) {
-        #[cfg(not(target_arch = "wasm32"))]
-        let started = std::time::Instant::now();
-        let clock_started = self.clock.map(|c| c());
+        let mark = self.mark();
         if !self.pending_begun {
             *out = [0.0; FRAME];
             return;
         }
         let ran = self.end_inner(out);
-        #[cfg(not(target_arch = "wasm32"))]
-        let std_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        #[cfg(target_arch = "wasm32")]
-        let std_ns = 0u64;
-        let ns = match (block_ns, self.clock, clock_started) {
-            (Some(ns), _, _) => ns,
-            (None, Some(c), Some(t0)) => c().saturating_sub(t0),
-            _ => std_ns,
-        };
-        self.after_block(ran, ns);
+        let before = self.pending_cpu.take();
+        let mut t = self.times(&mark, before, block_ns);
+        if before.is_none() {
+            // The begin was not timed by the CPU clock: no CPU time for the block.
+            t.cpu = None;
+            if block_ns.is_none() && !(self.clock.is_some() && self.judge_given) {
+                t.judged = t.wall;
+            }
+        }
+        self.after_block(ran, t);
     }
 
     /// The end of a begun block, into `out`; answers whether the model ran.
@@ -876,13 +1019,13 @@ impl Stage {
         ran
     }
 
-    /// After a block: Strong's rules on its time, and the counters.
-    fn after_block(&mut self, ran: bool, ns: u64) {
+    /// After a block: Strong's rules on its times, and the counters.
+    fn after_block(&mut self, ran: bool, t: BlockTimes) {
         #[cfg(feature = "dfn3")]
-        self.judge_strong(ran, ns);
+        self.judge_strong(ran, t);
         #[cfg(not(feature = "dfn3"))]
         let _ = ran;
-        self.count(ns);
+        self.count(t);
     }
 
     /// Takes a layer handed over by [`StageControl::attach_dfn3`], if one waits: a try-lock
@@ -930,7 +1073,7 @@ impl Stage {
 
     /// After a block: Strong's step-down rules on the block's time, and its state published.
     #[cfg(feature = "dfn3")]
-    fn judge_strong(&mut self, ran: bool, ns: u64) {
+    fn judge_strong(&mut self, ran: bool, t: BlockTimes) {
         let Some(strong) = self.strong.as_mut() else {
             return;
         };
@@ -938,11 +1081,12 @@ impl Stage {
         let block_no = s.blocks.load(Ordering::Relaxed);
         if ran {
             s.model_blocks.fetch_add(1, Ordering::Relaxed);
-            let force = s.force_step_down.swap(false, Ordering::Relaxed);
-            let rules = s.step_down_rules.load(Ordering::Relaxed);
-            let grace_until = s.grace_until.load(Ordering::Relaxed);
-            strong.judge(ns, block_no, rules, force, grace_until);
         }
+        // Every block goes to the rules (their window covers the stage's recent blocks).
+        let force = ran && s.force_step_down.swap(false, Ordering::Relaxed);
+        let rules = s.step_down_rules.load(Ordering::Relaxed);
+        let grace_until = s.grace_until.load(Ordering::Relaxed);
+        strong.judge(t.judged, t.wall, ran, block_no, rules, force, grace_until);
         s.strong_state
             .store(strong.state(block_no + 1).code(), Ordering::Relaxed);
         s.step_downs
@@ -954,10 +1098,26 @@ impl Stage {
         s.last_step_down_block
             .store(strong.last_block, Ordering::Relaxed);
         s.retry_at_block.store(strong.retry_at(), Ordering::Relaxed);
+        s.grace_step_downs
+            .store(u64::from(strong.grace_step_downs), Ordering::Relaxed);
+        s.retry_held.store(strong.held, Ordering::Relaxed);
     }
 
-    fn count(&mut self, ns: u64) {
+    fn count(&mut self, t: BlockTimes) {
+        let ns = t.wall;
+        self.recent_wall[self.recent_pos] = ns;
+        self.recent_cpu[self.recent_pos] = t.cpu.unwrap_or(0);
+        self.recent_pos = (self.recent_pos + 1) % RECENT;
+        self.recent_len = (self.recent_len + 1).min(RECENT);
         let s = &self.shared;
+        s.p99_block_ns
+            .store(p99(&self.recent_wall[..self.recent_len]), Ordering::Relaxed);
+        if let Some(cpu) = t.cpu {
+            s.last_block_cpu_ns.store(cpu, Ordering::Relaxed);
+            s.max_block_cpu_ns.fetch_max(cpu, Ordering::Relaxed);
+            s.p99_block_cpu_ns
+                .store(p99(&self.recent_cpu[..self.recent_len]), Ordering::Relaxed);
+        }
         let over = ns > s.budget_ns.load(Ordering::Relaxed);
         s.blocks.fetch_add(1, Ordering::Relaxed);
         s.last_block_ns.store(ns, Ordering::Relaxed);
@@ -984,6 +1144,21 @@ impl Stage {
     }
 }
 
+/// The 99th percentile (nearest rank) of `v`: of 100 values the second largest, of fewer the
+/// largest. One pass, no allocation.
+fn p99(v: &[u64]) -> u64 {
+    let (mut first, mut second) = (0u64, 0u64);
+    for &x in v {
+        if x >= first {
+            second = first;
+            first = x;
+        } else if x > second {
+            second = x;
+        }
+    }
+    if v.len() >= RECENT { second } else { first }
+}
+
 /// One block of cross-fade. `block` holds the new input and `delay` the previous one; on
 /// return `block` is the output and `delay` the new input. The output moves from the model's
 /// output to the delayed input when `to_dry`, the other way otherwise; both are the same block
@@ -996,5 +1171,182 @@ fn fade(block: &mut [f32; FRAME], delay: &mut [f32; FRAME], wet: &[f32; FRAME], 
         let out = *d * dry_gain + w * wet_gain;
         *d = *b;
         *b = out;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The nearest-rank 99th percentile: of 100 values the second largest (ties count), of
+    /// fewer the largest.
+    #[test]
+    fn p99_is_the_nearest_rank() {
+        assert_eq!(p99(&[]), 0);
+        assert_eq!(p99(&[3, 9, 1]), 9);
+        let mut v = [1u64; RECENT];
+        v[10] = 9;
+        assert_eq!(p99(&v), 1, "one slow block of 100");
+        v[50] = 7;
+        assert_eq!(p99(&v), 7);
+        v[50] = 9;
+        assert_eq!(p99(&v), 9, "a tie");
+    }
+
+    /// Without the model the stats carry the wall-time percentile and, where the target has
+    /// a CPU clock, the CPU-time fields.
+    #[test]
+    fn cpu_and_wall_stats() {
+        let mut stage = Stage::new();
+        let mut block = [0.01f32; FRAME];
+        for _ in 0..150 {
+            stage.process(&mut block);
+        }
+        let st = stage.stats();
+        assert_eq!(st.cpu_timed, crate::thread_clock::AVAILABLE);
+        assert!(st.p99_block_ns > 0 || cfg!(target_arch = "wasm32"));
+        assert!(st.p99_block_ns <= st.max_block_ns);
+        if crate::thread_clock::AVAILABLE {
+            assert!(st.max_block_cpu_ns > 0, "{st:?}");
+            assert!(st.p99_block_cpu_ns <= st.max_block_cpu_ns);
+            assert!(st.last_block_cpu_ns <= st.max_block_cpu_ns);
+        } else {
+            assert_eq!(st.max_block_cpu_ns, 0);
+        }
+        // A given clock is what the rules judge: no longer CPU-timed.
+        stage.set_clock(|| 0);
+        assert!(!stage.stats().cpu_timed);
+    }
+
+    #[cfg(feature = "dfn3")]
+    mod dfn3 {
+        use super::*;
+
+        const MS: u64 = 1_000_000;
+
+        thread_local! {
+            static WALL_NOW: Cell<u64> = const { Cell::new(0) };
+            static WALL_STEP: Cell<u64> = const { Cell::new(MS) };
+            static CPU_NOW: Cell<u64> = const { Cell::new(0) };
+            static CPU_STEP: Cell<u64> = const { Cell::new(MS) };
+        }
+
+        /// Each reading is the step after the one before: a block (two readings) takes the
+        /// step. Per thread, so tests running at once do not share it.
+        fn wall() -> u64 {
+            let t = WALL_NOW.get();
+            WALL_NOW.set(t + WALL_STEP.get());
+            t
+        }
+
+        fn cpu() -> Option<u64> {
+            let t = CPU_NOW.get();
+            CPU_NOW.set(t + CPU_STEP.get());
+            Some(t)
+        }
+
+        /// A stage over the model with test clocks for the wall and the thread's CPU time, the
+        /// rules judging the CPU clock, no grace window.
+        fn timed_stage() -> Option<Stage> {
+            let model = crate::strong::test_model()?;
+            let mut stage = Stage::with_dfn3(model);
+            stage.control().set_auto_grace(Duration::ZERO);
+            stage.judge_given = false;
+            stage.set_clock(wall);
+            stage.cpu_clock = cpu;
+            Some(stage)
+        }
+
+        fn run(stage: &mut Stage, blocks: u32, wall_ns: u64, cpu_ns: u64) {
+            WALL_STEP.set(wall_ns);
+            CPU_STEP.set(cpu_ns);
+            let mut block = [0.01f32; FRAME];
+            for _ in 0..blocks {
+                stage.process(&mut block);
+            }
+        }
+
+        /// Blocks that take long by the wall clock only because the thread waited for a core
+        /// (9 ms of wall time, 1 ms of CPU) keep the model; the stats carry both. Blocks that
+        /// take 7 ms of CPU step it down.
+        #[test]
+        fn a_preempted_block_is_not_a_slow_model() {
+            let Some(mut stage) = timed_stage() else {
+                return;
+            };
+            run(&mut stage, 1_000, 9 * MS, MS);
+            let st = stage.stats();
+            assert_eq!(st.step_downs, 0, "{st:?}");
+            assert_eq!(st.strong_state, StrongState::Running);
+            assert_eq!(stage.active(), Mode::Strong);
+            assert!(st.cpu_timed);
+            assert_eq!(st.max_block_ns, 9 * MS);
+            assert_eq!(st.p99_block_ns, 9 * MS);
+            assert_eq!(st.max_block_cpu_ns, MS);
+            assert_eq!(st.p99_block_cpu_ns, MS);
+            assert_eq!(st.last_block_cpu_ns, MS);
+            assert_eq!(st.over_budget, 1_000, "the counters stay wall time");
+            run(&mut stage, 1, 7 * MS, 7 * MS);
+            let st = stage.stats();
+            assert_eq!(st.step_downs, 1);
+            assert_eq!(st.last_step_down, Some(StepDownReason::SlowBlock));
+            assert_eq!(st.max_block_cpu_ns, 7 * MS);
+        }
+
+        /// The starvation cutoff: three model blocks in a row over 10 ms by the wall clock step
+        /// down, whatever their CPU time; in a grace window too.
+        #[test]
+        fn starved_blocks_step_down() {
+            let Some(mut stage) = timed_stage() else {
+                return;
+            };
+            run(&mut stage, 10, MS, MS);
+            run(&mut stage, 2, 11 * MS, MS);
+            assert_eq!(stage.stats().step_downs, 0);
+            run(&mut stage, 1, 11 * MS, MS);
+            let st = stage.stats();
+            assert_eq!(st.step_downs, 1);
+            assert_eq!(st.last_step_down, Some(StepDownReason::Starved));
+            assert_eq!(st.last_step_down_block, 12);
+
+            let Some(mut stage) = timed_stage() else {
+                return;
+            };
+            stage.control().grace(Duration::from_secs(10));
+            run(&mut stage, 10, MS, MS);
+            run(&mut stage, 3, 11 * MS, MS);
+            let st = stage.stats();
+            assert!(st.in_grace);
+            assert_eq!(st.last_step_down, Some(StepDownReason::Starved));
+            assert_eq!(st.grace_step_downs, 1, "tied to the grace window");
+            assert_eq!(st.retry_at_block, 12 + 500, "retried after 5 s");
+        }
+
+        /// A retry is held while a block of the last 100 went over 6 ms of CPU, and the stats
+        /// say so; a block long by the wall clock only does not hold it.
+        #[test]
+        fn a_held_retry_is_reported() {
+            let Some(mut stage) = timed_stage() else {
+                return;
+            };
+            run(&mut stage, 10, MS, MS);
+            stage.control().force_step_down();
+            run(&mut stage, 1, MS, MS);
+            let st = stage.stats();
+            assert_eq!(st.step_downs, 1);
+            let due = st.retry_at_block;
+            run(&mut stage, (due - st.blocks - 20) as u32, MS, MS);
+            run(&mut stage, 1, 9 * MS, MS);
+            run(&mut stage, 1, 7 * MS, 7 * MS);
+            run(&mut stage, 40, MS, MS);
+            let st = stage.stats();
+            assert!(st.blocks > due);
+            assert!(st.retry_held, "{st:?}");
+            assert_eq!(st.strong_state, StrongState::SteppedDown);
+            run(&mut stage, 100, MS, MS);
+            let st = stage.stats();
+            assert!(!st.retry_held);
+            assert_ne!(st.strong_state, StrongState::SteppedDown);
+        }
     }
 }

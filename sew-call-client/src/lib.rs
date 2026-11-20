@@ -98,14 +98,14 @@ pub use noise::NoiseRemovalControl;
 /// The device bench of the noise removal stage (feature `noise-bench`; debug builds only).
 #[cfg(feature = "noise-bench")]
 pub use noise::bench as noise_bench;
+pub use noise::{
+    CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel, NoiseRemoval,
+    NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
+};
 /// What loading DeepFilterNet3's weights cost, and how long the model stays after the last
 /// call by default (feature `dfn3`).
 #[cfg(feature = "dfn3")]
 pub use noise::{DFN3_IDLE_UNLOAD, Dfn3LoadInfo};
-pub use noise::{
-    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason,
-    PhoneAudioMode,
-};
 pub use provider::{
     AnswerError, BoxFuture, CONSENT_UNSUPPORTED, CallCredential, ConsentAnswer, ConsentRequired,
     DmCall, JoinAnswer, JoinProvider, JoinRequest, ProviderError, RECORDING_UNSUPPORTED,

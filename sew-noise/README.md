@@ -5,7 +5,9 @@ sew-noise is microphone noise removal in pure Rust: a real-time capture stage, a
 It takes 48 kHz mono speech and removes background noise before the audio is encoded. The
 model is RNNoise's (by Jean-Marc Valin and Mozilla), run by
 [`nnnoiseless`](https://crates.io/crates/nnnoiseless) (Joe Neeman's port to Rust), with the
-weights compiled in: nothing is loaded at run time, there is no C code and no `unsafe`.
+weights compiled in: nothing is loaded at run time, there is no C code and no `unsafe`. The
+stage's thread clock reads the OS clock through rustix, which on Apple platforms and Android
+calls the system C library.
 
 - `Stage`: for a native capture path. One 480-sample (10 ms) block in place, a fixed latency
   of one block, and a mode (`Off`, `Standard`, and with the `dfn3` feature `Strong`) that any
@@ -33,9 +35,9 @@ of voice calls on the sender's device.
 
 ```toml
 [dependencies]
-sew-noise = "0.11.0"
+sew-noise = "0.11.1"
 # or, with DeepFilterNet3 and the capture-hook trait:
-# sew-noise = { version = "0.11.0", features = ["dfn3", "capture-stage"] }
+# sew-noise = { version = "0.11.1", features = ["dfn3", "capture-stage"] }
 ```
 
 No feature is on by default: `dfn3` and `capture-stage` are opt-in.
@@ -122,18 +124,23 @@ let stage = match Dfn3Model::load(resources.join("dfn3/dfn3_ll.nnef.tar")) {
 };
 ```
 
-In `Strong` the stage runs RNNoise beside the model and times its own blocks. When its blocks
-get too slow for the audio pipeline's budget, it switches to `Standard` at the next block,
-without a click and without running the model again, and tries the model again later; after
-repeated switches it stays on `Standard`. `StageStats` reports where `Strong` is
-(`strong_state`), the switches (`step_downs`, `last_step_down`) and the blocks the model ran.
+In `Strong` the stage runs RNNoise beside the model and times its own blocks, by the audio
+thread's CPU time where the platform has a clock for it (Linux, Android, macOS, iOS), so a
+block that only waited for a core while another part of the app ran does not count against the
+model. When its blocks get too slow for the audio pipeline's budget, or the thread keeps
+falling behind real time, it switches to `Standard` at the next block, without a click and
+without running the model again, and tries the model again later; after repeated switches it
+stays on `Standard`. `StageStats` reports where `Strong` is (`strong_state`), the switches
+(`step_downs`, `last_step_down`, `grace_step_downs`), a retry held back (`retry_held`), the
+blocks the model ran, and the block times by the wall clock and by CPU time side by side.
 Both models delay the audio by the same amount. A block allocates nothing and takes no lock.
 
 A device is briefly busy at a call's start and when the app or the OS does something else
 (the audio route changes, a camera starts, the app moves to the background). The stage opens
 a grace window by itself when it starts, and an app reports such moments with
 `StageControl::grace`: in the window the stage switches only where the audio pipeline's own
-budget rule would stop it anyway, and a switch made then is retried sooner.
+budget rule would stop it anyway, a switch made then is retried sooner, and it does not count
+towards the switches after which the stage stays on `Standard` (a separate bound applies).
 
 An app that holds the weights in memory (a web page that fetched them, for example) loads them
 with `Dfn3Model::load_bytes`, which makes the same check and the same refusals as a load by
@@ -152,8 +159,8 @@ counts for it. The output is `Stage::process`'s, bit for bit, however the steps 
 caller that spreads a block over the time until the next one is in sends it out one block
 later.
 
-The weights are not in this package. They are the asset `sew-dfn3-0.11.0.tar.gz` of the Sew
-0.11.0 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.11.0`; sha256
+The weights are not in this package. They are the asset `sew-dfn3-0.11.1.tar.gz` of the Sew
+0.11.1 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.11.1`; sha256
 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). It holds a `dfn3/` folder
 with the weights (`dfn3_ll.nnef.tar`), their NOTICE and the MIT and Apache-2.0 texts. The
 loader checks the weights file against `dfn3::WEIGHTS_SHA256`
