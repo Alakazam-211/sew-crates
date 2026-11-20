@@ -157,8 +157,8 @@ pub use wire::{
 /// The microphone's noise removal (`set_noise_removal`, `noise_removal`, the `noise_removal`
 /// event).
 pub use wire::{
-    CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel, NoiseRemoval,
-    NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
+    CaptureDspScheduling, CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel,
+    NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
     SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
 };
 

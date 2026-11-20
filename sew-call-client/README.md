@@ -124,7 +124,10 @@ What each one does:
   kessel-audio's `capture_stage_strikes`, `capture_stage_bypassed`, `capture_stage_p99_us`,
   `capture_stage_grace`, `capture_stage_grace_blocks`, `capture_stage_grace_over_budget`,
   `capture_stage_last_transient`, `capture_stage_clock`, `capture_stage_max_wall_us`,
-  `capture_stage_preempted_over_budget`, `capture_stage_starved`). The call's start and its
+  `capture_stage_preempted_over_budget`, `capture_stage_starved`, and how the OS schedules
+  the processing thread the stage runs on, `capture_stage_dsp_scheduling`: `workgroup`,
+  `time_constraint`, `qos` or `none`; the thread asks for real-time scheduling on macOS and
+  iOS). The call's start and its
   busy moments (the session activating, a route change, a device switch, a camera starting,
   and the app's lifecycle through `NoiseRemovalControl::app_scene_changed`) open a grace
   window in which the stage keeps the model through the load, and kessel-audio holds its own
@@ -175,7 +178,7 @@ needs a Sew server to join calls on (see the
 
 ```toml
 [dependencies]
-sew-call-client = "0.9.1"
+sew-call-client = "0.9.2"
 ```
 
 An app also needs, for its `JoinProvider` and to run a call:

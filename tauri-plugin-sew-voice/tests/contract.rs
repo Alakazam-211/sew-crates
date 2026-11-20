@@ -23,8 +23,8 @@ use tauri_plugin_sew_voice::{
     VideoPaused, VideoSinkAnswer, VideoSinkArgs, VideoSinkUpdateArgs, VideoSource, VideoTrack,
 };
 use tauri_plugin_sew_voice::{
-    CaptureStageClock, CaptureTransient, NOISE_COMMANDS, NoiseDfn3State, NoiseRemoval,
-    NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
+    CaptureDspScheduling, CaptureStageClock, CaptureTransient, NOISE_COMMANDS, NoiseDfn3State,
+    NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
     SetNoiseRemovalArgs, UNAVAILABLE_NOISE_MODES,
 };
 
@@ -1307,6 +1307,30 @@ fn noise_removal_shapes() {
     );
     exact(&CaptureStageClock::ThreadCpu, json!("thread_cpu"));
     exact(&CaptureStageClock::Wall, json!("wall"));
+    // How the OS schedules the stage's thread: additive, absent while unset.
+    timed.capture_stage_dsp_scheduling = Some(CaptureDspScheduling::Workgroup);
+    exact(
+        &timed,
+        json!({"mode": "standard", "active": "off", "reason": "budget",
+            "step_down_reason": "slow_block", "last_step_down_ms_ago": 4500,
+            "slowest_block_us": 9300, "blocks_over_budget": 2, "in_grace": true,
+            "dfn3_state": "stepped_down", "retry_in_ms": 2500, "grace_step_downs": 1,
+            "slowest_block_cpu_us": 1400, "p99_block_us": 8800, "p99_block_cpu_us": 1100,
+            "capture_stage_strikes": 1, "capture_stage_bypassed": "budget",
+            "capture_stage_p99_us": 6400, "capture_stage_grace": true,
+            "capture_stage_grace_blocks": 300, "capture_stage_grace_over_budget": 3,
+            "capture_stage_last_transient": "call_start",
+            "capture_stage_clock": "thread_cpu", "capture_stage_max_wall_us": 22000,
+            "capture_stage_preempted_over_budget": 4, "capture_stage_starved": 1,
+            "capture_stage_dsp_scheduling": "workgroup"}),
+    );
+    exact(&CaptureDspScheduling::Workgroup, json!("workgroup"));
+    exact(
+        &CaptureDspScheduling::TimeConstraint,
+        json!("time_constraint"),
+    );
+    exact(&CaptureDspScheduling::Qos, json!("qos"));
+    exact(&CaptureDspScheduling::None, json!("none"));
     for (t, n) in [
         (CaptureTransient::CallStart, "call_start"),
         (

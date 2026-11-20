@@ -1124,11 +1124,12 @@ pub use sew_call_client::{CodecPreferenceReason, VideoCodecPreference};
 /// `"slow_window"`, `"heavy"`, `"fault"`, `"forced"`, `"starved"`), where DeepFilterNet3 is
 /// (`"idle"`, `"warming"`, `"running"`, `"stepped_down"`, `"retired"`), the last busy moment
 /// reported to the audio pipeline (`"call_start"`, `"camera_start"`, `"app_scene_change"`, …),
-/// the clock it times the stage by (`"thread_cpu"`, `"wall"`) and `{mode, active, reason?, …}`
-/// (sew-call-client's).
+/// the clock it times the stage by (`"thread_cpu"`, `"wall"`), how the OS schedules the thread
+/// it runs on (`"workgroup"`, `"time_constraint"`, `"qos"`, `"none"`) and
+/// `{mode, active, reason?, …}` (sew-call-client's).
 pub use sew_call_client::{
-    CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel, NoiseRemoval,
-    NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
+    CaptureDspScheduling, CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel,
+    NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
 };
 
 /// `set_noise_removal`'s arguments: `{mode}`, `"off"` or `"standard"`. `"strong"` is a mode

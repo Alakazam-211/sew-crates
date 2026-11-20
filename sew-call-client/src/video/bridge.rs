@@ -72,7 +72,8 @@ use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
 
 use super::capture::{
-    Capture, CaptureEnd, CaptureError, CaptureEvent, CaptureKind, VideoCapture, map_event,
+    Capture, CaptureEnd, CaptureError, CaptureEvent, CaptureKind, CapturePause, VideoCapture,
+    map_event,
 };
 use super::codec_pref::{
     H264Detection, VideoCodecPreference as CodecPreference, effective_publish_codec_under_policy,
@@ -860,6 +861,9 @@ struct Running {
     device: Option<String>,
     /// The temporal layers asked for.
     temporal: Option<u8>,
+    /// The pipeline's word: the app is in front, yet the source is still paused by a
+    /// background pause and no frame came since ([`VideoBridge::reopen_held_camera`]).
+    held: Arc<AtomicBool>,
 }
 
 impl Running {
@@ -1404,6 +1408,7 @@ impl VideoBridge {
         let ended = Arc::new(AtomicBool::new(false));
         let self_key = Arc::new(AtomicBool::new(false));
         lock(&self.self_keys).insert(kind, (Arc::clone(&self_key), Arc::clone(&bell)));
+        let held = Arc::new(AtomicBool::new(false));
         let (to_pipe, from_bridge) = std::sync::mpsc::channel();
         let mut pipe = Pipe {
             backend,
@@ -1427,6 +1432,9 @@ impl VideoBridge {
             from_bridge,
             paused: false,
             hidden: false,
+            hidden_why: None,
+            fresh_since_us: 0,
+            held: Arc::clone(&held),
             scene_paused: false,
             end_asked: false,
             call: call.local_id(),
@@ -1461,6 +1469,7 @@ impl VideoBridge {
             size,
             device,
             temporal: temporal_layers,
+            held,
         })
     }
 
@@ -1599,6 +1608,66 @@ impl VideoBridge {
         true
     }
 
+    /// Opens the camera again (the same device; the publication and the lease kept, a
+    /// keyframe first) when the app is in front yet the camera is still paused by a background
+    /// pause that the OS never ended and no frame came since. `false`: nothing to do (no
+    /// camera, not held), or it did not open again; then the camera stays paused as it was
+    /// (published, the lease kept, no frames) and a later call may try again. It never turns
+    /// the camera off.
+    pub async fn reopen_held_camera(&self, call: &Call) -> bool {
+        let mut slot = self.camera.lock().await;
+        let Some(r) = slot
+            .as_mut()
+            .filter(|r| r.alive() && r.call == call.local_id() && r.held.load(Ordering::SeqCst))
+        else {
+            return false;
+        };
+        let Some(policy) = call.media_policy() else {
+            return false;
+        };
+        tracing::info!(target: "sew_call_client", "the camera opens again: still paused by the background after the app came back");
+        let began = std::time::Instant::now();
+        // One camera at a time (as in a switch): the old source closes first.
+        if release_source(r).await.is_err() {
+            return false;
+        }
+        let bell = Arc::clone(&r.bell);
+        let (src, size) = match self.open(r.device.clone(), &policy, &bell).await {
+            Ok(v) => v,
+            Err(e) => {
+                // Still paused (the pipeline holds without a source, as it did without frames).
+                tracing::info!(target: "sew_call_client", code = e.code(), "the camera did not open again: it stays paused");
+                r.held.store(true, Ordering::SeqCst);
+                return false;
+            }
+        };
+        let plan = VideoBridge::plan(
+            &policy,
+            VideoSource::Camera,
+            r.codec,
+            &r.cap,
+            r.temporal,
+            size,
+        );
+        let plan = if same_rids(&plan, &r.layers) {
+            plan
+        } else {
+            r.layers.clone()
+        };
+        let facing = self.capture.camera_facing(r.device.as_deref());
+        if r.to_pipe
+            .send(ToPipe::Source(src, plan.clone(), facing))
+            .is_err()
+        {
+            return false;
+        }
+        r.bell.ring();
+        r.layers = plan;
+        r.size = size;
+        tracing::info!(target: "sew_call_client", gap_ms = began.elapsed().as_millis() as u64, "the camera is back after the background");
+        true
+    }
+
     /// Stops the pipelines of one call (its [`Call::local_id`]) without touching the call (it
     /// ended): a later call's keep running. Each stop waits a short while at most; a pipeline
     /// whose source closes slowly finishes on its own.
@@ -1664,6 +1733,15 @@ struct Pipe {
     paused: bool,
     /// The source is paused by the OS (a hidden window, another app took the camera).
     hidden: bool,
+    /// Why the OS paused the source (while `hidden`).
+    hidden_why: Option<CapturePause>,
+    /// Frames captured from this moment on (the backend clock) show that a background pause
+    /// is over although the source never said so: the last background pause seen, or the
+    /// app's return, whichever came later.
+    fresh_since_us: u64,
+    /// The app is in front, yet the source is still paused by a background pause and no frame
+    /// came since (shared with [`Running`]).
+    held: Arc<AtomicBool>,
     /// The app is in the background ([`ToPipe::Pause`]).
     scene_paused: bool,
     /// The pipeline asked the engine to end the publication (all its encoders lost).
@@ -1758,6 +1836,7 @@ impl Pipe {
                             .released_us
                             .take()
                             .unwrap_or_else(|| self.backend.now_us());
+                        self.hidden_why = None;
                         if std::mem::take(&mut self.hidden) {
                             // The old source's pause ended with it: this one runs.
                             let _ = self.taps.events.send(SourceNote {
@@ -1820,12 +1899,27 @@ impl Pipe {
             {
                 e.enc.request_keyframe();
             }
-            if !self.hidden
+            if self.background_held() {
+                // The OS paused the source for the background and never said the pause is
+                // over: a frame captured since then (or since the app came back) says so.
+                if let Some(frame) = self.latest()
+                    && frame.capture_us >= self.fresh_since_us
+                {
+                    tracing::info!(target: "sew_call_client", source = ?self.kind, "the video source runs again after a background pause it never ended");
+                    self.resume_hidden();
+                    let _ = self.taps.events.send(SourceNote {
+                        source: self.kind,
+                        event: CaptureEvent::Resumed,
+                    });
+                    self.submit(&frame, self_view);
+                }
+            } else if !self.hidden
                 && !self.scene_paused
                 && let Some(frame) = self.latest()
             {
                 self.submit(&frame, self_view);
             }
+            self.held.store(self.background_held(), Ordering::SeqCst);
             self.drain(&sender);
             self.bell.wait(Duration::from_millis(20));
         }
@@ -1840,14 +1934,16 @@ impl Pipe {
                 CaptureEvent::Paused(why) => {
                     tracing::info!(target: "sew_call_client", source = ?self.kind, ?why, "the video source paused");
                     self.hidden = true;
+                    self.hidden_why = Some(*why);
+                    if *why == CapturePause::Background {
+                        // Frames already queued were captured before it.
+                        self.fresh_since_us = self.fresh_since_us.max(self.backend.now_us());
+                    }
                 }
                 CaptureEvent::Resumed => {
-                    self.hidden = false;
-                    for e in self.encs.values_mut() {
-                        e.enc.request_keyframe();
-                    }
-                    for e in self.backup.iter_mut().flat_map(|b| b.encs.values_mut()) {
-                        e.enc.request_keyframe();
+                    // A resume after the frames already ended the pause needs no keyframe.
+                    if self.hidden {
+                        self.resume_hidden();
                     }
                 }
                 CaptureEvent::Ended(end) => {
@@ -1946,6 +2042,23 @@ impl Pipe {
         true
     }
 
+    /// The app is in front, yet the source is still paused by the OS for the background.
+    fn background_held(&self) -> bool {
+        self.hidden && !self.scene_paused && self.hidden_why == Some(CapturePause::Background)
+    }
+
+    /// The OS's pause is over: every encoder makes a keyframe first.
+    fn resume_hidden(&mut self) {
+        self.hidden = false;
+        self.hidden_why = None;
+        for e in self.encs.values_mut() {
+            e.enc.request_keyframe();
+        }
+        for e in self.backup.iter_mut().flat_map(|b| b.encs.values_mut()) {
+            e.enc.request_keyframe();
+        }
+    }
+
     /// The app's scene: paused in the background; back in front, every encoder makes a
     /// keyframe before the first frame it encodes (frames captured before the pause are
     /// dropped).
@@ -1958,6 +2071,7 @@ impl Pipe {
             tracing::info!(target: "sew_call_client", "the camera pauses (background)");
         } else {
             tracing::info!(target: "sew_call_client", "the camera resumes with a keyframe");
+            self.fresh_since_us = self.fresh_since_us.max(self.backend.now_us());
             while self.src.try_recv().is_some() {}
             for e in self.encs.values_mut() {
                 e.enc.request_keyframe();
@@ -2879,6 +2993,9 @@ mod tests {
             from_bridge,
             paused: false,
             hidden: false,
+            hidden_why: None,
+            fresh_since_us: 0,
+            held: Arc::default(),
             scene_paused: false,
             end_asked: false,
             call: 1,
@@ -2977,6 +3094,9 @@ mod tests {
             from_bridge,
             paused: false,
             hidden: false,
+            hidden_why: None,
+            fresh_since_us: 0,
+            held: Arc::default(),
             scene_paused: false,
             end_asked: false,
             call: 1,
@@ -3029,6 +3149,8 @@ mod tests {
         fallbacks: mpsc::UnboundedReceiver<super::super::publish::ProducerFallback>,
         h264_lost: Arc<Mutex<Option<u64>>>,
         converts: Arc<std::sync::atomic::AtomicU64>,
+        /// The pipeline's `held` word.
+        held: Arc<AtomicBool>,
     }
 
     impl TestPipe {
@@ -3087,6 +3209,7 @@ mod tests {
             let events = broadcast::channel(EVENT_QUEUE).0;
             let notes = events.subscribe();
             let stop = Arc::new(AtomicBool::new(false));
+            let held = Arc::new(AtomicBool::new(false));
             let (to_pipe, from_bridge) = std::sync::mpsc::channel();
             let mut pipe = Pipe {
                 backend: backend.clone(),
@@ -3114,6 +3237,9 @@ mod tests {
                 from_bridge,
                 paused: false,
                 hidden: false,
+                hidden_why: None,
+                fresh_since_us: 0,
+                held: held.clone(),
                 scene_paused: false,
                 end_asked: false,
                 call: 1,
@@ -3139,6 +3265,7 @@ mod tests {
                 fallbacks,
                 h264_lost,
                 converts,
+                held,
             }
         }
 
@@ -3809,7 +3936,7 @@ mod tests {
 
         assert_eq!(
             p.next_note("the camera_busy pause"),
-            CaptureEvent::Paused(super::super::capture::CapturePause::InUseByAnother)
+            CaptureEvent::Paused(CapturePause::InUseByAnother)
         );
         p.assert_quiet("no frame while another app holds the camera");
 
@@ -3818,6 +3945,205 @@ mod tests {
         assert!(back[0], "the resume starts at a keyframe: {back:?}");
         assert!(back[1..].iter().all(|k| !k), "one keyframe: {back:?}");
         p.finish();
+    }
+
+    /// A source paused for the background whose end never comes (iOS's interruption-ended
+    /// notice missing) while its frames run again: in the background nothing is sent; back
+    /// in front, the first frame captured since says the pause is over (a keyframe first,
+    /// `Resumed` for `local_video`), and the camera is not held.
+    #[test]
+    fn a_background_pause_that_never_ends_resumes_on_the_frames_after_the_return() {
+        let mut cfg = kessel_video::fake::FakeConfig::default();
+        cfg.source_events = vec![(
+            Duration::from_millis(400),
+            SourceEvent::Interrupted(kessel_video::Interruption::Background),
+        )];
+        let backend: Arc<dyn VideoBackend> = HwFake::new(cfg);
+        let bell = Arc::new(Bell::default());
+        let src = fake_camera(&backend, &bell);
+        let mut p = TestPipe::start(&backend, src, &bell);
+        let _ = collect_until(&mut p.rx, "the first frames", 3);
+        p.send(ToPipe::Pause(true));
+        assert_eq!(
+            p.next_note("the background pause"),
+            CaptureEvent::Paused(CapturePause::Background)
+        );
+        p.assert_quiet("nothing sent in the background");
+        assert!(
+            !p.held.load(Ordering::SeqCst),
+            "not held while the app is in the background"
+        );
+        p.send(ToPipe::Pause(false));
+        assert_eq!(
+            p.next_note("the pause over on the frames"),
+            CaptureEvent::Resumed
+        );
+        let back = collect_until(&mut p.rx, "frames after the return", 4);
+        assert!(back[0], "the return starts at a keyframe: {back:?}");
+        assert!(back[1..].iter().all(|k| !k), "one keyframe: {back:?}");
+        assert!(!p.held.load(Ordering::SeqCst), "not held once frames run");
+        p.finish();
+    }
+
+    /// The background pause ends (the source's `Resumed`) before the app comes back: still
+    /// nothing sent until the return, then one keyframe and no second resume.
+    #[test]
+    fn a_background_pause_ended_before_the_return_waits_for_the_return() {
+        let mut cfg = kessel_video::fake::FakeConfig::default();
+        cfg.source_events = vec![
+            (
+                Duration::from_millis(400),
+                SourceEvent::Interrupted(kessel_video::Interruption::Background),
+            ),
+            (Duration::from_millis(700), SourceEvent::Resumed),
+        ];
+        let backend: Arc<dyn VideoBackend> = HwFake::new(cfg);
+        let bell = Arc::new(Bell::default());
+        let src = fake_camera(&backend, &bell);
+        let mut p = TestPipe::start(&backend, src, &bell);
+        let _ = collect_until(&mut p.rx, "the first frames", 3);
+        p.send(ToPipe::Pause(true));
+        assert!(matches!(
+            p.next_note("the background pause"),
+            CaptureEvent::Paused(_)
+        ));
+        assert_eq!(p.next_note("the pause's end"), CaptureEvent::Resumed);
+        p.assert_quiet("the app is still in the background");
+        p.send(ToPipe::Pause(false));
+        let back = collect_until(&mut p.rx, "frames after the return", 4);
+        assert!(back[0], "the return starts at a keyframe: {back:?}");
+        assert!(back[1..].iter().all(|k| !k), "one keyframe: {back:?}");
+        let mut notes = Vec::new();
+        while let Ok(n) = p.notes.try_recv() {
+            notes.push(n.event);
+        }
+        assert!(!notes.iter().any(is_state), "no second resume: {notes:?}");
+        p.finish();
+    }
+
+    /// The background pause ends after the app came back: the frames end it first; the
+    /// source's late `Resumed` adds no keyframe.
+    #[test]
+    fn a_background_pause_ended_after_the_return_adds_no_keyframe() {
+        let mut cfg = kessel_video::fake::FakeConfig::default();
+        cfg.source_events = vec![
+            (
+                Duration::from_millis(400),
+                SourceEvent::Interrupted(kessel_video::Interruption::Background),
+            ),
+            (Duration::from_millis(2500), SourceEvent::Resumed),
+        ];
+        let backend: Arc<dyn VideoBackend> = HwFake::new(cfg);
+        let bell = Arc::new(Bell::default());
+        let src = fake_camera(&backend, &bell);
+        let mut p = TestPipe::start(&backend, src, &bell);
+        let _ = collect_until(&mut p.rx, "the first frames", 3);
+        p.send(ToPipe::Pause(true));
+        assert!(matches!(
+            p.next_note("the background pause"),
+            CaptureEvent::Paused(_)
+        ));
+        p.send(ToPipe::Pause(false));
+        assert_eq!(p.next_note("the frames' resume"), CaptureEvent::Resumed);
+        // Every frame from the return until four after the source's late resume (2.5 s from
+        // the open): one keyframe, the first.
+        let mut back = Vec::new();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            back.extend(queued(&mut p.rx));
+            match p.notes.try_recv() {
+                Ok(n) if is_state(&n.event) => {
+                    assert_eq!(n.event, CaptureEvent::Resumed, "the source's late resume");
+                    break;
+                }
+                _ => {}
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "timed out waiting for the late resume"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        back.extend(collect_until(&mut p.rx, "frames after the late resume", 4));
+        assert!(back[0], "the return starts at a keyframe: {back:?}");
+        assert!(back[1..].iter().all(|k| !k), "one keyframe: {back:?}");
+        p.finish();
+    }
+
+    /// A pause for another reason never ends on frames alone (another app holds the camera
+    /// until the source says so).
+    #[test]
+    fn only_a_background_pause_ends_on_frames() {
+        let mut cfg = kessel_video::fake::FakeConfig::default();
+        cfg.source_events = vec![(
+            Duration::from_millis(400),
+            SourceEvent::Interrupted(kessel_video::Interruption::InUseByAnother),
+        )];
+        let backend: Arc<dyn VideoBackend> = HwFake::new(cfg);
+        let bell = Arc::new(Bell::default());
+        let src = fake_camera(&backend, &bell);
+        let mut p = TestPipe::start(&backend, src, &bell);
+        let _ = collect_until(&mut p.rx, "the first frames", 3);
+        assert!(matches!(p.next_note("the pause"), CaptureEvent::Paused(_)));
+        p.send(ToPipe::Pause(true));
+        p.send(ToPipe::Pause(false));
+        p.assert_quiet("another app still holds the camera");
+        assert!(!p.held.load(Ordering::SeqCst));
+        p.finish();
+    }
+
+    /// A source paused for the background that sends no frame after the app's return is
+    /// held (the bridge then opens the camera again); back in the background it is not.
+    #[test]
+    fn a_silent_background_pause_after_the_return_is_held() {
+        let backend: Arc<dyn VideoBackend> = HwFake::new(kessel_video::fake::FakeConfig::default());
+        let bell = Arc::new(Bell::default());
+        let src: Box<dyn FrameSource> = Box::new(Silent(vec![SourceEvent::Interrupted(
+            kessel_video::Interruption::Background,
+        )]));
+        let mut p = TestPipe::start(&backend, src, &bell);
+        p.send(ToPipe::Pause(true));
+        assert!(matches!(
+            p.next_note("the background pause"),
+            CaptureEvent::Paused(_)
+        ));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !p.held.load(Ordering::SeqCst),
+            "the app is in the background"
+        );
+        p.send(ToPipe::Pause(false));
+        wait_held(&p.held, true, "held after the return");
+        p.send(ToPipe::Pause(true));
+        wait_held(&p.held, false, "not held in the background again");
+        p.finish();
+    }
+
+    fn wait_held(held: &AtomicBool, want: bool, what: &str) {
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while held.load(Ordering::SeqCst) != want {
+            assert!(std::time::Instant::now() < until, "timed out: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A source with only these events, then nothing (no frames).
+    struct Silent(Vec<SourceEvent>);
+
+    impl FrameSource for Silent {
+        fn try_recv(&mut self) -> Option<kessel_video::VideoFrame> {
+            None
+        }
+        fn try_event(&mut self) -> Option<SourceEvent> {
+            (!self.0.is_empty()).then(|| self.0.remove(0))
+        }
+        fn set_constraints(&mut self, _c: CaptureConstraints) -> Result<(), KError> {
+            Ok(())
+        }
+        fn set_paused(&mut self, _paused: bool) {}
+        fn stats(&self) -> kessel_video::SourceStats {
+            kessel_video::SourceStats::default()
+        }
     }
 
     /// A switch on a phone: the old camera, interrupted when another opener took it, is
@@ -4204,6 +4530,7 @@ mod tests {
             size: (640, 360),
             device: None,
             temporal: None,
+            held: Arc::default(),
         };
         let began = std::time::Instant::now();
         r.stop();

@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.9.2 (2026-11-20, Sew 0.11.2)
+
+Additive: a new method on `VideoBridge`, a new optional field in `NoiseRemovalState` and a
+new enum; no other change to the API.
+
+### Added
+
+- `NoiseRemovalState::capture_stage_dsp_scheduling` (`CaptureDspScheduling`: `workgroup`,
+  `time_constraint`, `qos`, `none`): how the OS schedules the audio pipeline's processing
+  thread, the thread noise removal runs on, for a call's log. On macOS and iOS that thread now
+  asks the OS for real-time scheduling (kessel-audio 0.2.4); the field says what was granted.
+  Elsewhere it keeps the OS's default (`none`). Absent while unset, so older readers are
+  unaffected; like the other pipeline fields it rides along with each change of state and does
+  not make one by itself.
+- `VideoBridge::reopen_held_camera`: when the app is in front again yet the published camera
+  is still paused by a background pause the OS never ended, and no frame came since, the
+  camera opens again (the same device; the publication and the lease kept, a keyframe
+  first). It does nothing otherwise; a camera that does not open again stays paused as it
+  was, never turned off.
+
+### Changed
+
+- Requires kessel-audio 0.2.4: on macOS and iOS its processing thread asks the OS for
+  real-time scheduling, and the capture callback wakes it as each block arrives. Other
+  platforms are unchanged.
+
+### Fixed
+
+- A published camera that the OS paused for the background now comes back when its frames
+  do, even if the OS never says the pause is over: after the app's return
+  (`VideoBridge::pause_camera(false)`), the first frame captured since ends the pause, with a
+  keyframe first and `CaptureEvent::Resumed` on `VideoBridge::events`. Before, such a camera
+  stayed paused for the rest of the call. A late resume from the OS adds no second keyframe.
+  Only a background pause ends this way, and never while the app is in the background.
+
+### Dependencies
+
+- Requires kessel-audio 0.2.4 and the Sew crates at 0.11.2 (sew-proto, sew-lkproto,
+  sew-lk-compat, sew-e2ee and sew-noise).
+
 ## 0.9.1 (2026-11-20, Sew 0.11.1)
 
 Additive: new optional fields, enum values and three new enums; no other change to the API.

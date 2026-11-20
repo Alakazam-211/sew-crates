@@ -240,6 +240,7 @@ fn with_timing(
         state.capture_stage_max_wall_us = Some(p.max_wall_us);
         state.capture_stage_preempted_over_budget = p.preempted_over_budget;
         state.capture_stage_starved = p.starved;
+        state.capture_stage_dsp_scheduling = p.dsp_scheduling;
     }
     state
 }
@@ -2357,6 +2358,7 @@ mod tests {
         let p = hook::pipeline_stage(&engine).expect("a stage is set");
         assert_eq!(p.last_transient, Some(CaptureTransient::CameraStart));
         assert!(p.clock.is_some(), "{p:?}");
+        assert!(p.dsp_scheduling.is_some(), "{p:?}");
         assert!(p.grace_blocks > 0, "{p:?}");
         engine.shutdown();
         control.detach(id);

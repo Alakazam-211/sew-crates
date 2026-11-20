@@ -26,9 +26,11 @@
 //!   against the stage; a call long enough on the wall clock (the default starvation cutoff)
 //!   still counts as slow whatever its CPU time.
 
-use kessel_audio::{AudioEngine, ProcessingConfig, StageBypassReason, StageClock, TransientEvent};
+use kessel_audio::{
+    AudioEngine, DspScheduling, ProcessingConfig, StageBypassReason, StageClock, TransientEvent,
+};
 
-use super::{CaptureStageClock, CaptureTransient};
+use super::{CaptureDspScheduling, CaptureStageClock, CaptureTransient};
 
 pub(crate) use kessel_audio::CaptureStage;
 
@@ -78,6 +80,17 @@ fn stage_clock(c: StageClock) -> Option<CaptureStageClock> {
     }
 }
 
+/// Ours for kessel-audio's processing thread scheduling (a mode it adds later is `None`).
+fn dsp_scheduling(d: DspScheduling) -> Option<CaptureDspScheduling> {
+    match d {
+        DspScheduling::Workgroup => Some(CaptureDspScheduling::Workgroup),
+        DspScheduling::TimeConstraint => Some(CaptureDspScheduling::TimeConstraint),
+        DspScheduling::Qos => Some(CaptureDspScheduling::Qos),
+        DspScheduling::None => Some(CaptureDspScheduling::None),
+        _ => None,
+    }
+}
+
 /// Ours for kessel-audio's (a kind it adds later is `Other`).
 fn capture_transient(t: TransientEvent) -> CaptureTransient {
     match t {
@@ -115,6 +128,8 @@ pub(crate) struct PipelineStage {
     pub(crate) preempted_over_budget: u64,
     /// Calls past the starvation cutoff.
     pub(crate) starved: u64,
+    /// How the OS schedules the processing thread the stage runs on.
+    pub(crate) dsp_scheduling: Option<CaptureDspScheduling>,
 }
 
 /// kessel-audio's stage counters, when a stage is set.
@@ -132,6 +147,7 @@ pub(crate) fn pipeline_stage(engine: &AudioEngine) -> Option<PipelineStage> {
         max_wall_us: st.max_wall_us,
         preempted_over_budget: st.preempted_over_budget,
         starved: st.starved,
+        dsp_scheduling: dsp_scheduling(st.dsp_scheduling),
     })
 }
 
@@ -205,5 +221,26 @@ mod tests {
         );
         assert!(p.capture_stage.is_some());
         assert!(p.noise_suppression.is_none());
+    }
+
+    /// kessel-audio's processing thread scheduling maps one to one, its default to `none`.
+    #[test]
+    fn dsp_scheduling_maps_each_mode() {
+        for (k, ours) in [
+            (DspScheduling::Workgroup, CaptureDspScheduling::Workgroup),
+            (
+                DspScheduling::TimeConstraint,
+                CaptureDspScheduling::TimeConstraint,
+            ),
+            (DspScheduling::Qos, CaptureDspScheduling::Qos),
+            (DspScheduling::None, CaptureDspScheduling::None),
+        ] {
+            assert_eq!(dsp_scheduling(k), Some(ours));
+            assert_eq!(k.as_str(), ours.as_str());
+        }
+        assert_eq!(
+            dsp_scheduling(DspScheduling::default()),
+            Some(CaptureDspScheduling::None)
+        );
     }
 }

@@ -83,9 +83,12 @@ window for the stage: `capture_stage_grace`, `capture_stage_grace_blocks`,
 `capture_stage_grace_over_budget` and `capture_stage_last_transient` (`call_start`,
 `camera_start`, `app_scene_change`, …), and how it times the stage: `capture_stage_clock`
 (`thread_cpu`, `wall`), `capture_stage_max_wall_us`, `capture_stage_preempted_over_budget` and
-`capture_stage_starved`. The stage judges its blocks by the audio thread's CPU time where the
-platform has a clock for it, so a block that waited for a core while another part of the app
-ran does not count against the model. A call's start,
+`capture_stage_starved`, and how the OS schedules the processing thread the stage runs on:
+`capture_stage_dsp_scheduling` (`workgroup`, `time_constraint`, `qos`, `none`; the thread asks
+for real-time scheduling on macOS and iOS and keeps the OS's default elsewhere). The stage
+judges its blocks by the audio thread's CPU time where the platform has a clock for it, so a
+block that waited for a core while another part of the app ran does not count against the
+model. A call's start,
 the audio session activating, a route change, a camera starting and the app's lifecycle
 (Tauri's resumed event, a window's focus, `VoiceControl::app_scene`) each open a short grace
 window in which the stage keeps the model through the moment's load (`in_grace: true`), and
@@ -169,7 +172,7 @@ join calls on (see the [sew-crates](https://github.com/Alakazam-211/sew-crates) 
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.9.1"
+tauri-plugin-sew-voice = "0.9.2"
 # For a JoinProvider like sew-call-client's example (its JoinProvider docs):
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
@@ -371,7 +374,7 @@ low-latency model, by Hendrik Schröter and the DeepFilterNet authors
 inference. Its weights are not in any crate: your app ships them.
 
 ```toml
-tauri-plugin-sew-voice = { version = "0.9.1", features = ["dfn3"] }
+tauri-plugin-sew-voice = { version = "0.9.2", features = ["dfn3"] }
 ```
 
 The four files come in a GitHub release asset of the Sew release the plugin belongs to, on
@@ -382,8 +385,8 @@ https://github.com/Alakazam-211/sew-releases/releases/download/v<sew-version>/se
 ```
 
 where `<sew-version>` is the Sew version in the heading of this release's CHANGELOG entry.
-For plugin 0.9.1 that is Sew 0.11.1:
-<https://github.com/Alakazam-211/sew-releases/releases/download/v0.11.1/sew-dfn3-0.11.1.tar.gz>
+For plugin 0.9.2 that is Sew 0.11.2:
+<https://github.com/Alakazam-211/sew-releases/releases/download/v0.11.2/sew-dfn3-0.11.2.tar.gz>
 (sha256 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). Each release's
 `SHA256SUMS` and `release.json` carry the asset's sha256. The tarball holds a `dfn3/` folder
 with these files:
@@ -398,7 +401,7 @@ Fetch and check it at build time (the weights are not committed to your reposito
 example from `src-tauri/`:
 
 ```sh
-v=0.11.1
+v=0.11.2
 curl -fLO "https://github.com/Alakazam-211/sew-releases/releases/download/v$v/sew-dfn3-$v.tar.gz"
 echo "153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697  sew-dfn3-$v.tar.gz" | sha256sum -c -
 tar -xzf "sew-dfn3-$v.tar.gz"   # writes dfn3/

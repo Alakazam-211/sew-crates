@@ -18,7 +18,7 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.9.1"
+tauri-plugin-sew-voice = "0.9.2"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
@@ -901,8 +901,12 @@ the permission reads `denied` instead of iOS ending the app); on Android
   background with no audio interruption. In the background every webview sink is hidden (its
   track is turned off at the media server) and only native sinks (below) stay enabled; back in
   front each visible sink starts again at a keyframe. kessel-video's own
-  `BackendEvent::Background` counts too: either one pauses, and both must say foreground to
-  resume. On Android `app_scene` also tells kessel-video (its cameras close in the background).
+  `BackendEvent::Background` (on iOS, UIKit's own background and foreground notices) counts
+  too: either one pauses, and both must say foreground to resume; a backend background still
+  set a few seconds after the app's own return is taken as over. A camera the OS paused for
+  the background on its own (iOS's capture session interruption) resumes on its first frame
+  after the return, or opens again a few seconds after it if it is still held, even if the OS
+  never says that pause is over. On Android `app_scene` also tells kessel-video (its cameras close in the background).
   Audio is untouched.
 - **Orientation.** On Android call `VoiceControl::device_orientation(degrees)` from
   `OrientationEventListener` (`(360 - 90 * Display.getRotation()) % 360`): camera frames are

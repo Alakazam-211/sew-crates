@@ -144,7 +144,14 @@ struct Inner {
 struct Scene {
     app: bool,
     backend: bool,
+    /// Bumped by every change of either, so a stale [`BACKEND_STALE`] check does nothing.
+    epoch: u64,
 }
+
+/// How long after the app's return the video backend may still say background before the
+/// plugin takes the app's word: the backend's own foreground normally comes at the same
+/// moment (on iOS both read UIKit), so one still missing then was lost.
+const BACKEND_STALE: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl Scene {
     fn background(&self) -> bool {
@@ -1461,16 +1468,53 @@ impl VoiceService {
         self.inner.engine.app_scene(scene);
         self.inner.engine.app_scene_changed();
         self.use_scene_events();
-        let changed = {
+        let (changed, stale_check) = {
             let mut sc = lock(&self.inner.scene);
             let was = sc.background();
+            let returned = sc.app && !scene.is_background();
+            if sc.app != scene.is_background() {
+                sc.epoch += 1;
+            }
             sc.app = scene.is_background();
-            was != sc.background()
+            (
+                was != sc.background(),
+                (returned && sc.backend).then_some(sc.epoch),
+            )
         };
         if changed {
             apply_scene(&self.inner);
             kick_pending_camera(&self.inner);
         }
+        if let Some(epoch) = stale_check {
+            self.backend_stale_check(epoch);
+        }
+    }
+
+    /// The app came back while the video backend still says background: if nothing changes
+    /// within [`BACKEND_STALE`], the backend's background is taken as over (its foreground
+    /// was lost), so the app's return alone resumes the sinks and the camera.
+    fn backend_stale_check(&self, epoch: u64) {
+        let inner = Arc::downgrade(&self.inner);
+        (self.inner.spawn)(Box::pin(async move {
+            tokio::time::sleep(BACKEND_STALE).await;
+            let Some(inner) = inner.upgrade() else { return };
+            let changed = {
+                let mut sc = lock(&inner.scene);
+                if sc.epoch != epoch || sc.app || !sc.backend {
+                    return;
+                }
+                sc.backend = false;
+                sc.epoch += 1;
+                !sc.background()
+            };
+            tracing::info!(
+                "sew-voice: the video backend still said background after the app's return: the app's word stands"
+            );
+            if changed {
+                apply_scene(&inner);
+                kick_pending_camera(&inner);
+            }
+        }));
     }
 
     /// The app's lifecycle moved without saying which way (Tauri's `RunEvent::Resumed`, a
@@ -1512,6 +1556,9 @@ impl VoiceService {
                 let changed = {
                     let mut sc = lock(&inner.scene);
                     let was = sc.background();
+                    if sc.backend != bg {
+                        sc.epoch += 1;
+                    }
                     sc.backend = bg;
                     was != sc.background()
                 };

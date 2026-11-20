@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.9.2 (2026-11-20, Sew 0.11.2)
+
+Additive: a new optional field in the `noise_removal` state, event and answer, and one more
+re-exported enum; no other change to the API, the commands or their JSON.
+
+### Added
+
+- The `noise_removal` state, event and answer carry `capture_stage_dsp_scheduling`
+  (`workgroup`, `time_constraint`, `qos`, `none`; `CaptureDspScheduling` in Rust, re-exported):
+  how the OS schedules the audio pipeline's processing thread, the thread noise removal runs
+  on, for a call's log. On macOS and iOS that thread now asks the OS for real-time scheduling;
+  the field says what was granted. Elsewhere it keeps the OS's default (`none`). Absent while
+  unset, so a host that does not read it is unaffected.
+
+### Fixed
+
+- A camera that stayed paused with `{camera: "paused", reason: "background"}` after the app
+  came back to the front now resumes: the app's return through `VoiceControl::app_scene` is
+  enough. The camera runs again as soon as its frames come back, even if the OS never says
+  its own background pause is over, and a camera still held that way a few seconds after the
+  return opens again by itself (the same device, the publication kept); `local_video` then
+  says `on`. Nothing changes while the app is in the background.
+- After the app's return (`VoiceControl::app_scene` with `Foreground`), a background still
+  reported by the video backend a few seconds later is taken as over, since its own
+  foreground was lost; the webview sinks and the camera resume. The backend's next
+  background still counts.
+
+### Dependencies
+
+- Requires sew-call-client 0.9.2 (for `VideoBridge::reopen_held_camera` and
+  `CaptureDspScheduling`) and sew-proto 0.11.2.
+
 ## 0.9.1 (2026-11-20, Sew 0.11.1)
 
 Additive: new optional fields in the `noise_removal` state, event and answer; no other

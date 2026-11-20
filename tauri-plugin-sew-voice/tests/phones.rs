@@ -6,6 +6,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::json;
 use tauri_plugin_sew_voice::engine::EngineError;
@@ -254,6 +255,54 @@ async fn either_signal_pauses_and_both_must_say_foreground_to_resume() {
         ],
         "the call hears only the combined changes"
     );
+}
+
+/// The backend's foreground never comes after the app's return: a few seconds later the
+/// app's word stands and everything resumes; while the app is in the background again
+/// nothing is taken.
+#[tokio::test]
+async fn a_backend_background_still_set_after_the_apps_return_is_dropped() {
+    let (w, call, _ch) = watching().await;
+    until("the backend subscription", || {
+        w.engine.background_subscribers() == 1
+    })
+    .await;
+    // The backend first (its event is forwarded on a task), then the app.
+    w.engine.backend_background(true);
+    until("background", || w.svc.is_background()).await;
+    w.control.app_scene(AppScene::Background);
+    // Back to the background before the check's time: the check does nothing.
+    w.control.app_scene(AppScene::Foreground);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(w.svc.is_background(), "the backend still says background");
+    w.control.app_scene(AppScene::Background);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(w.svc.is_background(), "the app is in the background");
+    // In front again, and the backend never says foreground.
+    w.control.app_scene(AppScene::Foreground);
+    let began = std::time::Instant::now();
+    while w.svc.is_background() {
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "the app's return alone resumes"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        began.elapsed() >= Duration::from_secs(2),
+        "the backend has its moment to say foreground first"
+    );
+    assert_eq!(
+        call.video_settings().last(),
+        Some(&(CAM.to_owned(), GRID_360))
+    );
+    assert_eq!(
+        call.app_scenes(),
+        vec![AppScene::Background, AppScene::Foreground]
+    );
+    // A later background from the backend still counts.
+    w.engine.backend_background(true);
+    until("background again", || w.svc.is_background()).await;
 }
 
 #[tokio::test]

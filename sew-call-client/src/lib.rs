@@ -99,8 +99,8 @@ pub use noise::NoiseRemovalControl;
 #[cfg(feature = "noise-bench")]
 pub use noise::bench as noise_bench;
 pub use noise::{
-    CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel, NoiseRemoval,
-    NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
+    CaptureDspScheduling, CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel,
+    NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
 };
 /// What loading DeepFilterNet3's weights cost, and how long the model stays after the last
 /// call by default (feature `dfn3`).

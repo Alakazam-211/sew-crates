@@ -284,8 +284,14 @@ impl VoiceControl {
     /// hidden (its track turned off at the media server) and only native sinks
     /// (`VoiceControl::open_native_sink`, the picture in picture) stay enabled; back in front
     /// the sinks start again at a keyframe. The video backend's own signal (kessel-video's
-    /// `BackendEvent::Background`) counts too: either one pauses, and both must say foreground
-    /// to resume. On Android it also tells kessel-video (`AndroidContext::set_background`).
+    /// `BackendEvent::Background`, the app's own background and foreground as UIKit tells it)
+    /// counts too: either one pauses, and both must say foreground to resume (a backend
+    /// background still set a few seconds after the app's own return is taken as over, its
+    /// foreground lost). A camera the OS
+    /// paused for the background on its own (iOS's capture session interruption) resumes on
+    /// its first frame after the return, or opens again a few seconds after it, even if the OS
+    /// never says that pause is over. On Android it also tells kessel-video
+    /// (`AndroidContext::set_background`).
     /// Audio is untouched. Sync and cheap; any thread except inside a listener method.
     pub fn app_scene(&self, scene: AppScene) {
         self.service.app_scene(scene);

@@ -375,6 +375,47 @@ impl std::fmt::Display for CaptureStageClock {
     }
 }
 
+/// How the OS schedules the audio pipeline's processing thread, the thread the noise removal
+/// stage runs on ([`NoiseRemovalState::capture_stage_dsp_scheduling`]): the best of the
+/// requests the pipeline made that the OS granted. On macOS and iOS the thread asks for
+/// real-time scheduling; elsewhere it keeps the OS's default.
+///
+/// Its JSON is `"workgroup"`, `"time_constraint"`, `"qos"` or `"none"`. More may come in a
+/// later version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CaptureDspScheduling {
+    /// Real-time, and joined to the audio unit's own I/O workgroup, so the OS schedules it with
+    /// the audio I/O thread (iOS, while the phone's audio unit runs).
+    Workgroup,
+    /// The OS's real-time time-constraint policy.
+    TimeConstraint,
+    /// Only the OS's user-interactive quality of service: the OS refused the real-time policy.
+    Qos,
+    /// The OS's default scheduling (Linux, Android and Windows, or where the OS refused every
+    /// request).
+    None,
+}
+
+impl CaptureDspScheduling {
+    /// The mode's name: `workgroup`, `time_constraint`, `qos` or `none`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureDspScheduling::Workgroup => "workgroup",
+            CaptureDspScheduling::TimeConstraint => "time_constraint",
+            CaptureDspScheduling::Qos => "qos",
+            CaptureDspScheduling::None => "none",
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureDspScheduling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The noise removal setting and what runs: `{mode, active, reason?, model?, model_reason?,
 /// step_downs?, phone_mode?, phone_mode_reason?, phone_mode_switches?, phone_mode_gap_ms?,
 /// step_down_reason?, last_step_down_ms_ago?, slowest_block_us?, blocks_over_budget?,
@@ -382,7 +423,8 @@ impl std::fmt::Display for CaptureStageClock {
 /// p99_block_us?, p99_block_cpu_us?, capture_stage_strikes?, capture_stage_bypassed?,
 /// capture_stage_p99_us?, capture_stage_grace?, capture_stage_grace_blocks?,
 /// capture_stage_grace_over_budget?, capture_stage_last_transient?, capture_stage_clock?,
-/// capture_stage_max_wall_us?, capture_stage_preempted_over_budget?, capture_stage_starved?}`.
+/// capture_stage_max_wall_us?, capture_stage_preempted_over_budget?, capture_stage_starved?,
+/// capture_stage_dsp_scheduling?}`.
 ///
 /// `mode` is what was asked, `active` what the microphone's audio goes through now, and
 /// `reason` (absent when `active` is `mode`) why they differ. With no call, `active` is what a
@@ -425,11 +467,13 @@ impl std::fmt::Display for CaptureStageClock {
 /// ([`CaptureStageClock`]), `capture_stage_max_wall_us` (the slowest block on the wall
 /// clock), `capture_stage_preempted_over_budget` (blocks over the budget on the wall clock but
 /// not in the thread's CPU time) and `capture_stage_starved` (blocks long enough on the wall
-/// clock to count as slow whatever their CPU time). Each is absent while unset or zero. The
+/// clock to count as slow whatever their CPU time), and how the OS schedules the thread the
+/// stage runs on: `capture_stage_dsp_scheduling` ([`CaptureDspScheduling`]; the thread asks
+/// for real-time scheduling on macOS and iOS). Each is absent while unset or zero. The
 /// counters (`last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget`,
 /// `retry_in_ms`, `slowest_block_cpu_us`, `p99_block_us`, `p99_block_cpu_us`,
-/// `capture_stage_p99_us`) and the pipeline's grace and clock fields are read with the state
-/// and ride along with each change; they do not make a change by themselves.
+/// `capture_stage_p99_us`) and the pipeline's grace, clock and scheduling fields are read with
+/// the state and ride along with each change; they do not make a change by themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct NoiseRemovalState {
@@ -540,6 +584,10 @@ pub struct NoiseRemovalState {
     /// whatever their CPU time.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub capture_stage_starved: u64,
+    /// How the OS schedules the processing thread the stage runs on (absent before the
+    /// pipeline reports it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_scheduling: Option<CaptureDspScheduling>,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -594,13 +642,14 @@ impl NoiseRemovalState {
             capture_stage_max_wall_us: None,
             capture_stage_preempted_over_budget: 0,
             capture_stage_starved: 0,
+            capture_stage_dsp_scheduling: None,
         }
     }
 
     /// This state without the counters that change with every block
     /// (`last_step_down_ms_ago`, `slowest_block_us`, `blocks_over_budget`, `retry_in_ms`,
     /// `slowest_block_cpu_us`, `p99_block_us`, `p99_block_cpu_us`, `capture_stage_p99_us`) and
-    /// the pipeline's grace and clock fields: what a change of state is judged on.
+    /// the pipeline's grace, clock and scheduling fields: what a change of state is judged on.
     #[cfg_attr(not(feature = "audio-core"), allow(dead_code))]
     pub(crate) fn change_key(mut self) -> NoiseRemovalState {
         self.last_step_down_ms_ago = None;
@@ -619,6 +668,7 @@ impl NoiseRemovalState {
         self.capture_stage_max_wall_us = None;
         self.capture_stage_preempted_over_budget = 0;
         self.capture_stage_starved = 0;
+        self.capture_stage_dsp_scheduling = None;
         self
     }
 
@@ -776,6 +826,7 @@ mod tests {
         s.capture_stage_max_wall_us = Some(21_000);
         s.capture_stage_preempted_over_budget = 5;
         s.capture_stage_starved = 1;
+        s.capture_stage_dsp_scheduling = Some(CaptureDspScheduling::TimeConstraint);
         let v = serde_json::to_value(s).unwrap();
         assert_eq!(
             v,
@@ -789,7 +840,8 @@ mod tests {
                 "capture_stage_grace_blocks": 150, "capture_stage_grace_over_budget": 4,
                 "capture_stage_last_transient": "camera_start",
                 "capture_stage_clock": "thread_cpu", "capture_stage_max_wall_us": 21000,
-                "capture_stage_preempted_over_budget": 5, "capture_stage_starved": 1})
+                "capture_stage_preempted_over_budget": 5, "capture_stage_starved": 1,
+                "capture_stage_dsp_scheduling": "time_constraint"})
         );
         let back: NoiseRemovalState = serde_json::from_value(v).unwrap();
         assert_eq!(back, s);
@@ -842,7 +894,20 @@ mod tests {
         counters.capture_stage_max_wall_us = Some(9);
         counters.capture_stage_preempted_over_budget = 3;
         counters.capture_stage_starved = 1;
+        counters.capture_stage_dsp_scheduling = Some(CaptureDspScheduling::Workgroup);
         assert_eq!(counters.change_key(), base.change_key());
+        for (d, n) in [
+            (CaptureDspScheduling::Workgroup, "workgroup"),
+            (CaptureDspScheduling::TimeConstraint, "time_constraint"),
+            (CaptureDspScheduling::Qos, "qos"),
+            (CaptureDspScheduling::None, "none"),
+        ] {
+            assert_eq!(d.as_str(), n);
+            assert_eq!(d.to_string(), n);
+            assert_eq!(serde_json::to_value(d).unwrap(), serde_json::json!(n));
+            let back: CaptureDspScheduling = serde_json::from_value(serde_json::json!(n)).unwrap();
+            assert_eq!(back, d);
+        }
         for (c, n) in [
             (CaptureStageClock::ThreadCpu, "thread_cpu"),
             (CaptureStageClock::Wall, "wall"),

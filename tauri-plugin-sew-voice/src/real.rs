@@ -1604,6 +1604,22 @@ impl scene::CameraOps for SceneOps {
         })
     }
 
+    fn reopen_held(&self) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            let Some(sh) = self.shared.upgrade() else {
+                return false;
+            };
+            let Some(bridge) = sh.video_bridge() else {
+                return false;
+            };
+            let g = sh.call.read().await;
+            let Some(call) = g.as_ref() else {
+                return false;
+            };
+            bridge.reopen_held_camera(call).await
+        })
+    }
+
     fn paused_changed(&self, paused: bool) {
         if let Some(sh) = self.shared.upgrade() {
             let local = sh.video.set_camera_paused(paused);
