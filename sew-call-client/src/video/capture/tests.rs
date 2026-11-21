@@ -887,3 +887,78 @@ async fn a_camera_that_ends_ends_the_preview() {
         "the channel ends after Ended"
     );
 }
+
+// ───────────────────────────── camera taps ─────────────────────────────
+
+/// The next camera tap item within 10 s.
+fn tap_item(tap: &crate::video::CameraTap, what: &str) -> crate::video::CameraTapItem {
+    tap.recv_timeout(WAIT)
+        .unwrap_or_else(|| panic!("{what}: nothing within 10 s"))
+}
+
+/// A tap opens no camera and gives nothing but `Off` while none is open; the preview's raw
+/// frames come with the camera's facing, `Live`; the preview's stop is `Off`; a camera source
+/// opened alone feeds no tap (the bridge's pipeline does).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_camera_tap_gets_the_previews_raw_frames_and_never_opens_the_camera() {
+    use crate::video::{CameraFeed, CameraTapItem};
+    let p = Probe::new(FakeConfig::default(), same);
+    let cap = capture(&p);
+    let tap = cap.camera_tap();
+    assert!(matches!(
+        tap_item(&tap, "the feed"),
+        CameraTapItem::Feed(CameraFeed::Off)
+    ));
+    assert!(
+        tap.recv_timeout(Duration::from_millis(300)).is_none(),
+        "no camera: nothing"
+    );
+    assert_eq!(p.opened.load(Ordering::Acquire), 0, "a tap opens no camera");
+
+    let facing = cap.camera_facing(None);
+    let (preview, mut rx) = cap.preview(None).await.expect("preview");
+    assert!(matches!(
+        tap_item(&tap, "the preview's feed"),
+        CameraTapItem::Feed(CameraFeed::Live)
+    ));
+    let mut frames = 0;
+    while frames < 3 {
+        match tap_item(&tap, "the preview's frames") {
+            CameraTapItem::Frame(f) => {
+                assert_eq!(f.facing, facing);
+                assert_eq!(f.rotation, 0);
+                assert!(f.frame.width > 0 && f.frame.height > 0);
+                frames += 1;
+            }
+            other => panic!("frames while it runs, not {other:?}"),
+        }
+    }
+    // The webview's encoded self-view runs as before.
+    assert!(matches!(
+        next_item(&mut rx).await,
+        Some(PreviewItem::Frame(_))
+    ));
+
+    preview.stop();
+    let mut last = None;
+    while let Some(item) = tap.recv_timeout(Duration::from_millis(300)) {
+        last = Some(item);
+    }
+    assert!(
+        matches!(last, Some(CameraTapItem::Feed(CameraFeed::Off))),
+        "the stop is Off: {last:?}"
+    );
+
+    let mut cam = cap
+        .clone()
+        .open_camera(None, CaptureConstraints::new(640, 360, 30))
+        .await
+        .expect("a camera source");
+    let _ = next_frame(&mut cam).await;
+    assert!(
+        tap.recv_timeout(Duration::from_millis(300)).is_none(),
+        "a bare camera source feeds no tap"
+    );
+    drop(cam);
+    drop(tap);
+}

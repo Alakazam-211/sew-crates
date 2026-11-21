@@ -27,10 +27,14 @@
 //!   still counts as slow whatever its CPU time.
 
 use kessel_audio::{
-    AudioEngine, DspScheduling, ProcessingConfig, StageBypassReason, StageClock, TransientEvent,
+    AudioEngine, DspSchedConfig, DspSchedFallback, DspSchedMode, DspScheduling, DspTimeConstraint,
+    ProcessingConfig, StageBypassReason, StageClock, TransientEvent,
 };
 
-use super::{CaptureDspScheduling, CaptureStageClock, CaptureTransient};
+use super::{
+    CaptureDspSched, CaptureDspSchedFallback, CaptureDspSchedMode, CaptureDspScheduling,
+    CaptureStageClock, CaptureTransient,
+};
 
 pub(crate) use kessel_audio::CaptureStage;
 
@@ -57,6 +61,117 @@ pub(crate) fn install(processing: &mut ProcessingConfig, stage: Box<dyn CaptureS
     processing.capture_stage = Some(stage);
     processing.stage_grace = STAGE_GRACE;
     true
+}
+
+/// Whether this build's kessel-audio takes a scheduling request for its processing thread.
+pub(crate) const DSP_SCHED: bool = true;
+
+/// kessel-audio's mode for ours (`None`: `unsupported`, which is only ever reported).
+fn sched_mode(m: CaptureDspSchedMode) -> Option<DspSchedMode> {
+    match m {
+        CaptureDspSchedMode::Workgroup => Some(DspSchedMode::Workgroup),
+        CaptureDspSchedMode::TimeConstraintOnly => Some(DspSchedMode::TimeConstraintOnly),
+        CaptureDspSchedMode::None => Some(DspSchedMode::None),
+        CaptureDspSchedMode::OwnWorkgroup => Some(DspSchedMode::OwnWorkgroup),
+        CaptureDspSchedMode::Unsupported => None,
+    }
+}
+
+/// Ours for kessel-audio's mode (a mode it adds later is `None`).
+fn capture_sched_mode(m: DspSchedMode) -> Option<CaptureDspSchedMode> {
+    match m {
+        DspSchedMode::Workgroup => Some(CaptureDspSchedMode::Workgroup),
+        DspSchedMode::TimeConstraintOnly => Some(CaptureDspSchedMode::TimeConstraintOnly),
+        DspSchedMode::None => Some(CaptureDspSchedMode::None),
+        DspSchedMode::OwnWorkgroup => Some(CaptureDspSchedMode::OwnWorkgroup),
+        DspSchedMode::Unsupported => Some(CaptureDspSchedMode::Unsupported),
+        _ => None,
+    }
+}
+
+/// Ours for kessel-audio's fallback reason (one it adds later is `Other`).
+fn sched_fallback(f: DspSchedFallback) -> CaptureDspSchedFallback {
+    match f {
+        DspSchedFallback::TimeConstraintRefused => CaptureDspSchedFallback::TimeConstraintRefused,
+        DspSchedFallback::OwnWorkgroupUnavailable => {
+            CaptureDspSchedFallback::OwnWorkgroupUnavailable
+        }
+        DspSchedFallback::OwnWorkgroupJoinRefused => {
+            CaptureDspSchedFallback::OwnWorkgroupJoinRefused
+        }
+        DspSchedFallback::IntervalRefused => CaptureDspSchedFallback::IntervalRefused,
+        _ => CaptureDspSchedFallback::Other,
+    }
+}
+
+fn micros(us: u32) -> std::time::Duration {
+    std::time::Duration::from_micros(u64::from(us))
+}
+
+fn as_micros(d: std::time::Duration) -> u32 {
+    u32::try_from(d.as_micros()).unwrap_or(u32::MAX)
+}
+
+/// kessel-audio's scheduling config for `sched` (`None`: its mode cannot be asked for).
+fn sched_config(sched: CaptureDspSched) -> Option<DspSchedConfig> {
+    Some(
+        DspSchedConfig::new(sched_mode(sched.mode)?)
+            .with_time_constraint(DspTimeConstraint::new(
+                micros(sched.period_us),
+                micros(sched.computation_us),
+                micros(sched.constraint_us),
+            ))
+            .with_interval_deadline(micros(sched.interval_deadline_us)),
+    )
+}
+
+/// Puts `sched` into the engine's config, for the processing thread to read as it starts.
+/// `false`: its mode cannot be asked for, and `cfg` is unchanged.
+pub(crate) fn apply_dsp_sched(
+    cfg: &mut kessel_audio::EngineConfig,
+    sched: CaptureDspSched,
+) -> bool {
+    let Some(config) = sched_config(sched) else {
+        return false;
+    };
+    cfg.dsp_sched = config;
+    true
+}
+
+/// kessel-audio's view of its processing thread's scheduling request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DspSchedState {
+    /// The mode asked for, and the mode in effect.
+    pub(crate) requested: CaptureDspSchedMode,
+    pub(crate) effective: CaptureDspSchedMode,
+    /// Why they differ.
+    pub(crate) fallback: Option<CaptureDspSchedFallback>,
+    /// The time-constraint figures asked for: period, computation, constraint, microseconds.
+    pub(crate) time_constraint_us: Option<(u32, u32, u32)>,
+    /// The work interval's deadline, microseconds.
+    pub(crate) interval_deadline_us: Option<u32>,
+    /// Work intervals finished.
+    pub(crate) intervals: u64,
+}
+
+/// The engine's scheduling request and what came of it (`None`: a mode this version does not
+/// know).
+pub(crate) fn dsp_sched(engine: &AudioEngine) -> Option<DspSchedState> {
+    let s = engine.stats().dsp_sched;
+    Some(DspSchedState {
+        requested: capture_sched_mode(s.mode_requested)?,
+        effective: capture_sched_mode(s.mode_effective)?,
+        fallback: s.fallback_reason.map(sched_fallback),
+        time_constraint_us: s.time_constraint.map(|t| {
+            (
+                as_micros(t.period),
+                as_micros(t.computation),
+                as_micros(t.constraint),
+            )
+        }),
+        interval_deadline_us: s.interval_deadline.map(as_micros),
+        intervals: s.intervals,
+    })
 }
 
 /// kessel-audio's name for a busy moment.
@@ -87,6 +202,7 @@ fn dsp_scheduling(d: DspScheduling) -> Option<CaptureDspScheduling> {
         DspScheduling::TimeConstraint => Some(CaptureDspScheduling::TimeConstraint),
         DspScheduling::Qos => Some(CaptureDspScheduling::Qos),
         DspScheduling::None => Some(CaptureDspScheduling::None),
+        DspScheduling::OwnWorkgroup => Some(CaptureDspScheduling::OwnWorkgroup),
         _ => None,
     }
 }
@@ -223,6 +339,84 @@ mod tests {
         assert!(p.noise_suppression.is_none());
     }
 
+    /// Each scheduling mode maps to kessel-audio's of the same name and back; `unsupported` is
+    /// only reported; each fallback reason keeps its name; the default setting is
+    /// kessel-audio's default, figure for figure.
+    #[test]
+    fn dsp_sched_maps_each_mode_and_the_defaults() {
+        for (ours, k) in [
+            (CaptureDspSchedMode::Workgroup, DspSchedMode::Workgroup),
+            (
+                CaptureDspSchedMode::TimeConstraintOnly,
+                DspSchedMode::TimeConstraintOnly,
+            ),
+            (CaptureDspSchedMode::None, DspSchedMode::None),
+            (
+                CaptureDspSchedMode::OwnWorkgroup,
+                DspSchedMode::OwnWorkgroup,
+            ),
+        ] {
+            assert_eq!(sched_mode(ours), Some(k));
+            assert_eq!(capture_sched_mode(k), Some(ours));
+            assert_eq!(ours.as_str(), k.as_str());
+        }
+        assert_eq!(sched_mode(CaptureDspSchedMode::Unsupported), None);
+        assert_eq!(
+            capture_sched_mode(DspSchedMode::Unsupported),
+            Some(CaptureDspSchedMode::Unsupported)
+        );
+        assert_eq!(
+            CaptureDspSchedMode::Unsupported.as_str(),
+            DspSchedMode::Unsupported.as_str()
+        );
+        for (k, ours, name) in [
+            (
+                DspSchedFallback::TimeConstraintRefused,
+                CaptureDspSchedFallback::TimeConstraintRefused,
+                "time_constraint_refused",
+            ),
+            (
+                DspSchedFallback::OwnWorkgroupUnavailable,
+                CaptureDspSchedFallback::OwnWorkgroupUnavailable,
+                "own_workgroup_unavailable",
+            ),
+            (
+                DspSchedFallback::OwnWorkgroupJoinRefused,
+                CaptureDspSchedFallback::OwnWorkgroupJoinRefused,
+                "own_workgroup_join_refused",
+            ),
+            (
+                DspSchedFallback::IntervalRefused,
+                CaptureDspSchedFallback::IntervalRefused,
+                "interval_refused",
+            ),
+        ] {
+            assert_eq!(sched_fallback(k), ours);
+            assert_eq!(k.as_str(), name);
+            assert_eq!(serde_json::to_value(ours).ok(), Some(name.into()));
+        }
+        assert_eq!(
+            sched_config(CaptureDspSched::default()),
+            Some(DspSchedConfig::default())
+        );
+        let own = CaptureDspSched::new(CaptureDspSchedMode::OwnWorkgroup)
+            .with_time_constraint_us(10_000, 3_000, 5_000)
+            .with_interval_deadline_us(4_000);
+        let mut cfg = kessel_audio::EngineConfig::default();
+        assert!(apply_dsp_sched(&mut cfg, own));
+        assert_eq!(cfg.dsp_sched.mode, DspSchedMode::OwnWorkgroup);
+        assert_eq!(cfg.dsp_sched.time_constraint.period, micros(10_000));
+        assert_eq!(cfg.dsp_sched.time_constraint.computation, micros(3_000));
+        assert_eq!(cfg.dsp_sched.time_constraint.constraint, micros(5_000));
+        assert_eq!(cfg.dsp_sched.interval_deadline, micros(4_000));
+        let before = cfg.dsp_sched;
+        assert!(!apply_dsp_sched(
+            &mut cfg,
+            CaptureDspSched::new(CaptureDspSchedMode::Unsupported)
+        ));
+        assert_eq!(cfg.dsp_sched, before);
+    }
+
     /// kessel-audio's processing thread scheduling maps one to one, its default to `none`.
     #[test]
     fn dsp_scheduling_maps_each_mode() {
@@ -234,9 +428,18 @@ mod tests {
             ),
             (DspScheduling::Qos, CaptureDspScheduling::Qos),
             (DspScheduling::None, CaptureDspScheduling::None),
+            (
+                DspScheduling::OwnWorkgroup,
+                CaptureDspScheduling::OwnWorkgroup,
+            ),
         ] {
             assert_eq!(dsp_scheduling(k), Some(ours));
             assert_eq!(k.as_str(), ours.as_str());
+            assert_eq!(
+                serde_json::to_value(ours).ok(),
+                Some(k.as_str().into()),
+                "the JSON name is kessel-audio's name"
+            );
         }
         assert_eq!(
             dsp_scheduling(DspScheduling::default()),

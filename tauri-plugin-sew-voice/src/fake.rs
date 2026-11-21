@@ -105,6 +105,9 @@ pub struct FakeEngine {
     /// The video backend the native sinks use ([`FakeEngine::set_native_video_backend`]).
     #[cfg(feature = "video-core")]
     native_backend: Mutex<Option<NativeBackend>>,
+    /// The camera taps handed out ([`FakeEngine::camera_frame`] feeds them).
+    #[cfg(feature = "video-core")]
+    camera_taps: Mutex<FakeCameraTaps>,
     /// The noise removal setting and its step-down.
     noise: Mutex<FakeNoise>,
     noise_tx: broadcast::Sender<NoiseRemovalState>,
@@ -172,6 +175,14 @@ pub const FAKE_SWITCH_GAP_MS: u32 = 20;
 
 #[cfg(feature = "video-core")]
 struct NativeBackend(Arc<dyn sew_call_client::kessel_video::VideoBackend>);
+
+/// The fake's camera taps and their feed now.
+#[cfg(feature = "video-core")]
+#[derive(Debug, Default)]
+struct FakeCameraTaps {
+    taps: Vec<sew_call_client::CameraTapSender>,
+    feed: sew_call_client::CameraFeed,
+}
 
 #[cfg(feature = "video-core")]
 impl std::fmt::Debug for NativeBackend {
@@ -282,6 +293,8 @@ impl FakeEngine {
             background_tx: broadcast::channel(16).0,
             #[cfg(feature = "video-core")]
             native_backend: Mutex::new(None),
+            #[cfg(feature = "video-core")]
+            camera_taps: Mutex::new(FakeCameraTaps::default()),
             noise: Mutex::new(FakeNoise::default()),
             noise_tx: broadcast::channel(16).0,
         }
@@ -373,6 +386,38 @@ impl FakeEngine {
         backend: Arc<dyn sew_call_client::kessel_video::VideoBackend>,
     ) {
         *lock(&self.native_backend) = Some(NativeBackend(backend));
+    }
+
+    /// One raw camera frame from a camera facing `facing`, to every open camera tap (a
+    /// self-view native sink's), as a real camera's capture hands it over: never waiting, a
+    /// frame not yet taken replaced. The feed turns `Live`. Answers how many taps took it.
+    #[cfg(feature = "video-core")]
+    pub fn camera_frame(
+        &self,
+        frame: sew_call_client::kessel_video::VideoFrame,
+        facing: sew_call_client::kessel_video::Facing,
+    ) -> usize {
+        let mut c = lock(&self.camera_taps);
+        c.feed = sew_call_client::CameraFeed::Live;
+        c.taps
+            .retain(|t| t.send(sew_call_client::CameraFrame::new(frame.clone(), facing)));
+        c.taps.len()
+    }
+
+    /// The camera's feed is now `feed` (paused, off, live), for every open camera tap.
+    #[cfg(feature = "video-core")]
+    pub fn camera_feed(&self, feed: sew_call_client::CameraFeed) {
+        let mut c = lock(&self.camera_taps);
+        c.feed = feed;
+        c.taps.retain(|t| t.set_feed(feed));
+    }
+
+    /// The camera taps open now.
+    #[cfg(feature = "video-core")]
+    pub fn camera_taps(&self) -> usize {
+        let mut c = lock(&self.camera_taps);
+        c.taps.retain(|t| !t.is_closed());
+        c.taps.len()
     }
 
     /// Turns video on: the demo capabilities ([`demo_video_caps`]) and cameras
@@ -911,6 +956,21 @@ impl VoiceEngine for FakeEngine {
         lock(&self.native_backend)
             .as_ref()
             .map(|b| Arc::clone(&b.0))
+    }
+
+    /// A tap the test feeds ([`FakeEngine::camera_frame`], [`FakeEngine::camera_feed`]); with
+    /// video enabled only. It opens nothing.
+    #[cfg(feature = "video-core")]
+    fn camera_tap(&self) -> Option<sew_call_client::CameraTap> {
+        if !lock(&self.video).enabled {
+            return None;
+        }
+        let (tx, tap) = sew_call_client::CameraTap::channel();
+        let mut c = lock(&self.camera_taps);
+        tx.set_feed(c.feed);
+        c.taps.retain(|t| !t.is_closed());
+        c.taps.push(tx);
+        Some(tap)
     }
 
     fn video_decoder(

@@ -234,6 +234,16 @@ impl Dfn3Stream {
         &self.synthesis_mem
     }
 
+    /// What the last hop ran: the ERB decoder, and the deep-filter decoder (the encoder runs in
+    /// every hop that is not muted as silence).
+    #[cfg(feature = "probe")]
+    pub(crate) fn decoders_ran(&self) -> (bool, bool) {
+        (
+            !self.skipped && self.apply_gains,
+            !self.skipped && self.apply_df,
+        )
+    }
+
     /// The last block was muted as silence (the model did not run).
     pub(crate) fn skipping(&self) -> bool {
         self.skip_counter > 5

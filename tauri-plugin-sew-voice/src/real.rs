@@ -776,6 +776,54 @@ impl VoiceEngine for CallClientEngine {
         })
     }
 
+    fn set_dsp_sched(&self, sched: Option<crate::DspSched>) -> Result<(), EngineError> {
+        self.inner.noise.set_dsp_sched(sched).map_err(|e| {
+            EngineError::Failed(ErrorInfo::with_detail(
+                crate::wire::code::INVALID_ARGS,
+                e.to_string(),
+            ))
+        })
+    }
+
+    fn dsp_sched(&self) -> Option<crate::DspSched> {
+        self.inner.noise.dsp_sched()
+    }
+
+    #[cfg(feature = "noise-probe")]
+    fn arm_noise_probe(&self) -> Result<(), EngineError> {
+        self.inner.noise.arm_probe(Some(crate::probe::core_number));
+        Ok(())
+    }
+
+    #[cfg(feature = "noise-probe")]
+    fn set_noise_probe_phase(
+        &self,
+        phase: crate::NoiseProbePhase,
+        deadline: Option<std::time::Duration>,
+    ) -> Result<(), EngineError> {
+        // Kept for hosts that label a call's blocks; the scheduling is set before the call.
+        #[allow(deprecated)]
+        let labelled = self.inner.noise.set_probe_phase(phase, deadline);
+        labelled.map_err(|e| {
+            EngineError::Failed(ErrorInfo::with_detail(
+                crate::wire::code::NOISE_MODE_UNAVAILABLE,
+                e.to_string(),
+            ))
+        })
+    }
+
+    #[cfg(feature = "noise-probe")]
+    fn noise_probe_report(&self) -> Result<Option<serde_json::Value>, EngineError> {
+        self.inner
+            .noise
+            .probe_report()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| {
+                EngineError::Failed(ErrorInfo::with_detail("engine_stopped", e.to_string()))
+            })
+    }
+
     /// The preference is the engine's (`CallClient`'s), so it lasts across calls.
     fn set_video_codec_preference(
         &self,
@@ -911,6 +959,13 @@ impl VoiceEngine for CallClientEngine {
         self.inner.video.backend()
     }
 
+    /// The capture's camera tap: the capture is the camera publish's own (the bridge's), so the
+    /// tap gets the preview's and the call's camera frames alike.
+    #[cfg(feature = "video-core")]
+    fn camera_tap(&self) -> Option<sew_call_client::CameraTap> {
+        self.inner.capture().capture().map(|c| c.camera_tap())
+    }
+
     #[cfg(feature = "video-core")]
     fn video_decoder(
         &self,
@@ -959,6 +1014,23 @@ impl JoinProvider for RoomRecorder {
             *lock(&self.room) = Some(answer.join.room.as_str().to_owned());
             Ok(answer)
         })
+    }
+
+    // Every other provider method goes to the host's provider as it is: a trait default here
+    // would answer for the host (`consent_unsupported`, `recording_unsupported`) and never
+    // reach it.
+    fn consent(
+        &self,
+        answer: sew_call_client::ConsentAnswer,
+    ) -> BoxFuture<'_, Result<sew_call_client::Recording, ProviderError>> {
+        self.inner.consent(answer)
+    }
+
+    fn recording(
+        &self,
+        req: sew_call_client::RecordingRequest,
+    ) -> BoxFuture<'_, Result<sew_call_client::Recording, ProviderError>> {
+        self.inner.recording(req)
     }
 }
 
@@ -2569,5 +2641,60 @@ mod tests {
         assert!(!ctx.is_background());
         engine.device_orientation(100);
         assert_eq!(ctx.device_orientation(), 90);
+    }
+
+    /// The host's provider answers with its own code, so a trait default answering instead
+    /// would show as `consent_unsupported` / `recording_unsupported`.
+    struct Host;
+
+    impl JoinProvider for Host {
+        fn join(&self, _req: JoinRequest) -> BoxFuture<'_, Result<JoinAnswer, ProviderError>> {
+            Box::pin(std::future::ready(Err(ProviderError::Other("join".into()))))
+        }
+
+        fn consent(
+            &self,
+            _answer: sew_call_client::ConsentAnswer,
+        ) -> BoxFuture<'_, Result<sew_call_client::Recording, ProviderError>> {
+            Box::pin(std::future::ready(Err(ProviderError::Other(
+                "host consent".into(),
+            ))))
+        }
+
+        fn recording(
+            &self,
+            _req: sew_call_client::RecordingRequest,
+        ) -> BoxFuture<'_, Result<sew_call_client::Recording, ProviderError>> {
+            Box::pin(std::future::ready(Err(ProviderError::Other(
+                "host recording".into(),
+            ))))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_room_recorder_passes_consent_and_recording_to_the_host() {
+        let recorder = RoomRecorder {
+            inner: Arc::new(Host),
+            room: Arc::new(Mutex::new(None)),
+        };
+        let channel: sew_proto::id::Id = "48831765147549698".parse().unwrap();
+        let req = sew_call_client::RecordingRequest::start("k2:acme", "48831765147549698", channel);
+        match recorder.recording(req).await {
+            Err(ProviderError::Other(m)) => assert_eq!(m, "host recording"),
+            other => panic!("the host's recording answer, not {other:?}"),
+        }
+        let answer: sew_call_client::ConsentAnswer = serde_json::from_value(json!({
+            "target": "k2:acme",
+            "room": "48831765147549698",
+            "recording_id": "48831765147549720",
+            "consent": true,
+            "notice_version": 3141,
+            "device_id": null,
+        }))
+        .unwrap();
+        match recorder.consent(answer).await {
+            Err(ProviderError::Other(m)) => assert_eq!(m, "host consent"),
+            other => panic!("the host's consent answer, not {other:?}"),
+        }
     }
 }

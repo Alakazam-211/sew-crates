@@ -336,6 +336,12 @@ impl Strong {
         }
     }
 
+    /// What the model's last hop ran: the ERB decoder, and the deep-filter decoder.
+    #[cfg(feature = "probe")]
+    pub(crate) fn decoders_ran(&self) -> (bool, bool) {
+        self.stream.decoders_ran()
+    }
+
     /// Ends the begun block: the rest of the model's work, then this layer's output into
     /// `block` (which holds Standard's output for the block going out, or the dry signal).
     pub(crate) fn end(&mut self, block: &mut [f32; FRAME], block_no: u64) -> Outcome {

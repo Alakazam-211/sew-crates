@@ -349,6 +349,63 @@ impl VoiceService {
             .map_err(|e| e.to_info())
     }
 
+    /// [`VoiceEngine::set_dsp_sched`]: what the audio pipeline's processing thread asks the
+    /// OS for, from the next call's start.
+    pub fn set_dsp_sched(&self, sched: Option<crate::DspSched>) -> Result<(), ErrorInfo> {
+        tracing::info!(?sched, "sew-voice: processing thread scheduling");
+        self.inner
+            .engine
+            .set_dsp_sched(sched)
+            .map_err(|e| e.to_info())
+    }
+
+    /// [`VoiceEngine::dsp_sched`].
+    pub fn dsp_sched(&self) -> Option<crate::DspSched> {
+        self.inner.engine.dsp_sched()
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`): [`VoiceEngine::arm_noise_probe`].
+    #[cfg(feature = "noise-probe")]
+    pub fn arm_noise_probe(&self) -> Result<(), ErrorInfo> {
+        tracing::info!("sew-voice: noise probe armed for the next call");
+        self.inner.engine.arm_noise_probe().map_err(|e| e.to_info())
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`): [`VoiceEngine::set_noise_probe_phase`].
+    #[cfg(feature = "noise-probe")]
+    #[deprecated(
+        note = "a call is one phase: set the scheduling before the call with set_dsp_sched; the report names the phase from the mode in effect"
+    )]
+    pub fn set_noise_probe_phase(
+        &self,
+        phase: crate::NoiseProbePhase,
+        deadline: Option<std::time::Duration>,
+    ) -> Result<(), ErrorInfo> {
+        self.inner
+            .engine
+            .set_noise_probe_phase(phase, deadline)
+            .map_err(|e| e.to_info())
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`): [`VoiceEngine::noise_probe_report`] on a
+    /// blocking thread (it sorts the call's records).
+    #[cfg(feature = "noise-probe")]
+    pub async fn noise_probe_report(&self) -> Result<Option<serde_json::Value>, ErrorInfo> {
+        let engine = Arc::clone(&self.inner.engine);
+        tokio::task::spawn_blocking(move || engine.noise_probe_report())
+            .await
+            .map_err(|e| ErrorInfo::with_detail("engine_stopped", e.to_string()))?
+            .map_err(|e| e.to_info())
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`): the probe's calibration loops on a thread of
+    /// their own (on macOS and iOS, asking for the user-interactive QoS class), as
+    /// sew-call-client's `noise_probe::NoiseProbeReference` in JSON. The engine has no part in it.
+    #[cfg(feature = "noise-probe")]
+    pub async fn noise_probe_reference(&self) -> Result<serde_json::Value, ErrorInfo> {
+        crate::probe::reference().await
+    }
+
     /// `set_noise_removal {mode}` (`"off"`, `"standard"`): before or during a call (in a call
     /// from the next 10 ms block, without a click). Answers the state now; a `noise_removal`
     /// event follows each change. A mode this build or platform can't run (`"strong"`) answers
@@ -1337,7 +1394,10 @@ impl VoiceService {
     /// picture in picture), asking the media server for the layer that fits `max_size`. It
     /// stays enabled in the background. Needs a live call (`not_in_call`); a track must be in
     /// the `video` list (`unknown_track`), and a VP8 track needs the engine's video backend
-    /// (`decoded_unsupported`).
+    /// (`decoded_unsupported`). `local:camera` is the self-view: the camera's raw frames
+    /// whenever one is open, with or without a call (`video_unsupported` without a video
+    /// backend); `local:screen` and this device's own tracks are refused (`unknown_track` with
+    /// `self_view`).
     #[cfg(feature = "video-core")]
     pub fn open_native_sink(
         &self,
@@ -1348,6 +1408,9 @@ impl VoiceService {
         use crate::native::{NativeSink, NativeSinkTarget, NativeWorker};
         use crate::sink::{NativeTarget, OpenNative};
         self.use_scene_events();
+        if matches!(&target, NativeSinkTarget::Track(t) if t == crate::video::LOCAL_CAMERA) {
+            return self.open_self_view_sink(consumer);
+        }
         let backend = self.inner.engine.native_video_backend();
         let mut decode = vec![VideoCodec::H264];
         if backend.is_some() {
@@ -1361,7 +1424,8 @@ impl VoiceService {
                 .ok_or_else(|| ErrorInfo::new(code::NOT_IN_CALL))?;
             match &target {
                 NativeSinkTarget::Track(t) => {
-                    // Self-view is a local sink or the preview, never a native sink.
+                    // The screen's self-view and this device's own tracks are never a native
+                    // sink (the camera's is the self-view sink above).
                     let self_view = || {
                         ErrorInfo::with_detail(
                             video_code::UNKNOWN_TRACK,
@@ -1445,6 +1509,35 @@ impl VoiceService {
             control: Arc::new(NativeControl {
                 inner: Arc::downgrade(&self.inner),
             }),
+            stats,
+        })
+    }
+
+    /// The self-view native sink (`local:camera`): the engine's camera tap on its own thread.
+    /// Opens no camera, needs no call; the sink id is a plugin-wide one.
+    #[cfg(feature = "video-core")]
+    fn open_self_view_sink(
+        &self,
+        consumer: Arc<dyn crate::native::NativeVideoConsumer>,
+    ) -> Result<crate::native::NativeSink, ErrorInfo> {
+        use crate::native::{NativeSink, SelfViewControl, SelfViewWorker};
+        let tap = self.inner.engine.camera_tap().ok_or_else(|| {
+            ErrorInfo::with_detail(
+                video_code::VIDEO_UNSUPPORTED,
+                serde_json::json!({ "track": crate::video::LOCAL_CAMERA }),
+            )
+        })?;
+        let worker = SelfViewWorker::start(consumer, tap).map_err(|e| {
+            ErrorInfo::with_detail(
+                video_code::VIDEO_UNSUPPORTED,
+                format!("self-view sink: {e}"),
+            )
+        })?;
+        let stats = worker.stats();
+        let id = lock(&self.inner.video).sinks.reserve_id();
+        Ok(NativeSink {
+            id,
+            control: Arc::new(SelfViewControl { worker }),
             stats,
         })
     }

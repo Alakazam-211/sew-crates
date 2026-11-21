@@ -13,8 +13,9 @@ use tokio::sync::broadcast;
 
 use super::hook::{self, Bypass, CaptureStage};
 use super::{
-    CaptureTransient, NoiseDfn3State, NoiseModel, NoiseRemoval, NoiseRemovalReason,
-    NoiseRemovalState, NoiseSource, NoiseStepDownReason, PhoneAudioMode,
+    CaptureDspSched, CaptureDspSchedError, CaptureDspSchedMode, CaptureTransient, NoiseDfn3State,
+    NoiseModel, NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseSource,
+    NoiseStepDownReason, PhoneAudioMode,
 };
 use crate::audio::{PhoneOs, PhoneStart};
 
@@ -110,6 +111,35 @@ pub(crate) struct NoiseStage {
 impl NoiseStage {
     pub(crate) fn new(stage: Stage) -> NoiseStage {
         NoiseStage { stage, warm: false }
+    }
+}
+
+/// A probed stage as the capture hook's stage (feature `noise-probe`): [`NoiseStage`] over
+/// `sew-noise`'s measuring stage.
+#[cfg(feature = "noise-probe")]
+struct ProbedStage {
+    stage: Box<sew_noise::probe::ProbeStage>,
+    warm: bool,
+}
+
+#[cfg(feature = "noise-probe")]
+impl CaptureStage for ProbedStage {
+    fn process(&mut self, block: &mut [f32; 480]) {
+        if !self.warm {
+            warm_up_thread();
+            self.warm = true;
+        }
+        self.stage.process(block);
+    }
+
+    fn latency_samples(&self) -> usize {
+        Stage::LATENCY
+    }
+
+    fn reset(&mut self) {
+        // Warms the calling thread up too.
+        self.stage.reset();
+        self.warm = true;
     }
 }
 
@@ -242,6 +272,22 @@ fn with_timing(
         state.capture_stage_starved = p.starved;
         state.capture_stage_dsp_scheduling = p.dsp_scheduling;
     }
+    if let Some(d) = audio.and_then(|a| a.dsp_sched())
+        // A platform without these calls says nothing unless a mode was asked for.
+        && (d.effective != CaptureDspSchedMode::Unsupported
+            || d.requested != CaptureDspSchedMode::Workgroup)
+    {
+        state.capture_stage_dsp_sched_requested = Some(d.requested);
+        state.capture_stage_dsp_sched_effective = Some(d.effective);
+        state.capture_stage_dsp_sched_fallback = d.fallback;
+        if let Some((period, computation, constraint)) = d.time_constraint_us {
+            state.capture_stage_dsp_period_us = Some(period);
+            state.capture_stage_dsp_computation_us = Some(computation);
+            state.capture_stage_dsp_constraint_us = Some(constraint);
+        }
+        state.capture_stage_dsp_interval_deadline_us = d.interval_deadline_us;
+        state.capture_stage_dsp_intervals = d.intervals;
+    }
     state
 }
 
@@ -363,6 +409,10 @@ pub(crate) trait LiveAudio: Send + Sync {
     fn pipeline_stage(&self) -> Option<hook::PipelineStage> {
         None
     }
+    /// The processing thread's scheduling request and what came of it (`None`: not reported).
+    fn dsp_sched(&self) -> Option<hook::DspSchedState> {
+        None
+    }
     /// A busy moment of the device: the pipeline opens (or extends) its grace window for the
     /// stage (never blocks).
     fn transient(&self, event: CaptureTransient) {
@@ -377,6 +427,10 @@ impl LiveAudio for AudioEngine {
 
     fn pipeline_stage(&self) -> Option<hook::PipelineStage> {
         hook::pipeline_stage(self)
+    }
+
+    fn dsp_sched(&self) -> Option<hook::DspSchedState> {
+        hook::dsp_sched(self)
     }
 
     fn transient(&self, event: CaptureTransient) {
@@ -441,6 +495,12 @@ struct Inner {
     events: broadcast::Sender<NoiseRemovalState>,
     #[cfg(feature = "dfn3")]
     dfn3: Mutex<Dfn3State>,
+    /// The probe: armed for the next call, and the last probed call.
+    #[cfg(feature = "noise-probe")]
+    probe: Mutex<super::probe::Slot>,
+    /// What the processing thread asks the OS for, from the next call's start (`None`: the
+    /// pipeline's default).
+    dsp_sched: Mutex<Option<CaptureDspSched>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -500,6 +560,9 @@ impl NoiseRemovalControl {
                 events,
                 #[cfg(feature = "dfn3")]
                 dfn3: Mutex::new(Dfn3State::default()),
+                #[cfg(feature = "noise-probe")]
+                probe: Mutex::new(super::probe::Slot::default()),
+                dsp_sched: Mutex::new(None),
             }),
         }
     }
@@ -1235,21 +1298,69 @@ impl NoiseRemovalControl {
         }
     }
 
+    /// Sets what the audio pipeline's processing thread (the thread the noise removal stage
+    /// runs on) asks the OS for, in every call whose audio starts after this: the scheduling
+    /// mode, the time-constraint policy's figures and, for
+    /// [`CaptureDspSchedMode::OwnWorkgroup`], each block's deadline. `None` goes back to the
+    /// pipeline's default ([`CaptureDspSchedMode::Workgroup`]). The pipeline reads it once, as
+    /// a call's audio starts: a call under way keeps what it started with. Only macOS and iOS
+    /// act on it. Figures the pipeline would refuse are refused here, and nothing changes.
+    ///
+    /// What a call asked for and what it got are in its state:
+    /// `capture_stage_dsp_sched_requested`, `capture_stage_dsp_sched_effective`,
+    /// `capture_stage_dsp_sched_fallback` and the figures ([`NoiseRemovalState`]).
+    /// [`Self::dsp_sched_supported`] says whether this build's audio pipeline takes the
+    /// setting at all; where it does not, the setting is kept and has no effect.
+    pub fn set_dsp_sched(
+        &self,
+        sched: Option<CaptureDspSched>,
+    ) -> Result<(), CaptureDspSchedError> {
+        if let Some(s) = &sched {
+            s.validate()?;
+        }
+        *lock(&self.inner.dsp_sched) = sched;
+        Ok(())
+    }
+
+    /// The scheduling set with [`Self::set_dsp_sched`] (`None`: the pipeline's default).
+    pub fn dsp_sched(&self) -> Option<CaptureDspSched> {
+        *lock(&self.inner.dsp_sched)
+    }
+
+    /// Whether this build's audio pipeline takes [`Self::set_dsp_sched`]'s setting.
+    pub const fn dsp_sched_supported() -> bool {
+        hook::DSP_SCHED
+    }
+
     /// A call's audio is about to start with `cfg`: builds its stage in the current mode and
     /// hands it to kessel-audio, whose own noise suppression is then off. On a phone without
     /// DeepFilterNet3 loaded, or with a kessel-audio without the hook, `cfg` is unchanged and
     /// the state says `unavailable`.
     /// Answers the config and the call's id for [`Self::attach`] and [`Self::detach`].
     pub(crate) fn configure(&self, mut cfg: EngineConfig) -> (EngineConfig, u64) {
+        // The scheduling the host asked for: the pipeline reads it once, as it starts.
+        if let Some(sched) = self.dsp_sched() {
+            hook::apply_dsp_sched(&mut cfg, sched);
+        }
         // Built (and, with DeepFilterNet3, warmed up) before the live lock is taken.
         let built = self.stage_runs().then(|| self.build_stage());
+        #[cfg(feature = "noise-probe")]
+        let mut probe_handle = None;
         let mut live = lock(&self.inner.live);
         let stage = if let Some(stage) = built {
             let ctl = stage.control();
             // A mode set while the stage was being built.
             let _ = ctl.set_mode(stage_mode(self.mode(), ctl.strong_available()));
-            if hook::install(&mut cfg.processing, Box::new(NoiseStage::new(stage))) {
+            #[cfg(feature = "noise-probe")]
+            let (boxed, probed) = self.probed(stage);
+            #[cfg(not(feature = "noise-probe"))]
+            let boxed: Box<dyn CaptureStage> = Box::new(NoiseStage::new(stage));
+            if hook::install(&mut cfg.processing, boxed) {
                 cfg.processing.noise_suppression = None;
+                #[cfg(feature = "noise-probe")]
+                {
+                    probe_handle = probed;
+                }
                 Some(ctl)
             } else {
                 None
@@ -1276,6 +1387,10 @@ impl NoiseRemovalControl {
         let lacks_model = stage.as_ref().is_some_and(|s| !s.strong_available());
         let id = self.go_live(&mut live, stage, phone);
         drop(live);
+        #[cfg(feature = "noise-probe")]
+        if let Some(handle) = probe_handle {
+            self.probe_slot().started(id, handle);
+        }
         #[cfg(feature = "dfn3")]
         {
             self.dfn3_call_starts();
@@ -1319,8 +1434,39 @@ impl NoiseRemovalControl {
         self.switch_phone(&mut live);
     }
 
+    /// The probe's slot (feature `noise-probe`). Never held across a call into the live
+    /// call's lock.
+    #[cfg(feature = "noise-probe")]
+    pub(super) fn probe_slot(&self) -> MutexGuard<'_, super::probe::Slot> {
+        lock(&self.inner.probe)
+    }
+
+    /// `stage` as the hook's stage: probed when the control is armed (once), with the handle
+    /// on its records. Building a probed stage allocates its loops' data.
+    #[cfg(feature = "noise-probe")]
+    fn probed(
+        &self,
+        stage: Stage,
+    ) -> (Box<dyn CaptureStage>, Option<sew_noise::probe::ProbeHandle>) {
+        let armed = self.probe_slot().take_armed();
+        match armed {
+            Some(core) => {
+                let stage = Box::new(sew_noise::probe::ProbeStage::new(stage, core));
+                let handle = stage.handle();
+                (Box::new(ProbedStage { stage, warm: false }), Some(handle))
+            }
+            None => (Box::new(NoiseStage::new(stage)), None),
+        }
+    }
+
     /// The call `id`'s audio ended (or never started).
     pub(crate) fn detach(&self, id: u64) {
+        // A probed call's last state, read while its pipeline is still there.
+        #[cfg(feature = "noise-probe")]
+        if self.probe_slot().runs(id) {
+            let state = self.state();
+            self.probe_slot().ended(id, state);
+        }
         let mut live = lock(&self.inner.live);
         if live.as_ref().is_some_and(|l| l.id == id) {
             *live = None;
@@ -2801,5 +2947,353 @@ mod dfn3_tests {
         assert_eq!(json["step_down_reason"], "slow_block");
         assert_eq!(json["last_step_down_ms_ago"], 900);
         control.detach(id);
+    }
+}
+
+#[cfg(test)]
+mod dsp_sched_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::tests::{null_cfg, wait_for};
+    use super::*;
+    use crate::noise::CaptureDspSchedFallback;
+
+    /// The setting is checked when set, kept across calls, and cleared with `None`.
+    #[test]
+    fn the_setting_is_checked_and_kept() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        assert_eq!(control.dsp_sched(), None);
+        let own = CaptureDspSched::new(CaptureDspSchedMode::OwnWorkgroup)
+            .with_time_constraint_us(10_000, 3_000, 5_000)
+            .with_interval_deadline_us(4_000);
+        assert_eq!(control.set_dsp_sched(Some(own)), Ok(()));
+        assert_eq!(control.dsp_sched(), Some(own));
+        // Refused figures change nothing.
+        for (bad, why) in [
+            (
+                CaptureDspSched::new(CaptureDspSchedMode::Unsupported),
+                CaptureDspSchedError::ModeNotAskable,
+            ),
+            (
+                own.with_time_constraint_us(10_000, 0, 5_000),
+                CaptureDspSchedError::TimeConstraint,
+            ),
+            (
+                own.with_time_constraint_us(10_000, 6_000, 5_000),
+                CaptureDspSchedError::TimeConstraint,
+            ),
+            (
+                own.with_time_constraint_us(10_000, 3_000, 11_000),
+                CaptureDspSchedError::TimeConstraint,
+            ),
+            (
+                own.with_time_constraint_us(2_000_000, 3_000, 5_000),
+                CaptureDspSchedError::TimeConstraint,
+            ),
+            (
+                own.with_interval_deadline_us(0),
+                CaptureDspSchedError::IntervalDeadline,
+            ),
+            (
+                own.with_interval_deadline_us(10_001),
+                CaptureDspSchedError::IntervalDeadline,
+            ),
+        ] {
+            assert_eq!(control.set_dsp_sched(Some(bad)), Err(why), "{bad:?}");
+            assert_eq!(control.dsp_sched(), Some(own));
+        }
+        assert_eq!(control.set_dsp_sched(None), Ok(()));
+        assert_eq!(control.dsp_sched(), None);
+        assert_eq!(CaptureDspSched::default().validate(), Ok(()));
+    }
+
+    /// A call started with a setting runs: the stage is in the hook and processes blocks,
+    /// whatever this platform does with the request.
+    #[test]
+    fn a_call_starts_with_each_mode() {
+        for mode in [
+            CaptureDspSchedMode::Workgroup,
+            CaptureDspSchedMode::TimeConstraintOnly,
+            CaptureDspSchedMode::None,
+            CaptureDspSchedMode::OwnWorkgroup,
+        ] {
+            let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+            control
+                .set_dsp_sched(Some(CaptureDspSched::new(mode)))
+                .unwrap();
+            let (cfg, id) = control.configure(null_cfg());
+            let engine = Arc::new(AudioEngine::start(cfg).unwrap());
+            let weak: Weak<AudioEngine> = Arc::downgrade(&engine);
+            control.attach(id, weak);
+            wait_for("the stage has run 20 blocks", || {
+                engine
+                    .stats()
+                    .capture_stage
+                    .is_some_and(|s| s.blocks_processed >= 20)
+            });
+            let seen = hook::dsp_sched(&engine);
+            if hook::DSP_SCHED {
+                let seen = seen.unwrap();
+                assert_eq!(seen.requested, mode, "the pipeline took the request");
+            } else {
+                assert_eq!(seen, None);
+            }
+            engine.shutdown();
+            control.detach(id);
+        }
+    }
+
+    struct Sched(hook::DspSchedState);
+
+    impl LiveAudio for Sched {
+        fn bypass(&self) -> Option<Bypass> {
+            None
+        }
+        fn dsp_sched(&self) -> Option<hook::DspSchedState> {
+            Some(self.0)
+        }
+    }
+
+    fn timed(d: hook::DspSchedState) -> NoiseRemovalState {
+        let stage = Stage::new();
+        let audio: Arc<dyn LiveAudio> = Arc::new(Sched(d));
+        with_timing(
+            NoiseRemovalState::running(NoiseRemoval::Standard),
+            &stage.control(),
+            Some(&audio),
+        )
+    }
+
+    /// What the pipeline reports of the request lands in the state and its JSON; a platform
+    /// without the calls says nothing unless a mode was asked for; the fields ride along and
+    /// make no change of state by themselves.
+    #[test]
+    fn the_state_carries_the_request_and_its_outcome() {
+        let fell_back = hook::DspSchedState {
+            requested: CaptureDspSchedMode::OwnWorkgroup,
+            effective: CaptureDspSchedMode::Workgroup,
+            fallback: Some(CaptureDspSchedFallback::OwnWorkgroupJoinRefused),
+            time_constraint_us: Some((10_000, 3_000, 5_000)),
+            interval_deadline_us: Some(4_000),
+            intervals: 17,
+        };
+        let s = timed(fell_back);
+        let json = serde_json::to_value(s).unwrap();
+        assert_eq!(json["capture_stage_dsp_sched_requested"], "own_workgroup");
+        assert_eq!(json["capture_stage_dsp_sched_effective"], "workgroup");
+        assert_eq!(
+            json["capture_stage_dsp_sched_fallback"],
+            "own_workgroup_join_refused"
+        );
+        assert_eq!(json["capture_stage_dsp_period_us"], 10_000);
+        assert_eq!(json["capture_stage_dsp_computation_us"], 3_000);
+        assert_eq!(json["capture_stage_dsp_constraint_us"], 5_000);
+        assert_eq!(json["capture_stage_dsp_interval_deadline_us"], 4_000);
+        assert_eq!(json["capture_stage_dsp_intervals"], 17);
+        assert_eq!(
+            serde_json::from_value::<NoiseRemovalState>(json).unwrap(),
+            s
+        );
+        assert_eq!(
+            s.change_key(),
+            NoiseRemovalState::running(NoiseRemoval::Standard).change_key()
+        );
+
+        let none = hook::DspSchedState {
+            requested: CaptureDspSchedMode::None,
+            effective: CaptureDspSchedMode::None,
+            fallback: None,
+            time_constraint_us: None,
+            interval_deadline_us: None,
+            intervals: 0,
+        };
+        let json = serde_json::to_value(timed(none)).unwrap();
+        assert_eq!(json["capture_stage_dsp_sched_effective"], "none");
+        assert!(json.get("capture_stage_dsp_period_us").is_none());
+        assert!(json.get("capture_stage_dsp_intervals").is_none());
+
+        let unsupported = |requested| hook::DspSchedState {
+            requested,
+            effective: CaptureDspSchedMode::Unsupported,
+            ..none
+        };
+        let quiet = serde_json::to_value(timed(unsupported(CaptureDspSchedMode::Workgroup)));
+        assert!(
+            quiet
+                .unwrap()
+                .get("capture_stage_dsp_sched_effective")
+                .is_none(),
+            "nothing asked for, nothing to say"
+        );
+        let asked = serde_json::to_value(timed(unsupported(CaptureDspSchedMode::OwnWorkgroup)));
+        let asked = asked.unwrap();
+        assert_eq!(asked["capture_stage_dsp_sched_requested"], "own_workgroup");
+        assert_eq!(asked["capture_stage_dsp_sched_effective"], "unsupported");
+    }
+}
+
+#[cfg(all(test, feature = "noise-probe"))]
+mod probe_tests {
+    // `set_probe_phase` is kept, deprecated: its behaviour is still checked.
+    #![allow(clippy::unwrap_used, clippy::expect_used, deprecated)]
+    use super::super::probe::{NoiseProbeError, NoiseProbePhase, SCHEMA, reference};
+    use super::tests::{null_cfg, wait_for};
+    use super::*;
+
+    fn call(control: &NoiseRemovalControl) -> (Arc<AudioEngine>, u64) {
+        let (cfg, id) = control.configure(null_cfg());
+        let engine = Arc::new(AudioEngine::start(cfg).unwrap());
+        let weak: Weak<AudioEngine> = Arc::downgrade(&engine);
+        control.attach(id, weak);
+        (engine, id)
+    }
+
+    fn blocks(engine: &AudioEngine) -> u64 {
+        engine
+            .stats()
+            .capture_stage
+            .map_or(0, |s| s.blocks_processed)
+    }
+
+    /// An armed control probes the next call and only that one; the report is there during
+    /// the call and after it, with the state as the call ended.
+    #[test]
+    fn an_armed_call_is_probed_once() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        assert!(control.probe_report().is_none());
+        assert_eq!(
+            control.set_probe_phase(NoiseProbePhase::Default, None),
+            Err(NoiseProbeError::NotProbing)
+        );
+        control.arm_probe(Some(|| Some(5)));
+        assert!(control.probe_armed());
+        assert!(control.probe_report().is_none(), "armed is not probed");
+
+        let (engine, id) = call(&control);
+        assert!(!control.probe_armed(), "the arming is used up");
+        assert_eq!(control.probe_phase(), Some(NoiseProbePhase::Default));
+        // Past the first memory loop (block 500) and the block after it.
+        wait_for("the probed stage has run 520 blocks", || {
+            blocks(&engine) >= 520
+        });
+        let st = engine.stats().capture_stage.unwrap();
+        assert!(st.active, "the probed stage runs in the hook: {st:?}");
+        assert_eq!(st.latency_samples, 480);
+        let live = control.probe_report().expect("a probed call runs");
+        assert_eq!(live.schema, SCHEMA);
+        assert!(!live.call_ended);
+        assert!(live.blocks >= 500 && live.dropped == 0);
+        assert_eq!(live.phases.len(), 1);
+        let a = &live.phases[0];
+        assert_eq!((a.phase, a.letter), (NoiseProbePhase::Default, "a"));
+        assert_eq!(a.deadline_us, None);
+        assert!(a.stage_wall.n > 0 && a.stage_wall.p50_ns > 0);
+        assert!(a.k1_wall.n >= 40, "the cache loop ran: {:?}", a.k1_wall);
+        assert!(a.k2_wall.n >= 1, "the memory loop ran: {:?}", a.k2_wall);
+        assert!(a.left_out >= 1);
+        assert_eq!(a.cores.len(), 1);
+        assert_eq!(a.cores[0].core, 5, "the app's core function is used");
+        assert_eq!(a.core_unknown, 0);
+        assert_eq!(a.model_blocks, 0, "no DeepFilterNet3 weights here");
+        assert_eq!(a.state.map(|s| s.mode), Some(NoiseRemoval::Standard));
+        assert_eq!(live.first_blocks.len(), 200);
+        assert_eq!(live.first_blocks[0].phase, Some("a"));
+        // The same phase again is no change; the others are not in this build.
+        assert_eq!(
+            control.set_probe_phase(NoiseProbePhase::Default, None),
+            Ok(())
+        );
+        for phase in [
+            NoiseProbePhase::TimeConstraint,
+            NoiseProbePhase::Unscheduled,
+            NoiseProbePhase::ShortDeadline,
+        ] {
+            assert_eq!(phase.available(), hook::DSP_SCHED);
+            if !hook::DSP_SCHED {
+                assert_eq!(
+                    control.set_probe_phase(phase, Some(Duration::from_millis(3))),
+                    Err(NoiseProbeError::PhaseUnavailable(phase))
+                );
+            }
+        }
+        // Each phase's setting is one the control takes, and names the phase back.
+        for phase in NoiseProbePhase::ALL {
+            let sched = phase.sched();
+            assert_eq!(sched.validate(), Ok(()));
+            assert_eq!(NoiseProbePhase::of_mode(sched.mode), phase);
+        }
+        assert_eq!(
+            NoiseProbePhase::of_mode(CaptureDspSchedMode::Unsupported),
+            NoiseProbePhase::Default
+        );
+
+        engine.shutdown();
+        control.detach(id);
+        assert_eq!(control.probe_phase(), None);
+        assert_eq!(
+            control.set_probe_phase(NoiseProbePhase::Default, None),
+            Err(NoiseProbeError::NotProbing)
+        );
+        let done = control
+            .probe_report()
+            .expect("the report outlives the call");
+        assert!(done.call_ended);
+        assert!(done.blocks >= live.blocks);
+        assert_eq!(done.phases.len(), 1);
+        assert!(
+            done.phases[0].state.is_some(),
+            "the state as the call ended"
+        );
+
+        // The JSON an app saves.
+        let json = serde_json::to_value(&done).unwrap();
+        assert_eq!(json["schema"], "sew-noise-probe/2");
+        assert_eq!(json["phase"], "default");
+        assert_eq!(json["letter"], "a");
+        assert_eq!(json["phases"][0]["phase"], "default");
+        assert_eq!(json["phases"][0]["letter"], "a");
+        assert_eq!(json["phases"][0]["cores"][0]["core"], 5);
+        assert!(json["phases"][0]["stage_wall"]["p50_ns"].as_u64().unwrap() > 0);
+        assert!(json["phases"][0]["k2_wall"]["p99_ns"].as_u64().unwrap() > 0);
+        assert_eq!(json["loops"]["k1_every_blocks"], 10);
+        assert_eq!(json["loops"]["k2_every_blocks"], 500);
+        assert_eq!(json["first_blocks"][0]["phase"], "a");
+        assert!(json["first_blocks"][0]["wall_ns"].is_u64());
+
+        // The next call is not probed, and the last report stays.
+        let (engine, id) = call(&control);
+        wait_for("the plain stage has run 50 blocks", || {
+            blocks(&engine) >= 50
+        });
+        assert_eq!(control.probe_phase(), None);
+        assert_eq!(control.probe_report().map(|r| r.blocks), Some(done.blocks));
+        engine.shutdown();
+        control.detach(id);
+    }
+
+    /// Disarming before a call leaves the call plain.
+    #[test]
+    fn a_disarmed_call_is_plain() {
+        let control = NoiseRemovalControl::new(NoiseRemoval::Standard);
+        control.arm_probe(None);
+        control.disarm_probe();
+        assert!(!control.probe_armed());
+        let (engine, id) = call(&control);
+        wait_for("the stage has run 20 blocks", || blocks(&engine) >= 20);
+        assert!(control.probe_report().is_none());
+        engine.shutdown();
+        control.detach(id);
+    }
+
+    /// The reference run measures both loops on this thread, with the app's core function.
+    #[test]
+    fn the_reference_run_reports_both_loops() {
+        let r = reference(Some(|| Some(2)));
+        assert_eq!((r.core_start, r.core_end), (Some(2), Some(2)));
+        assert_eq!(r.spin_ms, 300);
+        assert!(r.k1_wall.n > 0 && r.k1_wall.p50_ns > 0);
+        assert!(r.k2_wall.n > 0 && r.k2_wall.p50_ns > 0);
+        let json = serde_json::to_value(r).unwrap();
+        assert_eq!(json["schema"], "sew-noise-probe/2");
+        assert_eq!(json["loops"]["k2_floats"], 8 * 1024 * 1024);
     }
 }

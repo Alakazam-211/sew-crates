@@ -98,7 +98,11 @@ pub use noise::NoiseRemovalControl;
 /// The device bench of the noise removal stage (feature `noise-bench`; debug builds only).
 #[cfg(feature = "noise-bench")]
 pub use noise::bench as noise_bench;
+/// The probe of the noise removal stage (feature `noise-probe`; measurement builds only).
+#[cfg(feature = "noise-probe")]
+pub use noise::probe as noise_probe;
 pub use noise::{
+    CaptureDspSched, CaptureDspSchedError, CaptureDspSchedFallback, CaptureDspSchedMode,
     CaptureDspScheduling, CaptureStageClock, CaptureTransient, NoiseDfn3State, NoiseModel,
     NoiseRemoval, NoiseRemovalReason, NoiseRemovalState, NoiseStepDownReason, PhoneAudioMode,
 };
@@ -137,6 +141,9 @@ pub use video::{
     VideoError, VideoPublication, VideoPublish, VideoSendStats, VideoSender, plan_layers,
     plan_screen_layers,
 };
+/// Raw camera frames for a native self-view (`video-core`): [`VideoCapture::camera_tap`].
+#[cfg(feature = "video-core")]
+pub use video::{CameraFeed, CameraFrame, CameraTap, CameraTapItem, CameraTapSender};
 /// The video bridge: a kessel-video backend's cameras, screens and encoders into a call, with
 /// the in-call self-view.
 #[cfg(feature = "video-core")]

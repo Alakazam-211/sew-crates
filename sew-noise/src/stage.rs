@@ -460,6 +460,13 @@ impl StageControl {
         self.shared.step_down_rules.store(on, Ordering::Relaxed);
     }
 
+    /// Whether the step-down rules are on ([`Self::set_step_down_rules`]).
+    #[cfg(any(test, feature = "probe"))]
+    #[doc(hidden)]
+    pub fn step_down_rules(&self) -> bool {
+        self.shared.step_down_rules.load(Ordering::Relaxed)
+    }
+
     /// The mode last asked for.
     pub fn mode(&self) -> Mode {
         Mode::from_u8(self.shared.mode.load(Ordering::Relaxed))
@@ -609,6 +616,9 @@ pub struct Stage {
     pending_begun: bool,
     /// The first block has begun (the stage's own grace window is open).
     started: bool,
+    /// What the last block ran (the `probe` module's `RAN_*` bits).
+    #[cfg(feature = "probe")]
+    probe_flags: u8,
 }
 
 impl std::fmt::Debug for Stage {
@@ -693,6 +703,8 @@ impl Stage {
             pending_active: Mode::Off,
             pending_begun: false,
             started: false,
+            #[cfg(feature = "probe")]
+            probe_flags: 0,
         }
     }
 
@@ -1016,6 +1028,10 @@ impl Stage {
         }
         *out = self.pending;
         self.shared.active.store(active as u8, Ordering::Relaxed);
+        #[cfg(feature = "probe")]
+        {
+            self.probe_flags = self.flags_of(ran, active);
+        }
         ran
     }
 
@@ -1137,6 +1153,36 @@ impl Stage {
             self.window_over = 0;
             self.window_max_ns = 0;
         }
+    }
+
+    /// What a block ran, as the `probe` module's `RAN_*` bits.
+    #[cfg(feature = "probe")]
+    fn flags_of(&self, ran: bool, active: Mode) -> u8 {
+        use crate::probe::{RAN_MODEL, STRONG_OUT};
+        let mut flags = 0;
+        if ran {
+            flags |= RAN_MODEL;
+        }
+        #[cfg(feature = "dfn3")]
+        if ran && let Some(strong) = self.strong.as_ref() {
+            let (erb, df) = strong.decoders_ran();
+            if erb {
+                flags |= crate::probe::RAN_ERB;
+            }
+            if df {
+                flags |= crate::probe::RAN_DF;
+            }
+        }
+        if active == Mode::Strong {
+            flags |= STRONG_OUT;
+        }
+        flags
+    }
+
+    /// What the last block ran.
+    #[cfg(feature = "probe")]
+    pub(crate) fn probe_flags(&self) -> u8 {
+        self.probe_flags
     }
 
     fn control_ref(&self) -> StageControl {

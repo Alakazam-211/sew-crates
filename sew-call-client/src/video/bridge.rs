@@ -57,6 +57,12 @@
 //! publication (the camera's `h`, else its lowest layer at 360p or more; the screen's `q`,
 //! else its lowest) goes to this device's own view as well. No second encoder; nothing of it
 //! leaves the process.
+//!
+//! **Camera taps** ([`VideoCapture::camera_tap`] on the bridge's capture): the published
+//! camera's raw frames, as captured and before any encoder, with the camera's facing; the
+//! tap's feed is `Paused` while the camera pauses (the background, another app holding it)
+//! and `Off` when the publication ends. While a tap is open the camera keeps capturing even
+//! when no layer is wanted; nothing more is encoded for it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -71,6 +77,7 @@ use kessel_video::{
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
 
+use super::camera_tap::{CameraFeed, CameraTaps};
 use super::capture::{
     Capture, CaptureEnd, CaptureError, CaptureEvent, CaptureKind, CapturePause, VideoCapture,
     map_event,
@@ -928,6 +935,8 @@ struct Taps {
     /// The call ([`Call::local_id`]) whose hardware H.264 encoder was lost: no H.264 again in
     /// it.
     h264_lost: Arc<Mutex<Option<u64>>>,
+    /// The capture's camera taps (a camera publication's raw frames).
+    camera: CameraTaps,
 }
 
 /// A publication's self-view keyframe flag and its pipeline's wake.
@@ -992,6 +1001,7 @@ impl VideoBridge {
     /// A bridge over the app's `capture` (its clones share the camera with the bridge: a
     /// preview opened through one of them hands the camera over to the camera publish).
     pub fn with_capture(capture: VideoCapture) -> VideoBridge {
+        let camera = capture.camera_taps().clone();
         VideoBridge {
             capture,
             camera: tokio::sync::Mutex::new(None),
@@ -1000,6 +1010,7 @@ impl VideoBridge {
                 events: broadcast::channel(EVENT_QUEUE).0,
                 self_view: Arc::new(Mutex::new(None)),
                 h264_lost: Arc::new(Mutex::new(None)),
+                camera,
             },
             self_keys: Mutex::new(HashMap::new()),
         }
@@ -1816,6 +1827,7 @@ impl Pipe {
         self.pump();
         self.ended.store(true, Ordering::SeqCst);
         self.to_self_view(SelfViewItem::Ended { source: self.kind });
+        self.tap_feed(CameraFeed::Off);
     }
 
     fn pump(&mut self) {
@@ -1893,7 +1905,7 @@ impl Pipe {
             }
             self.machine_events();
             let self_view = self.self_view_open();
-            self.repause(self_view);
+            self.repause(self_view || self.tapped());
             if self.self_key.swap(false, Ordering::AcqRel)
                 && let Some(e) = self.self_rid.as_ref().and_then(|r| self.encs.get_mut(r))
             {
@@ -1911,12 +1923,14 @@ impl Pipe {
                         source: self.kind,
                         event: CaptureEvent::Resumed,
                     });
+                    self.to_taps(&frame);
                     self.submit(&frame, self_view);
                 }
             } else if !self.hidden
                 && !self.scene_paused
                 && let Some(frame) = self.latest()
             {
+                self.to_taps(&frame);
                 self.submit(&frame, self_view);
             }
             self.held.store(self.background_held(), Ordering::SeqCst);
@@ -1933,6 +1947,7 @@ impl Pipe {
             match &ev {
                 CaptureEvent::Paused(why) => {
                     tracing::info!(target: "sew_call_client", source = ?self.kind, ?why, "the video source paused");
+                    self.tap_feed(CameraFeed::Paused);
                     self.hidden = true;
                     self.hidden_why = Some(*why);
                     if *why == CapturePause::Background {
@@ -1969,6 +1984,32 @@ impl Pipe {
         lock(&self.taps.self_view)
             .as_ref()
             .is_some_and(|tx| !tx.is_closed())
+    }
+
+    /// A camera publication with a camera tap open (its source keeps capturing).
+    fn tapped(&self) -> bool {
+        self.kind == VideoSource::Camera && self.taps.camera.any()
+    }
+
+    /// A camera publication's captured frame to the camera taps, with the facing of the camera
+    /// that captured it. Never blocks.
+    fn to_taps(&self, frame: &kessel_video::VideoFrame) {
+        if self.kind != VideoSource::Camera {
+            return;
+        }
+        let facing = if frame.capture_us >= self.facing_since_us {
+            self.facing
+        } else {
+            self.was_facing
+        };
+        self.taps.camera.frame(frame, facing);
+    }
+
+    /// A camera publication's feed to the camera taps.
+    fn tap_feed(&self, feed: CameraFeed) {
+        if self.kind == VideoSource::Camera {
+            self.taps.camera.feed(feed);
+        }
     }
 
     fn to_self_view(&self, item: SelfViewItem) {
@@ -2069,6 +2110,7 @@ impl Pipe {
         self.scene_paused = paused;
         if paused {
             tracing::info!(target: "sew_call_client", "the camera pauses (background)");
+            self.tap_feed(CameraFeed::Paused);
         } else {
             tracing::info!(target: "sew_call_client", "the camera resumes with a keyframe");
             self.fresh_since_us = self.fresh_since_us.max(self.backend.now_us());
@@ -2081,7 +2123,7 @@ impl Pipe {
             }
         }
         let self_view = self.self_view_open();
-        self.repause(self_view);
+        self.repause(self_view || self.tapped());
     }
 
     /// A republish's layers: existing encoders resized, new ones opened, gone ones closed.
@@ -2985,6 +3027,7 @@ mod tests {
                 events: broadcast::channel(EVENT_QUEUE).0,
                 self_view: Arc::new(Mutex::new(None)),
                 h264_lost: Arc::new(Mutex::new(None)),
+                camera: CameraTaps::default(),
             },
             stop: stop.clone(),
             ended: Arc::new(AtomicBool::new(false)),
@@ -3086,6 +3129,7 @@ mod tests {
                 events: broadcast::channel(EVENT_QUEUE).0,
                 self_view: Arc::new(Mutex::new(None)),
                 h264_lost: Arc::new(Mutex::new(None)),
+                camera: CameraTaps::default(),
             },
             stop: Arc::new(AtomicBool::new(false)),
             ended: Arc::new(AtomicBool::new(false)),
@@ -3151,6 +3195,8 @@ mod tests {
         converts: Arc<std::sync::atomic::AtomicU64>,
         /// The pipeline's `held` word.
         held: Arc<AtomicBool>,
+        /// The pipeline's camera taps.
+        camera_taps: CameraTaps,
     }
 
     impl TestPipe {
@@ -3210,6 +3256,7 @@ mod tests {
             let notes = events.subscribe();
             let stop = Arc::new(AtomicBool::new(false));
             let held = Arc::new(AtomicBool::new(false));
+            let camera_taps = CameraTaps::default();
             let (to_pipe, from_bridge) = std::sync::mpsc::channel();
             let mut pipe = Pipe {
                 backend: backend.clone(),
@@ -3229,6 +3276,7 @@ mod tests {
                     events,
                     self_view: Arc::new(Mutex::new(None)),
                     h264_lost: h264_lost.clone(),
+                    camera: camera_taps.clone(),
                 },
                 stop: stop.clone(),
                 ended: Arc::new(AtomicBool::new(false)),
@@ -3266,6 +3314,7 @@ mod tests {
                 h264_lost,
                 converts,
                 held,
+                camera_taps,
             }
         }
 
@@ -4356,6 +4405,128 @@ mod tests {
         );
         assert_eq!(encs.len(), 1);
         assert_eq!(encs[0].spec.rid, "q");
+    }
+
+    /// The next camera tap item within 10 s (a loud failure naming `what` otherwise).
+    fn tap_item(tap: &super::super::CameraTap, what: &str) -> super::super::CameraTapItem {
+        tap.recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|| panic!("timed out waiting for {what}"))
+    }
+
+    /// Takes tap items until `n` frames came (within 10 s each): their facings, and every
+    /// feed seen.
+    fn tap_frames(
+        tap: &super::super::CameraTap,
+        what: &str,
+        n: usize,
+    ) -> (Vec<Facing>, Vec<CameraFeed>) {
+        let mut facings = Vec::new();
+        let mut feeds = Vec::new();
+        while facings.len() < n {
+            match tap_item(tap, what) {
+                super::super::CameraTapItem::Frame(f) => {
+                    assert_eq!(f.rotation, 0, "frames come upright");
+                    facings.push(f.facing);
+                }
+                super::super::CameraTapItem::Feed(f) => feeds.push(f),
+            }
+        }
+        (facings, feeds)
+    }
+
+    /// Only feed changes come on the tap for a while: those.
+    fn tap_quiet(tap: &super::super::CameraTap, what: &str) -> Vec<CameraFeed> {
+        let until = std::time::Instant::now() + Duration::from_millis(400);
+        let mut feeds = Vec::new();
+        while let Some(item) =
+            tap.recv_timeout(until.saturating_duration_since(std::time::Instant::now()))
+        {
+            match item {
+                super::super::CameraTapItem::Feed(f) => feeds.push(f),
+                super::super::CameraTapItem::Frame(_) => panic!("{what}: a frame came"),
+            }
+        }
+        feeds
+    }
+
+    /// A camera tap on a published camera: the raw frames with the camera's facing (a switch
+    /// lands on the new camera's frames), `Paused` and no frame through a background pause,
+    /// `Live` again after it; with no layer wanted the camera keeps capturing for the tap and
+    /// nothing is encoded; a closed tap leaves the encoder running; the publication's end is
+    /// `Off`.
+    #[test]
+    fn a_camera_tap_gets_the_published_cameras_raw_frames_and_its_feed() {
+        let backend: Arc<dyn VideoBackend> = HwFake::new(kessel_video::fake::FakeConfig::default());
+        let bell = Arc::new(Bell::default());
+        let src = fake_camera(&backend, &bell);
+        let mut p = TestPipe::start(&backend, src, &bell);
+        let _ = collect_until(&mut p.rx, "the first frames", 3);
+        let tap = p.camera_taps.open();
+        assert!(matches!(
+            tap_item(&tap, "the feed"),
+            super::super::CameraTapItem::Feed(CameraFeed::Live)
+        ));
+        let (facings, _) = tap_frames(&tap, "the front camera's frames", 3);
+        assert!(facings.iter().all(|f| *f == Facing::Front), "{facings:?}");
+
+        // The background: Paused, and no frame until the return (a frame taken before the
+        // pause may still be waiting: it is dropped with the pause).
+        p.send(ToPipe::Pause(true));
+        std::thread::sleep(Duration::from_millis(100));
+        let mut feeds = Vec::new();
+        while let Some(item) = tap.try_recv() {
+            if let super::super::CameraTapItem::Feed(f) = item {
+                feeds.push(f);
+            }
+        }
+        feeds.extend(tap_quiet(&tap, "paused"));
+        assert_eq!(feeds, vec![CameraFeed::Paused]);
+        p.send(ToPipe::Pause(false));
+        let (_, feeds) = tap_frames(&tap, "frames after the return", 2);
+        assert_eq!(feeds, vec![CameraFeed::Live]);
+
+        // A switch to the back camera: its frames say so.
+        let (tx, done) = std::sync::mpsc::channel();
+        p.send(ToPipe::Release(tx));
+        done.recv_timeout(Duration::from_secs(5)).expect("released");
+        let next = fake_camera(&backend, &bell);
+        p.send(ToPipe::Source(
+            next,
+            vec![LayerSpec::new("q", 320, 180, 150, 30)],
+            Facing::Back,
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "no back camera frame");
+            let (f, _) = tap_frames(&tap, "the back camera's frames", 1);
+            if f[0] == Facing::Back {
+                break;
+            }
+        }
+
+        // No layer wanted: the tap keeps the camera capturing; nothing is encoded.
+        p.control(VideoControl::Rates(vec![rate("q", false)]));
+        p.assert_quiet("no layer wanted: nothing encoded");
+        let _ = tap_frames(&tap, "frames for the tap alone", 3);
+
+        // The tap closes; wanted again, the encoder runs on.
+        drop(tap);
+        p.control(VideoControl::Rates(vec![rate("q", true)]));
+        let _ = collect_until(&mut p.rx, "frames after the tap closed", 3);
+
+        // The publication ends: Off.
+        let last = p.camera_taps.open();
+        let taps = p.camera_taps.clone();
+        p.finish();
+        let mut feeds = Vec::new();
+        while let Some(item) = last.try_recv() {
+            if let super::super::CameraTapItem::Feed(f) = item {
+                feeds.push(f);
+            }
+        }
+        assert_eq!(feeds.last(), Some(&CameraFeed::Off), "{feeds:?}");
+        drop(last);
+        assert!(!taps.any());
     }
 
     #[test]

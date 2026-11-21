@@ -83,6 +83,8 @@ pub mod kessel;
 pub mod listener;
 #[cfg(feature = "video-core")]
 pub mod native;
+#[cfg(feature = "noise-probe")]
+mod probe;
 #[cfg(feature = "audio-core")]
 pub mod real;
 mod rights;
@@ -131,6 +133,18 @@ pub use sew_call_client::device::{
 /// The hardware device key (`Builder::hardware_device_key`: Secure Enclave, StrongBox/TEE) and
 /// the enrolment platform (`Builder::device_platform`), re-exported.
 pub use sew_call_client::device::{DevicePlatform, HardwareDeviceKey};
+/// A probed call's phase, by how the audio pipeline's processing thread is scheduled in it
+/// (feature `noise-probe`; measurement builds only).
+#[cfg(feature = "noise-probe")]
+pub use sew_call_client::noise_probe::NoiseProbePhase;
+/// What the audio pipeline's processing thread asks the OS for
+/// ([`VoiceControl::set_dsp_sched`]): the setting, its mode, why a setting is refused, and why
+/// a call's thread fell back to the default mode (sew-call-client's types, under the plugin's
+/// names).
+pub use sew_call_client::{
+    CaptureDspSched as DspSched, CaptureDspSchedError as DspSchedError,
+    CaptureDspSchedFallback as DspSchedFallback, CaptureDspSchedMode as DspSchedMode,
+};
 /// The consent notice in the Sew App kit's words (`ConsentPrompt::title_en`, `text_en`,
 /// `choices_en`), from `sew-proto`.
 pub use sew_proto::recording::{ConsentAsk, ConsentChoice};

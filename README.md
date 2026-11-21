@@ -61,15 +61,15 @@ that signs in to Sew with your app's own session, and a call through it.
 
 | Crate | Version | Licence |
 |---|---|---|
-| `sew-proto` | 0.11.2 | MIT OR Apache-2.0 |
-| `sew-lkproto` | 0.11.2 | Apache-2.0 |
-| `sew-mls-crypto` | 0.11.2 | MIT OR Apache-2.0 |
-| `sew-e2ee` | 0.11.2 | MIT OR Apache-2.0 |
-| `sew-lk-compat` | 0.11.2 | Apache-2.0 |
-| `sew-noise` | 0.11.2 | MIT OR Apache-2.0 |
-| `sew-call-client` | 0.9.2 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-voice` | 0.9.2 | MIT OR Apache-2.0 |
-| `tauri-plugin-sew-app` | 0.6.2 | MIT OR Apache-2.0 |
+| `sew-proto` | 0.11.3 | MIT OR Apache-2.0 |
+| `sew-lkproto` | 0.11.3 | Apache-2.0 |
+| `sew-mls-crypto` | 0.11.3 | MIT OR Apache-2.0 |
+| `sew-e2ee` | 0.11.3 | MIT OR Apache-2.0 |
+| `sew-lk-compat` | 0.11.3 | Apache-2.0 |
+| `sew-noise` | 0.11.3 | MIT OR Apache-2.0 |
+| `sew-call-client` | 0.9.3 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-voice` | 0.9.3 | MIT OR Apache-2.0 |
+| `tauri-plugin-sew-app` | 0.6.3 | MIT OR Apache-2.0 |
 
 Sew's own crates are `MIT OR Apache-2.0`, at your option. `sew-lk-compat` and `sew-lkproto`
 are `Apache-2.0` only, because they hold code ported from or generated from LiveKit, which is

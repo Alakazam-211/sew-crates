@@ -351,6 +351,74 @@ impl VoiceControl {
         self.service.noise_bench(duration).await
     }
 
+    /// Sets what the audio pipeline's processing thread (the thread noise removal runs on)
+    /// asks the OS for, in every call that starts after this: the scheduling mode
+    /// ([`crate::DspSchedMode`]), the time-constraint policy's figures and, for
+    /// [`crate::DspSchedMode::OwnWorkgroup`], each block's deadline. `None` goes back to the
+    /// pipeline's default. The pipeline reads it once as a call's audio starts, so a call
+    /// under way keeps what it started with. Only macOS and iOS act on it. Figures the
+    /// pipeline would refuse answer `invalid_args` and nothing changes. What a call asked for
+    /// and what it got are in its `noise_removal` state (`capture_stage_dsp_sched_requested`,
+    /// `capture_stage_dsp_sched_effective`, `capture_stage_dsp_sched_fallback` and the
+    /// figures). The engine keeps the setting until the process ends.
+    pub fn set_dsp_sched(&self, sched: Option<crate::DspSched>) -> Result<(), ErrorInfo> {
+        self.service.set_dsp_sched(sched)
+    }
+
+    /// The scheduling set with [`VoiceControl::set_dsp_sched`] (`None`: the default).
+    pub fn dsp_sched(&self) -> Option<crate::DspSched> {
+        self.service.dsp_sched()
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`, never in a release build): the next call's noise
+    /// removal stage is probed, once. A probed call records what each 10 ms block cost on the
+    /// audio pipeline's processing thread, which core the thread was on and what DeepFilterNet3
+    /// ran, beside two fixed loops on the same thread; DeepFilterNet3 keeps running however
+    /// slow a block is, and the call's audio can glitch. Not a plugin command: an app wraps it
+    /// in a command of its own.
+    #[cfg(feature = "noise-probe")]
+    pub fn arm_noise_probe(&self) -> Result<(), ErrorInfo> {
+        self.service.arm_noise_probe()
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`): labels the probed call's blocks from now on
+    /// as `phase`. It does not change the scheduling: a call is one phase, set before the call
+    /// with [`VoiceControl::set_dsp_sched`] ([`crate::NoiseProbePhase::sched`] gives each
+    /// phase's setting), and the report names the phase from the mode in effect.
+    #[cfg(feature = "noise-probe")]
+    #[deprecated(
+        note = "a call is one phase: set the scheduling before the call with set_dsp_sched; the report names the phase from the mode in effect"
+    )]
+    pub fn set_noise_probe_phase(
+        &self,
+        phase: crate::NoiseProbePhase,
+        deadline: Option<std::time::Duration>,
+    ) -> Result<(), ErrorInfo> {
+        #[allow(deprecated)]
+        let labelled = self.service.set_noise_probe_phase(phase, deadline);
+        labelled
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`): the last probed call's figures as JSON
+    /// (sew-call-client's `noise_probe::NoiseProbeReport`, schema `sew-noise-probe/2`), during
+    /// the call or after it; `None` when no call was probed. Collect it after the call ended
+    /// for the whole call.
+    #[cfg(feature = "noise-probe")]
+    pub async fn noise_probe_report(&self) -> Result<Option<serde_json::Value>, ErrorInfo> {
+        self.service.noise_probe_report().await
+    }
+
+    /// MEASUREMENT ONLY (feature `noise-probe`): the probe's two loops on a thread of their
+    /// own (on macOS and iOS, asking for the user-interactive QoS class), after a spin of
+    /// 300 ms, as JSON (sew-call-client's `noise_probe::NoiseProbeReference`): what the device
+    /// does on a thread that asks the OS for its highest ordinary priority. Run it before the
+    /// probed call and after it, never during. Blocks for the spin and the loops' runs, and
+    /// holds 32 MiB.
+    #[cfg(feature = "noise-probe")]
+    pub async fn noise_probe_reference(&self) -> Result<serde_json::Value, ErrorInfo> {
+        self.service.noise_probe_reference().await
+    }
+
     /// The video codec setting and what it gives here now (`video_caps.codec_preference`:
     /// the setting, the codec a camera or screen publishes in, and why "Prefer H.264" can't
     /// apply when it can't); `None` for an engine without video publish.
@@ -409,7 +477,10 @@ impl VoiceControl {
     /// follows whoever speaks and asks for a keyframe on each switch. It is the one sink that
     /// stays enabled in the background. H.264 tracks come as access units, VP8 tracks decoded.
     /// Refused with `not_in_call`, `unknown_track` or `decoded_unsupported` (a VP8 track
-    /// without a video backend). Drop the [`crate::native::NativeSink`] to close it.
+    /// without a video backend). `Track("local:camera")` is the native self-view: the camera's
+    /// own frames as captured, whenever it is open (no call needed; it never opens the camera),
+    /// refused with `video_unsupported` without a video backend. Drop the
+    /// [`crate::native::NativeSink`] to close it.
     #[cfg(feature = "video-core")]
     pub fn open_native_sink(
         &self,

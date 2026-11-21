@@ -18,7 +18,7 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.9.2"
+tauri-plugin-sew-voice = "0.9.3"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
@@ -1037,9 +1037,9 @@ let pip = control.open_native_sink(NativeSinkTarget::ActiveSpeaker, (640, 360),
   `NativeSink::set_max_size` changes it; `request_keyframe` asks for one.
 - It is the one sink that stays enabled in the background.
 - It never shows this device's own video: an active-speaker sink skips this device's camera and
-  screen (and any track of your own member), and `Track("local:camera")`, `"local:screen"` or a
-  track marked `is_self` is refused with `unknown_track` (`detail.self_view: true`). Self-view
-  is a webview `local:camera` sink or the `preview`, never the picture in picture.
+  screen (and any track of your own member), and `Track("local:screen")` or a track marked
+  `is_self` is refused with `unknown_track` (`detail.self_view: true`). This device's camera has
+  its own native sink, `Track("local:camera")` (the self-view sink, below).
 - H.264 comes as access units (Annex B, 4-byte start codes, SPS and PPS before every IDR). VP8
   comes decoded through kessel-video's decoder (NV12, turned into a `CVPixelBuffer` on Apple:
   `payload.apple_pixel_buffer()` answers its `CVPixelBufferRef`, borrowed while the frame lives;
@@ -1076,6 +1076,71 @@ let pip = control.open_native_sink(NativeSinkTarget::ActiveSpeaker, (640, 360),
   it asks for its own layer again. A step-down within 10 s of a step-up doubles the wait before
   the next step-up (up to 80 s), so a sink that can't hold the upper layer doesn't flap.
 - Refused with `not_in_call`, `unknown_track` (also self-view, above) or `decoded_unsupported`.
+
+**The self-view sink (0.9.3).** `open_native_sink(NativeSinkTarget::Track("local:camera".into()),
+max_size, consumer)` is this device's own camera for a native self-view tile (an
+`AVSampleBufferDisplayLayer` beside the picture in picture), with no encode, no IPC and no
+decode: each frame is the camera's capture itself, shared, not copied. Nothing sits between the
+capture and the view; the webview's `local:camera` sink also waits for the encoder (software
+VP8 on a phone), the bridge and the webview's decoder.
+
+```rust
+use tauri_plugin_sew_voice::native::{CameraFeed, NativePayload, NativeSinkTarget, NativeVideoEvent};
+
+let me = control.open_native_sink(NativeSinkTarget::Track("local:camera".into()), (0, 0),
+    Arc::new(move |ev: NativeVideoEvent| match ev {
+        NativeVideoEvent::SelfView { feed } => match feed {
+            CameraFeed::Live => { /* frames follow */ }
+            CameraFeed::Paused => { /* keep the last frame, or a paused tile */ }
+            CameraFeed::Off => { /* no camera: the placeholder */ }
+            _ => {}
+        },
+        NativeVideoEvent::Frame(f) => {
+            if let NativePayload::Camera(cam) = &f.payload {
+                // Mirror the view (not the pixels) when cam.mirror() (a front camera); turn it
+                // by cam.rotation (0: frames come upright). f.timestamp_us is the capture time.
+                // macOS and iOS: f.payload.apple_pixel_buffer() is the camera's CVPixelBuffer.
+            }
+        }
+        _ => {}
+    }))?;
+// … drop(me) closes it.
+```
+
+- **What a frame is.** `NativePayload::Camera(CameraFrame)` (sew-call-client's, re-exported in
+  `native`): `frame` (kessel-video's `VideoFrame` at the camera's own size, upright),
+  `facing` (`Front`, `Back`, `External`, `Unknown`), `rotation` (degrees clockwise still to turn:
+  `0`, since kessel-video turns camera frames upright) and `mirror()` (`true` for a front
+  camera). Sew never mirrors the pixels: mirror the view, frame by frame (a camera switch lands
+  on the new camera's first frame, with `discontinuity` set). `track` is `"local:camera"`,
+  `keyframe` is always set, `timestamp_us` is the capture time (kessel-video's clock) and
+  `rtp_ts` the same on a 90 kHz clock.
+- **Which buffer.** What the backend captures, nothing converted: on macOS and iOS the OS's
+  buffer (`apple_pixel_buffer()` answers the `CVPixelBufferRef`, NV12, borrowed while the frame
+  lives), in a call and in the `preview` alike; on Android CPU planes (I420, already turned
+  upright); on desktop Linux and Windows CPU planes as the camera gives them
+  (`apple_pixel_buffer()` answers `None`; `stats().cpu_planes` counts them). On Apple the buffer
+  is one of the camera's own: show it and let it go, don't hold several.
+- **The feed.** `NativeVideoEvent::SelfView { feed }` comes first (the feed when the sink opened)
+  and again on each change: `Live` while frames come, `Paused` while the camera is paused (the
+  app in the background, another app holding the camera), `Off` while no camera is open. Frames
+  come only while it is `Live`; the first frame after an open, a pause, an off or a switch has
+  `discontinuity` set.
+- **When it has frames.** Whenever the camera is open: the pre-join `preview {on}`, and in a
+  call `camera {on}` (through `set_video_device` switches, the background pause and the
+  camera's reopen after it). The sink never opens the camera, needs no call and keeps no
+  lease. While it is open, a published camera keeps capturing even when nobody subscribes to it
+  (as the webview's self-view does); nothing more is encoded for it.
+- **Keeping up.** The sink holds one frame: a consumer slower than the camera gets the newest
+  frame, the ones in between are dropped (`stats().dropped_queue_full`), and the camera and its
+  encoders never wait for it. The consumer runs on the sink's own thread (user-interactive QoS on
+  Apple), in order.
+- `max_size`, `set_max_size` and `request_keyframe` change nothing for it (the frames are the
+  camera's size, each one whole). It stays open in the background like the other native sinks
+  (the camera itself pauses there). The webview's `local:camera` sink is unchanged and both can
+  be open at once (hide the webview tile while the native one shows).
+- Refused with `video_unsupported` when the engine has no video backend. `"local:screen"` is
+  never a native sink (`unknown_track`, `detail.self_view: true`).
 
 ## 3c. Call details (0.4.1)
 

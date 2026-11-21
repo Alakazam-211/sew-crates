@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-call-client"
-version = "0.9.2"
+version = "0.9.3"
 build = "build.rs"
 include = [
     "src/**",
@@ -47,6 +47,13 @@ categories = [
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Alakazam-211/sew-crates"
 
+[package.metadata.docs.rs]
+features = [
+    "video-core",
+    "dfn3",
+    "noise-probe",
+]
+
 [features]
 audio = [
     "audio-core",
@@ -71,6 +78,10 @@ mobile = [
     "kessel-audio?/os-voice",
 ]
 noise-bench = ["audio"]
+noise-probe = [
+    "dfn3",
+    "sew-noise/probe",
+]
 rust-crypto = [
     "dep:dimpl",
     "dep:aes",
@@ -139,7 +150,7 @@ version = "0.12"
 version = "1"
 
 [dependencies.kessel-audio]
-version = "0.2.4"
+version = "0.2.5"
 optional = true
 default-features = false
 
@@ -193,20 +204,20 @@ features = ["derive"]
 version = "1"
 
 [dependencies.sew-e2ee]
-version = "0.11.2"
+version = "0.11.3"
 
 [dependencies.sew-lk-compat]
-version = "0.11.2"
+version = "0.11.3"
 
 [dependencies.sew-lkproto]
-version = "0.11.2"
+version = "0.11.3"
 
 [dependencies.sew-noise]
-version = "0.11.2"
+version = "0.11.3"
 optional = true
 
 [dependencies.sew-proto]
-version = "0.11.2"
+version = "0.11.3"
 
 [dependencies.sha1]
 version = "0.10"

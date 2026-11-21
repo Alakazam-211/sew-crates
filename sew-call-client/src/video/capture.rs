@@ -534,6 +534,8 @@ pub struct VideoCapture {
     backend: Arc<dyn VideoBackend>,
     /// The running preview, if any (it holds the camera).
     preview: Arc<Mutex<Option<Weak<super::preview::Shared>>>>,
+    /// The open camera taps (raw frames for a native self-view).
+    taps: super::camera_tap::CameraTaps,
 }
 
 impl std::fmt::Debug for VideoCapture {
@@ -559,7 +561,22 @@ impl VideoCapture {
         VideoCapture {
             backend,
             preview: Arc::new(Mutex::new(None)),
+            taps: super::camera_tap::CameraTaps::default(),
         }
+    }
+
+    /// Raw camera frames for a native self-view ([`super::CameraTap`]): the frames of the
+    /// camera open through this capture or a clone of it (the preview, the bridge's camera
+    /// publish), as captured, before any encoder, with the camera's facing; the feed first
+    /// (`Off`, `Live` or `Paused`). Never opens the camera. Each call is a new tap; dropping
+    /// it closes it.
+    pub fn camera_tap(&self) -> super::CameraTap {
+        self.taps.open()
+    }
+
+    /// The open camera taps (the preview's and the bridge's frames go to them).
+    pub(crate) fn camera_taps(&self) -> &super::camera_tap::CameraTaps {
+        &self.taps
     }
 
     /// Stops the running preview (its camera closes now, its channel ends).

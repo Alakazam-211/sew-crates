@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.9.3 (2026-11-21, Sew 0.11.3)
+
+Additive: a native self-view sink, one more payload variant and one more event variant (both
+enums were already open to additions), the processing thread's scheduling on `VoiceControl`,
+re-exported types, provided engine methods, new optional fields in the `noise_removal` state
+and an opt-in measurement feature; the commands and the contract files are unchanged.
+
+### Added
+
+- A native self-view sink: `VoiceControl::open_native_sink` with
+  `NativeSinkTarget::Track("local:camera")` hands the host this device's own camera for a native
+  self-view tile, straight from the camera: no encode, no decode, no copy and nothing over the
+  webview bridge, so the encoder, the bridge and the webview's decoder are not in between. On
+  macOS and iOS each frame is the camera's own `CVPixelBuffer`
+  (`NativePayload::apple_pixel_buffer`); on Android and desktop it is CPU planes. Frames come
+  upright and never mirrored, each with the camera's facing (`CameraFrame::mirror` says when to
+  mirror the view), so a camera switch lands on the right frame.
+- Feature `noise-probe` (measurement builds only; never in `default`): a probed call, for
+  telling how fast the OS runs the audio pipeline's processing thread apart from how much work
+  noise removal is. `VoiceControl::arm_noise_probe` has the next call's stage probed,
+  `VoiceControl::noise_probe_report` answers its figures as JSON (sew-call-client's
+  `noise_probe::NoiseProbeReport`, schema `sew-noise-probe/2`, with the call's `phase`,
+  `letter` and `dsp_sched`) and `VoiceControl::noise_probe_reference` runs the probe's
+  calibration loops on a thread of its own. A probed call is one phase, set before the call
+  with `set_dsp_sched` (`NoiseProbePhase`, re-exported: `NoiseProbePhase::sched` gives each
+  phase's setting). The same on `VoiceService`, and three provided `VoiceEngine` methods
+  (refused, or `None`, by default). No plugin command and no permission: an app wraps them in
+  commands of its own. With the feature, on macOS and iOS the crate makes two more Apple
+  system calls in `unsafe`: `pthread_cpu_number_np` for the thread's core number and
+  `pthread_set_qos_class_self_np` for the reference thread's QoS class. The first is linked
+  strongly, so a probe build needs iOS 14.2 or macOS 11 or later.
+- `VoiceControl::set_dsp_sched` and `dsp_sched` (also on `VoiceService`, and two provided
+  `VoiceEngine` methods, refused or `None` by default): what the audio pipeline's processing
+  thread asks the OS for in the calls that start after it is set. `DspSched`, `DspSchedMode`,
+  `DspSchedError` and `DspSchedFallback` are sew-call-client's `CaptureDspSched` types under
+  the plugin's names. Refused figures answer `invalid_args`. No plugin command: an app that
+  wants it in its settings wraps it in a command of its own. The `noise_removal` state and
+  event carry sew-call-client's new `capture_stage_dsp_sched_*` and `capture_stage_dsp_*`
+  fields (absent while unset).
+- `NativePayload::Camera(CameraFrame)` (the frame, its `facing` and `rotation`) and
+  `NativeVideoEvent::SelfView { feed }` (`CameraFeed`: `live`, `paused`, `off`), first when the
+  sink opens and again on each change. `CameraFeed` and `CameraFrame` are re-exported in
+  `native`.
+- The self-view sink needs no call: it shows the camera whenever it is open (the pre-join
+  `preview`, or `camera {on}` in a call, through camera switches, the background pause and the
+  camera's reopen), and never opens the camera itself. A consumer slower than the camera gets
+  the newest frame and skips the ones in between; the camera and its encoders never wait for
+  it. The webview's `local:camera` sink is unchanged, and both can be open at once.
+- `VoiceEngine::camera_tap` (defaulted: an engine without it refuses the self-view sink with
+  `video_unsupported`), and the fake engine's `camera_frame`, `camera_feed` and `camera_taps`
+  for tests.
+
+### Deprecated
+
+- `VoiceControl::set_noise_probe_phase` and `VoiceService::set_noise_probe_phase` (feature
+  `noise-probe`), deprecated as they are added: they only label blocks. The scheduling is set
+  before the call with `set_dsp_sched`.
+
+### Changed
+
+- `open_native_sink` on `local:camera` opens the self-view sink instead of answering
+  `unknown_track`. `local:screen` and this device's own tracks are still refused with
+  `unknown_track` (`detail.self_view: true`).
+
+### Fixed
+
+- The real engine now passes the person's Record and Stop, and their answers to the
+  recording notice, to the host's own provider (the `JoinProvider` given to the plugin). Before,
+  the engine's wrapper around that provider passed on only the join, so Record, Stop and the
+  answers came back `recording_unsupported` or `consent_unsupported` and never reached the
+  host.
+
+### Dependencies
+
+- Requires sew-call-client 0.9.3 (for `VideoCapture::camera_tap`, the `CaptureDspSched`
+  types and, with `noise-probe`, its `noise_probe` module) and sew-proto 0.11.3.
+
 ## 0.9.2 (2026-11-20, Sew 0.11.2)
 
 Additive: a new optional field in the `noise_removal` state, event and answer, and one more

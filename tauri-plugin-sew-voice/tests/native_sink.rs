@@ -2,6 +2,7 @@
 //! (its pure-Rust VP8 decoder) and Sew's pre-encoded fixture streams: H.264 access units pass
 //! through unchanged, VP8 is decoded, an active-speaker sink follows the speaker with a
 //! keyframe request on each switch, and it is the one sink that stays on in the background.
+//! The self-view sink (`local:camera`) gets the camera's raw frames from the fake's camera tap.
 #![cfg(feature = "video-core")]
 // The helpers (not only #[test] fns) unwrap: a test that cannot set up must fail loudly.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -9,17 +10,20 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use kessel_video::Facing;
 use kessel_video::fake::{FakeBackend, FakeConfig};
 use tauri_plugin_sew_voice::engine::CallEvent;
 use tauri_plugin_sew_voice::fake::{
     FakeCall, FakeEngine, FakeProvider, RecordingFrameChannel, RecordingSink,
 };
 use tauri_plugin_sew_voice::native::{
-    NativePayload, NativeSinkTarget, NativeVideoEvent, h264_nal_units, h264_parameter_sets,
+    CameraFeed, NativePayload, NativeSinkTarget, NativeVideoEvent, h264_nal_units,
+    h264_parameter_sets,
 };
 use tauri_plugin_sew_voice::{
-    AppScene, EncodedVideoFrame, JoinArgs, Spawn, Speaking, Tile, TrackSettings, VideoCodec,
-    VideoRecvItem, VideoSinkArgs, VideoSource, VideoTrack, VoiceControl, VoiceService,
+    AppScene, CameraArgs, EncodedVideoFrame, JoinArgs, PreviewArgs, Spawn, Speaking, Tile,
+    TrackSettings, VideoCodec, VideoRecvItem, VideoSinkArgs, VideoSource, VideoTrack, VoiceControl,
+    VoiceService,
 };
 
 const ME: &str = "48831765147549699";
@@ -681,8 +685,9 @@ async fn the_active_speaker_sink_never_shows_this_devices_own_video() {
         "our own tracks are never enabled for it: {s:?}"
     );
 
-    // Asked for by name, self-view is refused too.
-    for t in ["local:camera", "local:screen", MINE] {
+    // Asked for by name, the screen's self-view and our own tracks are refused too
+    // (`local:camera` is the self-view sink: below).
+    for t in ["local:screen", MINE] {
         let e = w
             .control
             .open_native_sink(NativeSinkTarget::Track(t.into()), PIP, consumer(&seen))
@@ -829,4 +834,264 @@ async fn vp8_at_640x360_keeps_up_with_30_fps_through_the_real_decoder() {
         "no keyframe asked while it kept up"
     );
     assert!(!st.low_layer && st.step_downs == 0, "{st:?}");
+}
+
+// ───────────────────────────── the self-view sink ─────────────────────────────
+
+/// A raw camera frame as the fake camera captures it (`n` as its capture time, µs).
+fn camera_frame(n: u32) -> kessel_video::VideoFrame {
+    kessel_video::fake::pattern_frame(64, 48, n, u64::from(n)).expect("a frame")
+}
+
+/// A self-view event, for the asserts: a feed, or a frame's (capture time, facing,
+/// discontinuity).
+#[derive(Debug, PartialEq, Eq)]
+enum SelfSeen {
+    Feed(CameraFeed),
+    Frame(u64, Facing, bool),
+}
+
+fn self_seen(seen: &Seen) -> Vec<SelfSeen> {
+    seen.all()
+        .into_iter()
+        .map(|e| match e {
+            NativeVideoEvent::SelfView { feed } => SelfSeen::Feed(feed),
+            NativeVideoEvent::Frame(f) => {
+                assert_eq!(f.track, "local:camera");
+                assert!(f.keyframe, "each raw frame stands alone");
+                assert_eq!(f.rtp_ts, (f.timestamp_us * 9 / 100) as u32, "90 kHz");
+                match f.payload {
+                    NativePayload::Camera(c) => {
+                        assert_eq!(c.rotation, 0, "upright");
+                        assert_eq!(c.mirror(), c.facing == Facing::Front);
+                        assert_eq!((c.frame.width, c.frame.height), (64, 48), "as captured");
+                        SelfSeen::Frame(c.frame.capture_us, c.facing, f.discontinuity)
+                    }
+                    other => panic!("a camera frame, not {other:?}"),
+                }
+            }
+            other => panic!("only self-view events, not {other:?}"),
+        })
+        .collect()
+}
+
+/// Feeds `n` from `first` on, one at a time, each taken before the next.
+async fn feed_frames(w: &World, seen: &Seen, first: u32, n: u32, facing: Facing) {
+    for k in first..first + n {
+        assert_eq!(w.engine.camera_frame(camera_frame(k), facing), 1, "one tap");
+        until("the frame", || {
+            self_seen(seen)
+                .iter()
+                .any(|s| matches!(s, SelfSeen::Frame(t, _, _) if *t == u64::from(k)))
+        })
+        .await;
+    }
+}
+
+/// `local:camera` is the self-view sink: it opens without a call and without a camera (the
+/// feed `Off`, no frame, no camera opened); the preview's and then the call's camera frames
+/// come raw with their facing; a switch, a pause and the camera's end come in order; the
+/// webview's `local:camera` sink is untouched; closing stops the frames.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_self_view_sink_gets_the_cameras_raw_frames_with_their_facing_and_feed() {
+    let w = world(false);
+    let seen = Arc::new(Seen::default());
+    let sink = w
+        .control
+        .open_native_sink(
+            NativeSinkTarget::Track("local:camera".into()),
+            PIP,
+            consumer(&seen),
+        )
+        .expect("the self-view sink needs no call");
+    until("the feed", || !seen.all().is_empty()).await;
+    settle().await;
+    assert_eq!(self_seen(&seen), vec![SelfSeen::Feed(CameraFeed::Off)]);
+    assert!(w.engine.previews().is_empty(), "no camera opened");
+    assert_eq!(w.engine.camera_taps(), 1);
+    assert_eq!(sink.track().as_deref(), Some("local:camera"));
+    // A size or a keyframe request changes nothing for it.
+    sink.set_max_size(320, 180);
+    sink.request_keyframe();
+
+    // The preview: frames, the first after the open a discontinuity.
+    w.svc
+        .preview(PreviewArgs {
+            on: true,
+            device: None,
+        })
+        .await
+        .expect("preview");
+    feed_frames(&w, &seen, 1, 3, Facing::Front).await;
+    assert_eq!(
+        self_seen(&seen)[1..],
+        [
+            SelfSeen::Feed(CameraFeed::Live),
+            SelfSeen::Frame(1, Facing::Front, true),
+            SelfSeen::Frame(2, Facing::Front, false),
+            SelfSeen::Frame(3, Facing::Front, false),
+        ]
+    );
+    w.engine.camera_feed(CameraFeed::Off);
+    until("off", || self_seen(&seen).len() == 6).await;
+
+    // A call with the camera on (the webview's self-view as well).
+    let call = in_call(&w, vec![]).await;
+    call.set_policy(serde_json::json!({"video_enabled": true}));
+    w.svc
+        .camera(CameraArgs {
+            on: true,
+            device: None,
+        })
+        .await
+        .expect("camera on");
+    let ch = Arc::new(RecordingFrameChannel::new());
+    w.svc
+        .video_sink(
+            VideoSinkArgs {
+                track: "local:camera".into(),
+                width: 320,
+                height: 180,
+                visible: true,
+                tile: Tile::Grid,
+                decode: vec!["vp8".into()],
+            },
+            ch.clone(),
+        )
+        .await
+        .expect("the webview's self-view sink");
+    feed_frames(&w, &seen, 10, 2, Facing::Front).await;
+    push(
+        &call,
+        encoded("local:camera", VideoCodec::Vp8, true, vec![0x10, 0x02], 1),
+    )
+    .await;
+    until("the webview's self-view frame", || ch.messages().len() == 1).await;
+    // A switch to the back camera: a discontinuity on its first frame.
+    feed_frames(&w, &seen, 20, 2, Facing::Back).await;
+    // The background: paused, then live again.
+    w.engine.camera_feed(CameraFeed::Paused);
+    until("paused", || {
+        self_seen(&seen).last() == Some(&SelfSeen::Feed(CameraFeed::Paused))
+    })
+    .await;
+    feed_frames(&w, &seen, 30, 1, Facing::Back).await;
+    w.engine.camera_feed(CameraFeed::Off);
+    until("off", || {
+        self_seen(&seen).last() == Some(&SelfSeen::Feed(CameraFeed::Off))
+    })
+    .await;
+    assert_eq!(
+        self_seen(&seen)[6..],
+        [
+            SelfSeen::Feed(CameraFeed::Live),
+            SelfSeen::Frame(10, Facing::Front, true),
+            SelfSeen::Frame(11, Facing::Front, false),
+            SelfSeen::Frame(20, Facing::Back, true),
+            SelfSeen::Frame(21, Facing::Back, false),
+            SelfSeen::Feed(CameraFeed::Paused),
+            SelfSeen::Feed(CameraFeed::Live),
+            SelfSeen::Frame(30, Facing::Back, true),
+            SelfSeen::Feed(CameraFeed::Off),
+        ]
+    );
+    assert_eq!(
+        call.camera_requests().len(),
+        1,
+        "the sink asked nothing of the camera"
+    );
+    assert!(
+        call.video_settings().is_empty(),
+        "no track settings for the self-view"
+    );
+
+    // Closing stops the frames; the camera is untouched.
+    let st = sink.stats();
+    assert_eq!(st.frames_out, 8);
+    drop(sink);
+    until("the tap closed", || w.engine.camera_taps() == 0).await;
+    let before = seen.all().len();
+    assert_eq!(w.engine.camera_frame(camera_frame(40), Facing::Back), 0);
+    settle().await;
+    assert_eq!(seen.all().len(), before, "nothing after the close");
+    assert_eq!(call.camera_requests().len(), 1);
+}
+
+/// A consumer slower than the camera gets the newest frame; the frames in between are dropped
+/// and counted, and the camera never waits for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_self_view_consumer_drops_frames_and_never_holds_the_camera() {
+    let w = world(false);
+    let seen = Arc::new(Seen::default());
+    let slow: Arc<dyn tauri_plugin_sew_voice::native::NativeVideoConsumer> = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |e: NativeVideoEvent| {
+            if matches!(e, NativeVideoEvent::Frame(_)) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            seen.0.lock().expect("seen").push(e);
+        })
+    };
+    let sink = w
+        .control
+        .open_native_sink(NativeSinkTarget::Track("local:camera".into()), PIP, slow)
+        .expect("self-view sink");
+    let t = Instant::now();
+    for k in 1..=30 {
+        assert_eq!(w.engine.camera_frame(camera_frame(k), Facing::Front), 1);
+        std::thread::sleep(Duration::from_millis(3));
+    }
+    assert!(
+        t.elapsed() < Duration::from_millis(1500),
+        "the camera never waited for the consumer: {:?}",
+        t.elapsed()
+    );
+    until("the newest frame", || {
+        self_seen(&seen)
+            .iter()
+            .any(|s| matches!(s, SelfSeen::Frame(30, _, _)))
+    })
+    .await;
+    settle().await;
+    let frames: Vec<u64> = self_seen(&seen)
+        .into_iter()
+        .filter_map(|s| match s {
+            SelfSeen::Frame(t, _, _) => Some(t),
+            SelfSeen::Feed(_) => None,
+        })
+        .collect();
+    assert!(frames.len() < 30, "frames were dropped: {frames:?}");
+    assert!(
+        frames.windows(2).all(|p| p[0] < p[1]),
+        "in order: {frames:?}"
+    );
+    let st = sink.stats();
+    assert_eq!(st.frames_in, 30);
+    assert_eq!(st.frames_out, frames.len() as u64);
+    assert_eq!(st.dropped_queue_full, 30 - frames.len() as u64);
+}
+
+/// Without a video backend (or video off) the self-view sink is refused, and nothing opens.
+#[tokio::test]
+async fn the_self_view_sink_needs_video() {
+    let engine = Arc::new(FakeEngine::new());
+    let spawn: Spawn = Arc::new(|f| {
+        tokio::spawn(f);
+    });
+    let svc = VoiceService::new(
+        engine.clone(),
+        Arc::new(FakeProvider::answering(ME)),
+        Arc::new(RecordingSink::new()),
+        spawn,
+    );
+    let seen = Arc::new(Seen::default());
+    let e = VoiceControl::new(svc)
+        .open_native_sink(
+            NativeSinkTarget::Track("local:camera".into()),
+            PIP,
+            consumer(&seen),
+        )
+        .expect_err("no video");
+    assert_eq!(e.code, "video_unsupported");
+    assert_eq!(engine.camera_taps(), 0);
 }

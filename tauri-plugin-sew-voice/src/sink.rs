@@ -503,14 +503,19 @@ impl Sinks {
     }
 
     fn insert(&mut self, sink: Sink) -> u32 {
+        let id = self.reserve_id();
+        self.sinks.insert(id, sink);
+        id
+    }
+
+    /// A new sink id, for a sink kept outside this table (a self-view native sink) as well.
+    pub(crate) fn reserve_id(&mut self) -> u32 {
         // Ids start at 1 and are never reused while the plugin runs.
         self.next_id = self.next_id.wrapping_add(1).max(1);
         while self.sinks.contains_key(&self.next_id) {
             self.next_id = self.next_id.wrapping_add(1).max(1);
         }
-        let id = self.next_id;
-        self.sinks.insert(id, sink);
-        id
+        self.next_id
     }
 
     /// How many sinks are in decoded mode.

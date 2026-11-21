@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.9.3 (2026-11-21, Sew 0.11.3)
+
+Additive: camera taps on `VideoCapture` and their types, the processing thread's scheduling on
+`NoiseRemovalControl`, new optional fields in `NoiseRemovalState`, one more
+`CaptureDspScheduling` variant and an opt-in measurement feature; no other change to the API.
+
+### Added
+
+- `VideoCapture::camera_tap`: the camera's raw frames for a native self-view, as captured and
+  before any encoder (`CameraTap`, `CameraTapItem`, `CameraFrame`, `CameraFeed`). Each frame is
+  the capture's own, shared and not copied: on macOS and iOS the camera's `CVPixelBuffer`, on
+  Android and desktop CPU planes. Frames come upright and never mirrored, with the camera's
+  facing. The tap's feed says `live`, `paused` or `off`. A tap holds one frame, so a slow
+  reader gets the newest frame and the camera never waits for it. A tap never opens the
+  camera: it gets the pre-join preview's frames and the frames of the camera `VideoBridge`
+  publishes, through camera switches, the background pause and the camera's reopen.
+  `CameraTap::channel` makes a tap a host feeds itself.
+
+- `NoiseRemovalControl::set_dsp_sched` (and `dsp_sched`, `dsp_sched_supported`): what the
+  audio pipeline's processing thread, the thread the noise removal stage runs on, asks the OS
+  for in the calls that start after it is set. `CaptureDspSched` holds the mode
+  (`CaptureDspSchedMode`: `workgroup`, the default; `time_constraint_only`; `none`;
+  `own_workgroup`), the time-constraint policy's period, computation and constraint, and for
+  `own_workgroup` each block's deadline. Figures the pipeline would refuse are refused when
+  set (`CaptureDspSchedError`). The pipeline reads the setting once, as a call's audio
+  starts; only macOS and iOS act on it. It needs kessel-audio 0.2.5.
+- `NoiseRemovalState` carries what a call's processing thread asked for and what it got:
+  `capture_stage_dsp_sched_requested`, `capture_stage_dsp_sched_effective`,
+  `capture_stage_dsp_sched_fallback` (`CaptureDspSchedFallback`),
+  `capture_stage_dsp_period_us`, `capture_stage_dsp_computation_us`,
+  `capture_stage_dsp_constraint_us`, `capture_stage_dsp_interval_deadline_us` and
+  `capture_stage_dsp_intervals`. Each is absent while unset or zero; they ride along with the
+  state and make no change of it by themselves.
+- `CaptureDspScheduling::OwnWorkgroup` (`own_workgroup`): what
+  `capture_stage_dsp_scheduling` says when the OS granted the thread its own work interval.
+- Feature `noise-probe` (measurement builds only; never in `default`): the `noise_probe`
+  module. `NoiseRemovalControl::arm_probe` has the next call's noise removal stage probed
+  (sew-noise's `probe`): each block's wall and thread CPU time, the core the audio
+  pipeline's processing thread was on, which parts of DeepFilterNet3 ran, and two fixed
+  calibration loops on that thread. A probed call is one phase, named from the scheduling
+  mode in effect: `noise_probe::NoiseProbePhase::sched` gives the setting to pass to
+  `set_dsp_sched` before the call for each phase, and `NoiseProbePhase::of_mode` the phase
+  of a mode. `NoiseRemovalControl::probe_report` gives the figures during the call or after
+  it (`noise_probe::NoiseProbeReport`, JSON schema `sew-noise-probe/2`, with the call's
+  `phase`, `letter` and `dsp_sched`: `NoiseProbeSched`, the mode asked for, the mode in
+  effect, why they differ, the figures and the count of work intervals; its `phases` list
+  has one entry), and `noise_probe::reference` runs the same loops on the calling thread. A
+  probed call keeps DeepFilterNet3 running however slow a block is, and its audio can
+  glitch.
+
+### Deprecated
+
+- `NoiseRemovalControl::set_probe_phase` (feature `noise-probe`), deprecated as it is added:
+  it only labels blocks. The scheduling is set before the call with `set_dsp_sched`.
+
+### Changed
+
+- While a camera tap is open, a published camera keeps capturing even when no subscriber
+  wants a layer, as it does for the self-view; nothing more is encoded for it.
+- The pre-join preview asks the camera for the OS's own buffers where the backend has them
+  (macOS and iOS), as a call's camera does, so a camera tap gets them there too.
+
+### Dependencies
+
+- Requires kessel-audio 0.2.5 (the processing thread's scheduling setting and what it
+  reports) and the Sew crates at 0.11.3 (sew-proto, sew-lkproto, sew-lk-compat, sew-e2ee
+  and sew-noise; sew-noise's `probe` with `noise-probe`).
+
 ## 0.9.2 (2026-11-20, Sew 0.11.2)
 
 Additive: a new method on `VideoBridge`, a new optional field in `NoiseRemovalState` and a

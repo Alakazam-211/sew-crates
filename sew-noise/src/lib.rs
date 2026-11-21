@@ -32,6 +32,8 @@
 pub mod capture_stage;
 #[cfg(feature = "dfn3")]
 pub mod dfn3;
+#[cfg(feature = "probe")]
+pub mod probe;
 mod resample;
 mod stage;
 mod standard;

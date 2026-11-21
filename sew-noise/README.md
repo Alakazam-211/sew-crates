@@ -35,12 +35,13 @@ of voice calls on the sender's device.
 
 ```toml
 [dependencies]
-sew-noise = "0.11.2"
+sew-noise = "0.11.3"
 # or, with DeepFilterNet3 and the capture-hook trait:
-# sew-noise = { version = "0.11.2", features = ["dfn3", "capture-stage"] }
+# sew-noise = { version = "0.11.3", features = ["dfn3", "capture-stage"] }
 ```
 
-No feature is on by default: `dfn3` and `capture-stage` are opt-in.
+No feature is on by default: `dfn3`, `capture-stage` and `probe` (measurement builds only) are
+opt-in.
 
 ```rust
 use sew_noise::{FRAME, Mode, Stage};
@@ -101,6 +102,16 @@ happens the first block allocates once, and `StageStats::cold_thread_blocks` cou
 `sew_noise::capture_stage::CaptureStage` is the hook an audio pipeline calls the stage
 through: `process(&mut [f32; 480])`, `latency_samples()`, `reset()`. `Stage` implements it.
 
+### The `probe` feature
+
+For measurement builds only, never a release. `probe::ProbeStage` wraps a `Stage` and records
+what each block cost (wall time and the thread's CPU time), which core the thread was on and
+which parts of the model ran, beside two fixed calibration loops on the same thread. It is
+for telling how fast the OS runs the audio thread apart from how much work the stage is. The
+output is the wrapped stage's; its step-down rules are off, and the loops add time to some
+blocks, so a probed stream can glitch. `probe::reference` runs the same loops on the calling
+thread.
+
 ### The `dfn3` feature
 
 With the `dfn3` feature the stage gets a second model for `Mode::Strong`: the low-latency
@@ -159,8 +170,8 @@ counts for it. The output is `Stage::process`'s, bit for bit, however the steps 
 caller that spreads a block over the time until the next one is in sends it out one block
 later.
 
-The weights are not in this package. They are the asset `sew-dfn3-0.11.2.tar.gz` of the Sew
-0.11.2 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.11.2`; sha256
+The weights are not in this package. They are the asset `sew-dfn3-0.11.3.tar.gz` of the Sew
+0.11.3 release on <https://github.com/Alakazam-211/sew-releases> (tag `v0.11.3`; sha256
 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). It holds a `dfn3/` folder
 with the weights (`dfn3_ll.nnef.tar`), their NOTICE and the MIT and Apache-2.0 texts. The
 loader checks the weights file against `dfn3::WEIGHTS_SHA256`

@@ -65,6 +65,7 @@ Which cargo features build where. Every iOS and Android build needs `mobile` (or
 | `keyring-store` | yes (Secret Service) | yes (Keychain) | yes (Credential Manager) | no | no |
 | `dfn3` | yes | yes | yes | yes | yes |
 | `noise-bench` | debug builds | debug builds | debug builds | debug builds | debug builds |
+| `noise-probe` | measurement builds | measurement builds | measurement builds | measurement builds | measurement builds |
 | `video-core` | yes | yes | yes | yes | yes |
 | `video` | yes (VP8 only; screens need the xdg portal or libpipewire) | yes | yes | yes | yes |
 | `testing` | tests only | tests only | tests only | tests only | tests only |
@@ -126,7 +127,7 @@ What each one does:
   `capture_stage_last_transient`, `capture_stage_clock`, `capture_stage_max_wall_us`,
   `capture_stage_preempted_over_budget`, `capture_stage_starved`, and how the OS schedules
   the processing thread the stage runs on, `capture_stage_dsp_scheduling`: `workgroup`,
-  `time_constraint`, `qos` or `none`; the thread asks for real-time scheduling on macOS and
+  `time_constraint`, `qos`, `none` or `own_workgroup`; the thread asks for real-time scheduling on macOS and
   iOS). The call's start and its
   busy moments (the session activating, a route change, a device switch, a camera starting,
   and the app's lifecycle through `NoiseRemovalControl::app_scene_changed`) open a grace
@@ -135,6 +136,14 @@ What each one does:
   [tauri-plugin-sew-voice's README, "Shipping DeepFilterNet3 in your app"](https://github.com/Alakazam-211/sew-crates/tree/main/tauri-plugin-sew-voice#shipping-deepfilternet3-in-your-app).
 - `noise-bench` (debug builds only, never in `default`): `noise_bench::run`, the stage on the
   device's microphone for a while, reported as JSON.
+- `noise-probe` (measurement builds only, never in `default`; turns on `dfn3`):
+  `NoiseRemovalControl::arm_probe` has the next call's stage record what each block cost, which
+  core the processing thread was on and what DeepFilterNet3 ran, beside two fixed calibration
+  loops on that thread; `probe_report` gives it as JSON, and `noise_probe::reference` runs the
+  same loops on a thread of the app's. On macOS and iOS the app gives the function that reads
+  the thread's core number (the system call needs `unsafe`, which this crate has none of);
+  tauri-plugin-sew-voice's probe uses `pthread_cpu_number_np`, so a probe build of it needs
+  iOS 14.2 or macOS 11 or later.
 - `video-core` and `video` (off by default): `kessel-video`, K2's cameras, screen capture and
   video codecs, without (`video-core`) or with (`video`) the system's devices, OS codecs and
   its pure-Rust VP8. With either, calls receive video: the remote camera and screen tracks
@@ -144,7 +153,10 @@ What each one does:
   `Call::video_frames`. `VideoCapture` opens cameras and screens (the OS picker, the screen
   list with PNG thumbnails) and runs the pre-join camera preview; `VideoBridge` publishes the
   camera and screens opened through it (one opener holds the camera), with the in-call
-  self-view (`VideoBridge::self_view`). A build without them negotiates no video at all.
+  self-view (`VideoBridge::self_view`). `VideoCapture::camera_tap` hands the camera's raw
+  frames, as captured and before any encoder, to a native self-view (on macOS and iOS the
+  camera's `CVPixelBuffer`; upright, never mirrored, with the camera's facing). A build without
+  them negotiates no video at all.
 - `builtin-ring-provider` (default): TLS falls back to rustls's ring provider when you pass
   no provider and install no process default (see "TLS crypto provider" below). Without it,
   that case is refused with `no_crypto_provider`.
@@ -178,7 +190,7 @@ needs a Sew server to join calls on (see the
 
 ```toml
 [dependencies]
-sew-call-client = "0.9.2"
+sew-call-client = "0.9.3"
 ```
 
 An app also needs, for its `JoinProvider` and to run a call:
@@ -373,6 +385,54 @@ call; Resume restarts it; RouteChanged re-reads the device. What the app said be
 (an early `Activated`, a `Suspend`) applies when its audio starts. The engine never configures
 or activates `AVAudioSession` or the Android audio mode: that stays the app's job. On desktop
 the events change nothing.
+
+### How the processing thread is scheduled
+
+kessel-audio runs its capture processing, the noise removal stage included, on one thread.
+`NoiseRemovalControl::set_dsp_sched` sets what that thread asks the OS for. Only macOS and
+iOS act on it; on other platforms the setting is kept and has no effect.
+
+```rust,ignore
+use sew_call_client::{CaptureDspSched, CaptureDspSchedMode};
+
+noise.set_dsp_sched(Some(CaptureDspSched::new(CaptureDspSchedMode::OwnWorkgroup)))?;
+```
+
+The modes (`CaptureDspSchedMode`):
+
+- `Workgroup`, the default: the thread asks for the OS's real-time policy, and on iOS it
+  also joins the audio unit's own workgroup while the phone's audio unit runs. This is what a
+  call does when nothing is set.
+- `TimeConstraintOnly`: asks for the real-time policy with the figures you give, and no
+  workgroup.
+- `None`: no request. The thread keeps the OS's default scheduling.
+- `OwnWorkgroup`: asks for the real-time policy, and a work interval of the thread's own in place of
+  the audio unit's workgroup. Each block of audio is one interval, due a set time after it starts
+  (the interval deadline).
+
+`CaptureDspSched::new(mode)` starts from the pipeline's default figures;
+`with_time_constraint_us` and `with_interval_deadline_us` change them. Figures the pipeline
+would refuse are refused when you set them, and nothing changes.
+
+- It does nothing until you call it: a call behaves as before.
+- It applies from the next call. The pipeline reads the setting once, as a call's audio
+  starts, so a call under way keeps what it started with.
+- `set_dsp_sched(None)` goes back to the default.
+- Nothing is stored: keep the choice with the app's settings and set it again at start.
+
+What a call asked for and what it got are in its noise removal state (`NoiseRemovalState`),
+beside `capture_stage_dsp_scheduling`, which says what the OS granted. Each field is absent
+while unset:
+
+- `capture_stage_dsp_sched_requested`: the mode asked for;
+- `capture_stage_dsp_sched_effective`: the mode the thread runs in (`unsupported` on a
+  platform without these calls);
+- `capture_stage_dsp_sched_fallback`: why the two differ, when the OS refused part of the
+  request and the thread fell back to `workgroup`;
+- `capture_stage_dsp_period_us`, `capture_stage_dsp_computation_us`,
+  `capture_stage_dsp_constraint_us`: the time-constraint figures asked for;
+- `capture_stage_dsp_interval_deadline_us`: the interval deadline, in `own_workgroup`;
+- `capture_stage_dsp_intervals`: how many work intervals the thread has finished.
 
 ### Signing out
 

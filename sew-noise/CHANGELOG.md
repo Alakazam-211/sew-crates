@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.3 (2026-11-21)
+
+Additive: one opt-in feature; no change without it.
+
+### Added
+
+- Feature `probe` (measurement builds only; never on by default): the `probe` module.
+  `probe::ProbeStage` wraps a `Stage` and records, for each block, the wall time and the
+  thread CPU time of the stage's call, the core the thread was on and which parts of the model
+  ran, and runs two fixed calibration loops on the same thread (`probe::Kernels`: one that stays
+  in cache, one that reads memory). `probe::ProbeHandle` marks phases and gives the report;
+  `probe::reference` runs the same loops on the calling thread. The stage's output is
+  unchanged; its step-down rules are off while it is probed. The feature turns on rustix's
+  `thread` feature for the core number on Linux and Android (`sched_getcpu`); other systems
+  take a function from the caller.
+
 ## 0.11.2 (2026-11-20)
 
 - The version follows Sew 0.11.2. No API or behaviour change.

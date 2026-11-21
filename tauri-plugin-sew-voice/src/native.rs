@@ -24,6 +24,25 @@
 //! Frames come decrypted and checked, as for the webview's sinks; the keys never leave the
 //! engine. Dropping the [`NativeSink`] closes it.
 //!
+//! **The self-view** (`NativeSinkTarget::Track("local:camera")`, [`crate::video::LOCAL_CAMERA`]):
+//! this device's own camera, raw, for a native self-view tile. Each frame is the camera's own
+//! capture ([`NativePayload::Camera`]: sew-call-client's [`CameraFrame`]), taken before any
+//! encoder: no encode, no decode, no copy and nothing over the webview bridge. On macOS and iOS
+//! the frame is the OS's buffer (a `CVPixelBuffer`, `NativePayload::apple_pixel_buffer`); on
+//! Android and desktop Linux and
+//! Windows it is CPU planes (I420 on Android). Frames come upright and never mirrored: the
+//! frame's `facing` says when to mirror (a front camera's), frame by frame, so a camera switch
+//! lands on the new camera's first frame. The sink needs no call: it shows the camera whenever
+//! one is open (the pre-join `preview`, or the call's `camera {on}`), and it never opens the
+//! camera itself. A [`NativeVideoEvent::SelfView`] comes first with the feed then
+//! ([`CameraFeed`]: `off`, `live`, `paused`) and again on each change; frames come only while it
+//! is `live` (the camera pauses in the background, so the sink then gets `paused`). The sink
+//! holds one frame: a consumer slower than the camera gets the newest frame and the ones in
+//! between are dropped (`dropped_queue_full`); the camera and its encoders never wait for it.
+//! `max_size` and [`NativeSink::request_keyframe`] change nothing for it (the frames are the
+//! camera's size, each one whole). The webview's `local:camera` sink runs as before, and both
+//! can be open at once. `local:screen` is never a native sink (`unknown_track`).
+//!
 //! **Keeping up.** Each sink has its own thread (on Apple at the user-interactive QoS class,
 //! set before the VP8 decoder's thread is started from it). A VP8 frame goes to the decoder
 //! without blocking; the sink takes its output when the decoder's wake callback runs (a job on
@@ -51,6 +70,8 @@ use std::time::{Duration, Instant};
 use sew_call_client::kessel_video::{
     self as kv, DecoderConfig, EncodedInput, PixelFormat, VideoBackend, VideoDecoder,
 };
+pub use sew_call_client::{CameraFeed, CameraFrame};
+use sew_call_client::{CameraTap, CameraTapItem};
 
 use crate::sink::{NativeTarget, Pushed};
 use crate::video::{EncodedVideoFrame, VideoCodec};
@@ -58,7 +79,9 @@ use crate::video::{EncodedVideoFrame, VideoCodec};
 /// What a native sink shows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NativeSinkTarget {
-    /// One remote track (a `video` entry's `track`).
+    /// One remote track (a `video` entry's `track`), or `"local:camera"`
+    /// ([`crate::video::LOCAL_CAMERA`]): this device's own camera, raw (the self-view; see the
+    /// module docs).
     Track(String),
     /// Whoever speaks: their camera, else their screen; before anyone speaks, the first
     /// remote camera (else screen).
@@ -68,16 +91,17 @@ pub enum NativeSinkTarget {
 /// One frame for a native sink's consumer.
 #[derive(Debug, Clone)]
 pub struct NativeVideoFrame {
-    /// The remote track's `track_sid`.
+    /// The remote track's `track_sid` (`"local:camera"` for a self-view sink's frame).
     pub track: String,
-    /// A keyframe (an IDR for H.264).
+    /// A keyframe (an IDR for H.264; always set for a self-view sink's frame).
     pub keyframe: bool,
     /// The first frame after an open, a reset, a switch or a dropped frame: flush the layer
     /// (`AVSampleBufferDisplayLayer.flush()`) before it.
     pub discontinuity: bool,
-    /// Arrival time in µs (the engine's clock), for presentation timestamps.
+    /// Arrival time in µs (the engine's clock), for presentation timestamps; a self-view sink's
+    /// frame has its capture time (kessel-video's clock).
     pub timestamp_us: u64,
-    /// The RTP timestamp (90 kHz).
+    /// The RTP timestamp (90 kHz); a self-view sink's frame has its capture time on that clock.
     pub rtp_ts: u32,
     /// The frame.
     pub payload: NativePayload,
@@ -99,22 +123,30 @@ pub enum NativePayload {
     /// A decoded frame (VP8): an OS buffer where the backend makes one, else NV12 planes; at
     /// most the sink's `max_size`, aspect kept.
     Decoded(kv::VideoFrame),
+    /// A self-view sink's frame: this device's camera as captured (no encode, no decode, no
+    /// copy), at the camera's size, upright and never mirrored, with the camera's `facing`
+    /// (mirror a front camera's) and the `rotation` left to the host (`0`: kessel-video's
+    /// backends turn frames upright). On macOS and iOS an OS buffer
+    /// (`NativePayload::apple_pixel_buffer`); elsewhere CPU planes.
+    Camera(CameraFrame),
 }
 
 impl NativePayload {
-    /// macOS and iOS (the plugin's `video`): the `CVPixelBufferRef` of a decoded frame whose
-    /// buffer is the Apple backend's (`NativePayload::Decoded` with a native buffer), for a
-    /// `CMSampleBuffer` on an `AVSampleBufferDisplayLayer`. `None` for H.264 access units and
-    /// for CPU planes. kessel-video's `apple_pixel_buffer`: the pointer is borrowed and stays
-    /// valid while this payload (or a clone of its frame) lives; `CVBufferRetain` it to keep it
+    /// macOS and iOS (the plugin's `video`): the `CVPixelBufferRef` of a decoded or camera
+    /// frame whose buffer is the Apple backend's (`NativePayload::Decoded` or
+    /// `NativePayload::Camera` with a native buffer), for a `CMSampleBuffer` on an
+    /// `AVSampleBufferDisplayLayer`. `None` for H.264 access units and for CPU planes.
+    /// kessel-video's `apple_pixel_buffer`: the pointer is borrowed and stays valid while this payload (or a clone of its frame) lives; `CVBufferRetain` it to keep it
     /// longer (and `CVBufferRelease` it then), and treat it as read-only.
     #[cfg(all(feature = "video", any(target_os = "macos", target_os = "ios")))]
     pub fn apple_pixel_buffer(&self) -> Option<*mut std::ffi::c_void> {
         match self {
-            NativePayload::Decoded(frame) => match &frame.buffer {
-                kv::FrameBuffer::Native(buffer) => kv::apple_pixel_buffer(buffer),
-                _ => None,
-            },
+            NativePayload::Decoded(frame) | NativePayload::Camera(CameraFrame { frame, .. }) => {
+                match &frame.buffer {
+                    kv::FrameBuffer::Native(buffer) => kv::apple_pixel_buffer(buffer),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -140,12 +172,20 @@ pub enum NativeVideoEvent {
         /// Its participant's Sew member id.
         member_id: Option<String>,
     },
+    /// A self-view sink's camera feed: first the feed when the sink opened, then each change.
+    /// Frames come only while it is `Live`; on `Paused` (the camera paused: the app in the
+    /// background, another app holding the camera) or `Off` (no camera open) keep or blank the
+    /// tile; the next frame comes with `discontinuity` set.
+    SelfView {
+        /// The feed now.
+        feed: CameraFeed,
+    },
 }
 
-/// A native sink's consumer (the host's picture in picture). Called on the sink's own thread,
-/// in order, one at a time, never under the plugin's locks; it may block briefly (a slow
-/// consumer drops frames at the sink, which then waits for a keyframe), and it may call
-/// [`NativeSink`]'s methods.
+/// A native sink's consumer (the host's picture in picture, a native self-view). Called on the
+/// sink's own thread, in order, one at a time, never under the plugin's locks; it may block
+/// briefly (a slow consumer drops frames at the sink, which then waits for a keyframe; a
+/// self-view sink just skips to the newest frame), and it may call [`NativeSink`]'s methods.
 pub trait NativeVideoConsumer: Send + Sync + 'static {
     /// One event.
     fn on_video(&self, event: NativeVideoEvent);
@@ -1210,6 +1250,194 @@ pub fn h264_parameter_sets(au: &[u8]) -> H264ParameterSets {
         }
     }
     out
+}
+
+// ───────────────────────────── the self-view sink ─────────────────────────────
+
+/// A self-view native sink's thread: the camera tap's feed and newest frame to the consumer.
+/// The tap holds one frame, so a consumer slower than the camera gets the newest frame and the
+/// ones in between are dropped (counted as `dropped_queue_full`); the camera never waits.
+pub(crate) struct SelfViewWorker {
+    tap: Arc<CameraTap>,
+    shared: Arc<Shared>,
+}
+
+impl SelfViewWorker {
+    /// Starts the sink's thread over `tap`.
+    pub(crate) fn start(
+        consumer: Arc<dyn NativeVideoConsumer>,
+        tap: CameraTap,
+    ) -> std::io::Result<Arc<SelfViewWorker>> {
+        SelfViewWorker::start_with(consumer, tap, Tuning::DEFAULT)
+    }
+
+    pub(crate) fn start_with(
+        consumer: Arc<dyn NativeVideoConsumer>,
+        tap: CameraTap,
+        tuning: Tuning,
+    ) -> std::io::Result<Arc<SelfViewWorker>> {
+        let tap = Arc::new(tap);
+        let shared = Arc::new(Shared {
+            queued: AtomicUsize::new(0),
+            meter: Mutex::new(Meter::default()),
+        });
+        let run = SelfViewRun {
+            consumer,
+            tap: Arc::clone(&tap),
+            shared: Arc::clone(&shared),
+            tuning,
+            facing: None,
+            discontinuity: true,
+            window: Window::new(Instant::now()),
+        };
+        std::thread::Builder::new()
+            .name("sew-voice-self-view".into())
+            .spawn(move || run.run())?;
+        Ok(Arc::new(SelfViewWorker { tap, shared }))
+    }
+
+    /// The sink's counters.
+    pub(crate) fn stats(&self) -> NativeStats {
+        NativeStats(Arc::clone(&self.shared))
+    }
+
+    /// Closes the tap: the thread ends (after the event it is delivering, if any).
+    pub(crate) fn close(&self) {
+        self.tap.close();
+    }
+
+    /// The tap is open.
+    pub(crate) fn is_open(&self) -> bool {
+        !self.tap.is_closed()
+    }
+}
+
+impl Drop for SelfViewWorker {
+    fn drop(&mut self) {
+        self.tap.close();
+    }
+}
+
+struct SelfViewRun {
+    consumer: Arc<dyn NativeVideoConsumer>,
+    tap: Arc<CameraTap>,
+    shared: Arc<Shared>,
+    tuning: Tuning,
+    /// The facing of the last frame delivered.
+    facing: Option<kv::Facing>,
+    /// The next frame follows an open, a pause, an off or a camera switch.
+    discontinuity: bool,
+    window: Window,
+}
+
+impl SelfViewRun {
+    fn run(mut self) {
+        raise_thread_priority();
+        loop {
+            let item = self.tap.recv_timeout(self.tuning.tick);
+            if self.tap.is_closed() {
+                return;
+            }
+            match item {
+                Some(CameraTapItem::Feed(feed)) => {
+                    if feed != CameraFeed::Live {
+                        self.discontinuity = true;
+                    }
+                    self.consumer.on_video(NativeVideoEvent::SelfView { feed });
+                }
+                Some(CameraTapItem::Frame(frame)) => self.deliver(frame),
+                _ => {}
+            }
+            self.count();
+        }
+    }
+
+    fn deliver(&mut self, frame: CameraFrame) {
+        if self.facing != Some(frame.facing) {
+            // Another camera (a switch): the host's view starts again.
+            if self.facing.is_some() {
+                self.discontinuity = true;
+            }
+            self.facing = Some(frame.facing);
+        }
+        let cpu = !matches!(frame.frame.buffer, kv::FrameBuffer::Native(_));
+        let capture_us = frame.frame.capture_us;
+        let event = NativeVideoEvent::Frame(NativeVideoFrame {
+            track: crate::video::LOCAL_CAMERA.to_owned(),
+            keyframe: true,
+            discontinuity: std::mem::take(&mut self.discontinuity),
+            timestamp_us: capture_us,
+            // The capture time on a 90 kHz clock (wrapping, as RTP's does).
+            rtp_ts: (capture_us.wrapping_mul(9) / 100) as u32,
+            payload: NativePayload::Camera(frame),
+        });
+        let t = Instant::now();
+        self.consumer.on_video(event);
+        let us = micros(t.elapsed());
+        self.window.frames += 1;
+        self.window.consumer_peak = self.window.consumer_peak.max(us);
+        let mut m = self.shared.meter();
+        m.stats.frames_out += 1;
+        m.stats.consumer_us_avg = ewma(m.stats.consumer_us_avg, us);
+        if cpu {
+            m.stats.cpu_planes += 1;
+        }
+    }
+
+    /// The tap's counters into the stats; the log every `log_every`.
+    fn count(&mut self) {
+        let dropped = self.tap.dropped();
+        let taken = self.tap.taken();
+        let now = Instant::now();
+        let span = now.saturating_duration_since(self.window.start);
+        let log = span >= self.tuning.log_every;
+        let s = {
+            let mut m = self.shared.meter();
+            m.stats.frames_in = taken + dropped;
+            m.stats.dropped_queue_full = dropped;
+            if log {
+                m.stats.fps = (self.window.frames as f64 / span.as_secs_f64()) as f32;
+                m.stats.consumer_us_peak = self.window.consumer_peak;
+            }
+            m.stats
+        };
+        if log {
+            tracing::info!(
+                track = crate::video::LOCAL_CAMERA,
+                fps = s.fps,
+                frames_in = s.frames_in,
+                frames_out = s.frames_out,
+                consumer_us_avg = s.consumer_us_avg,
+                consumer_us_peak = s.consumer_us_peak,
+                dropped = s.dropped_queue_full,
+                cpu_planes = s.cpu_planes,
+                "sew-voice: self-view sink stats"
+            );
+            self.window = Window::new(now);
+        }
+    }
+}
+
+/// The service side of a self-view [`NativeSink`]: no track at the media server, so a resize
+/// or a keyframe request changes nothing (the frames are the camera's own).
+pub(crate) struct SelfViewControl {
+    pub(crate) worker: Arc<SelfViewWorker>,
+}
+
+impl NativeSinkControl for SelfViewControl {
+    fn track(&self, _id: u32) -> Option<String> {
+        self.worker
+            .is_open()
+            .then(|| crate::video::LOCAL_CAMERA.to_owned())
+    }
+
+    fn resize(&self, _id: u32, _width: u32, _height: u32) {}
+
+    fn keyframe(&self, _id: u32) {}
+
+    fn close(&self, _id: u32) {
+        self.worker.close();
+    }
 }
 
 #[cfg(test)]

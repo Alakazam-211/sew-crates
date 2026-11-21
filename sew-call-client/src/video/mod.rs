@@ -19,11 +19,14 @@
 //! ([`CameraSource`]) and screens ([`ScreenSource`]) for the publish side, lists the screens
 //! with PNG thumbnails, runs the OS picker, and runs the pre-join [`Preview`]. One opener holds
 //! the camera: the bridge's camera opens through the same `VideoCapture` and takes the camera
-//! over from a running preview.
+//! over from a running preview. Its camera taps ([`VideoCapture::camera_tap`]) hand the camera's
+//! raw frames, before any encoder, to a native self-view.
 
 pub(crate) mod alloc;
 #[cfg(feature = "video-core")]
 mod bridge;
+#[cfg(feature = "video-core")]
+mod camera_tap;
 #[cfg(feature = "video-core")]
 mod capture;
 pub(crate) mod codec_pref;
@@ -52,6 +55,8 @@ pub use bridge::{
     CameraRequest, CameraState, CodecPlan, PlannedCodec, SelfViewFrames, SelfViewItem, SourceFeed,
     SourceNote, VideoBridge, choose_codec, choose_codecs,
 };
+#[cfg(feature = "video-core")]
+pub use camera_tap::{CameraFeed, CameraFrame, CameraTap, CameraTapItem, CameraTapSender};
 #[cfg(feature = "video-core")]
 pub use capture::{
     CameraSource, Capture, CaptureEnd, CaptureError, CaptureEvent, CaptureKind, CapturePause,

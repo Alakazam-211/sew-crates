@@ -29,6 +29,8 @@ mod control;
 mod hook;
 #[cfg(any(feature = "dfn3", feature = "noise-bench"))]
 mod mem;
+#[cfg(feature = "noise-probe")]
+pub mod probe;
 
 #[cfg(feature = "dfn3")]
 pub use control::{DFN3_IDLE_UNLOAD, Dfn3LoadInfo};
@@ -375,13 +377,174 @@ impl std::fmt::Display for CaptureStageClock {
     }
 }
 
+/// Which scheduling the audio pipeline's processing thread asks the OS for
+/// ([`CaptureDspSched::mode`], `NoiseRemovalControl::set_dsp_sched`). Only macOS and iOS act
+/// on it.
+///
+/// Its JSON is `"workgroup"`, `"time_constraint_only"`, `"none"`, `"own_workgroup"` or
+/// `"unsupported"`. More may come in a later version.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CaptureDspSchedMode {
+    /// Asks for real-time scheduling by the time-constraint policy, and on iOS joins the audio
+    /// unit's own I/O workgroup while the phone's audio unit runs: what a call does when nothing
+    /// is set.
+    #[default]
+    Workgroup,
+    /// Asks for real-time scheduling by the time-constraint policy with the given figures, in
+    /// no workgroup.
+    TimeConstraintOnly,
+    /// No request: the OS's default scheduling.
+    None,
+    /// Asks for real-time scheduling by the time-constraint policy, and in a work interval of
+    /// the thread's own: each block is due [`CaptureDspSched::interval_deadline_us`] after it
+    /// starts.
+    OwnWorkgroup,
+    /// Only reported, as the mode in effect: this platform has none of these calls (Linux,
+    /// Android, Windows). Asking for it is refused.
+    Unsupported,
+}
+
+impl CaptureDspSchedMode {
+    /// The mode's name: `workgroup`, `time_constraint_only`, `none`, `own_workgroup` or
+    /// `unsupported`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CaptureDspSchedMode::Workgroup => "workgroup",
+            CaptureDspSchedMode::TimeConstraintOnly => "time_constraint_only",
+            CaptureDspSchedMode::None => "none",
+            CaptureDspSchedMode::OwnWorkgroup => "own_workgroup",
+            CaptureDspSchedMode::Unsupported => "unsupported",
+        }
+    }
+}
+
+/// Why the processing thread runs in [`CaptureDspSchedMode::Workgroup`] and not in the mode
+/// asked for ([`NoiseRemovalState::capture_stage_dsp_sched_fallback`]).
+///
+/// Its JSON is `"time_constraint_refused"`, `"own_workgroup_unavailable"`,
+/// `"own_workgroup_join_refused"`, `"interval_refused"` or `"other"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CaptureDspSchedFallback {
+    /// The OS refused the time-constraint policy.
+    TimeConstraintRefused,
+    /// The system has no work intervals for an app's audio threads, or making one failed.
+    OwnWorkgroupUnavailable,
+    /// The OS refused the thread joining its own work interval.
+    OwnWorkgroupJoinRefused,
+    /// The OS refused an interval during the call; the thread left its own work interval.
+    IntervalRefused,
+    /// A reason this version does not know.
+    Other,
+}
+
+/// Why [`CaptureDspSched::validate`] (and `NoiseRemovalControl::set_dsp_sched`) refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CaptureDspSchedError {
+    /// [`CaptureDspSchedMode::Unsupported`] is only reported, never asked for.
+    #[error("the mode `unsupported` is only reported, never asked for")]
+    ModeNotAskable,
+    /// The figures must satisfy 0 < computation <= constraint <= period <= 1 s.
+    #[error("the time constraint needs 0 < computation <= constraint <= period <= 1 s")]
+    TimeConstraint,
+    /// The interval deadline must be above zero and at most the period.
+    #[error("the interval deadline must be above 0 and at most the period")]
+    IntervalDeadline,
+}
+
+/// What the audio pipeline's processing thread asks the OS for in the calls that start after
+/// it is set (`NoiseRemovalControl::set_dsp_sched`): the mode, the time-constraint policy's
+/// figures and, for [`CaptureDspSchedMode::OwnWorkgroup`], each block's deadline. The
+/// pipeline reads it once, as a call's audio starts; a change reaches the next call.
+///
+/// Its JSON is `{mode, period_us, computation_us, constraint_us, interval_deadline_us}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CaptureDspSched {
+    /// Which set-up to ask for.
+    pub mode: CaptureDspSchedMode,
+    /// How often the thread has work, microseconds (one 10 ms block by default).
+    pub period_us: u32,
+    /// The CPU time it needs per period, microseconds (6 ms by default).
+    pub computation_us: u32,
+    /// The time from the start of the period by which that work must be done, microseconds
+    /// (9 ms by default).
+    pub constraint_us: u32,
+    /// [`CaptureDspSchedMode::OwnWorkgroup`] only: how long after a block starts its work is
+    /// due, microseconds (3 ms by default). The other modes ignore it.
+    pub interval_deadline_us: u32,
+}
+
+impl Default for CaptureDspSched {
+    fn default() -> CaptureDspSched {
+        CaptureDspSched::new(CaptureDspSchedMode::Workgroup)
+    }
+}
+
+impl CaptureDspSched {
+    /// `mode` with the default figures: a 10 ms period, 6 ms of computation, a 9 ms
+    /// constraint and a 3 ms interval deadline.
+    pub const fn new(mode: CaptureDspSchedMode) -> CaptureDspSched {
+        CaptureDspSched {
+            mode,
+            period_us: 10_000,
+            computation_us: 6_000,
+            constraint_us: 9_000,
+            interval_deadline_us: 3_000,
+        }
+    }
+
+    /// With these time-constraint figures, microseconds.
+    pub const fn with_time_constraint_us(
+        mut self,
+        period_us: u32,
+        computation_us: u32,
+        constraint_us: u32,
+    ) -> CaptureDspSched {
+        self.period_us = period_us;
+        self.computation_us = computation_us;
+        self.constraint_us = constraint_us;
+        self
+    }
+
+    /// With this interval deadline, microseconds.
+    pub const fn with_interval_deadline_us(mut self, deadline_us: u32) -> CaptureDspSched {
+        self.interval_deadline_us = deadline_us;
+        self
+    }
+
+    /// Whether the audio pipeline would take these figures: a mode that can be asked for,
+    /// 0 < computation <= constraint <= period <= 1 s, and an interval deadline above zero and
+    /// at most the period.
+    pub const fn validate(&self) -> Result<(), CaptureDspSchedError> {
+        if matches!(self.mode, CaptureDspSchedMode::Unsupported) {
+            return Err(CaptureDspSchedError::ModeNotAskable);
+        }
+        if self.computation_us == 0
+            || self.computation_us > self.constraint_us
+            || self.constraint_us > self.period_us
+            || self.period_us > 1_000_000
+        {
+            return Err(CaptureDspSchedError::TimeConstraint);
+        }
+        if self.interval_deadline_us == 0 || self.interval_deadline_us > self.period_us {
+            return Err(CaptureDspSchedError::IntervalDeadline);
+        }
+        Ok(())
+    }
+}
+
 /// How the OS schedules the audio pipeline's processing thread, the thread the noise removal
 /// stage runs on ([`NoiseRemovalState::capture_stage_dsp_scheduling`]): the best of the
 /// requests the pipeline made that the OS granted. On macOS and iOS the thread asks for
 /// real-time scheduling; elsewhere it keeps the OS's default.
 ///
-/// Its JSON is `"workgroup"`, `"time_constraint"`, `"qos"` or `"none"`. More may come in a
-/// later version.
+/// Its JSON is `"workgroup"`, `"time_constraint"`, `"qos"`, `"none"` or `"own_workgroup"`. More
+/// may come in a later version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -396,16 +559,20 @@ pub enum CaptureDspScheduling {
     /// The OS's default scheduling (Linux, Android and Windows, or where the OS refused every
     /// request).
     None,
+    /// Real-time, and joined to a work interval of the thread's own
+    /// ([`CaptureDspSchedMode::OwnWorkgroup`]): each block is an interval with its own deadline.
+    OwnWorkgroup,
 }
 
 impl CaptureDspScheduling {
-    /// The mode's name: `workgroup`, `time_constraint`, `qos` or `none`.
+    /// The mode's name: `workgroup`, `time_constraint`, `qos`, `none` or `own_workgroup`.
     pub fn as_str(self) -> &'static str {
         match self {
             CaptureDspScheduling::Workgroup => "workgroup",
             CaptureDspScheduling::TimeConstraint => "time_constraint",
             CaptureDspScheduling::Qos => "qos",
             CaptureDspScheduling::None => "none",
+            CaptureDspScheduling::OwnWorkgroup => "own_workgroup",
         }
     }
 }
@@ -588,6 +755,31 @@ pub struct NoiseRemovalState {
     /// pipeline reports it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_stage_dsp_scheduling: Option<CaptureDspScheduling>,
+    /// The scheduling mode asked for (`NoiseRemovalControl::set_dsp_sched`, or the default)
+    /// and the mode the processing thread runs in. Absent before the pipeline reports them,
+    /// and on a platform without these calls unless a mode was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_sched_requested: Option<CaptureDspSchedMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_sched_effective: Option<CaptureDspSchedMode>,
+    /// Why the mode in effect is not the mode asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_sched_fallback: Option<CaptureDspSchedFallback>,
+    /// The time-constraint figures asked for, microseconds (absent in the modes that do not
+    /// ask for the policy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_period_us: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_computation_us: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_constraint_us: Option<u32>,
+    /// The deadline of each block's work interval, microseconds
+    /// ([`CaptureDspSchedMode::OwnWorkgroup`] only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_stage_dsp_interval_deadline_us: Option<u32>,
+    /// Work intervals finished on the thread's own workgroup so far.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub capture_stage_dsp_intervals: u64,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -643,6 +835,14 @@ impl NoiseRemovalState {
             capture_stage_preempted_over_budget: 0,
             capture_stage_starved: 0,
             capture_stage_dsp_scheduling: None,
+            capture_stage_dsp_sched_requested: None,
+            capture_stage_dsp_sched_effective: None,
+            capture_stage_dsp_sched_fallback: None,
+            capture_stage_dsp_period_us: None,
+            capture_stage_dsp_computation_us: None,
+            capture_stage_dsp_constraint_us: None,
+            capture_stage_dsp_interval_deadline_us: None,
+            capture_stage_dsp_intervals: 0,
         }
     }
 
@@ -669,6 +869,14 @@ impl NoiseRemovalState {
         self.capture_stage_preempted_over_budget = 0;
         self.capture_stage_starved = 0;
         self.capture_stage_dsp_scheduling = None;
+        self.capture_stage_dsp_sched_requested = None;
+        self.capture_stage_dsp_sched_effective = None;
+        self.capture_stage_dsp_sched_fallback = None;
+        self.capture_stage_dsp_period_us = None;
+        self.capture_stage_dsp_computation_us = None;
+        self.capture_stage_dsp_constraint_us = None;
+        self.capture_stage_dsp_interval_deadline_us = None;
+        self.capture_stage_dsp_intervals = 0;
         self
     }
 

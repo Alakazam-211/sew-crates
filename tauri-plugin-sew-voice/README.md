@@ -37,7 +37,11 @@ engine receives remote video and publishes the camera and the screen share (sew-
 `VideoBridge`), with this device's self-view on `local:camera` and `local:screen`. On phones (`video` and `mobile`) it uses
 kessel-video's iOS and Android backends, follows the app's scene (`VoiceControl::app_scene`),
 tells the app when the call has video (`VoiceListener::video_changed`, for the speaker route)
-and gives native sinks for a picture in picture (`VoiceControl::open_native_sink`).
+and gives native sinks for a picture in picture (`VoiceControl::open_native_sink`). A native
+sink on `local:camera` is a native self-view: the camera's own frames as captured, with no
+encode and no decode (on macOS and iOS the camera's `CVPixelBuffer`, elsewhere CPU planes),
+upright and never mirrored, each with the camera's facing so the app mirrors a front camera's
+view; it shows whenever the camera is open (the preview or a call) and never opens it.
 
 Video codecs: pass the webview's WebCodecs probe as `join`'s `decode` (`["vp8", "h264"]`); the
 engine then offers to receive only what this device decodes (VP8 always, H.264 only when the
@@ -155,6 +159,13 @@ Not affiliated with or endorsed by LiveKit.
   your app" below.
 - `noise-bench` (debug builds only, never in `default`): `VoiceControl::noise_bench`, the
   noise removal stage on the device's microphone for a while, reported as JSON.
+- `noise-probe` (measurement builds only, never in `default`; turns on `dfn3`):
+  `VoiceControl::arm_noise_probe` has the next call's noise removal stage record what each
+  block cost, which core the processing thread was on and what DeepFilterNet3 ran;
+  `noise_probe_report` answers it as JSON, and `noise_probe_reference` runs the probe's
+  calibration loops on a thread of its own. No plugin command: an app wraps them in its own.
+  On macOS and iOS the core number is `pthread_cpu_number_np`, linked strongly: a probe build
+  needs iOS 14.2 or macOS 11 or later.
 - `sim-software-key` (off; iOS simulator and x86 Android emulator builds only, refused
   elsewhere): `SimSoftwareKey`, a software stand-in for the hardware key.
 - With no features: the plugin's core (`VoiceService`, the JSON shapes in `wire`, the engine
@@ -172,7 +183,7 @@ join calls on (see the [sew-crates](https://github.com/Alakazam-211/sew-crates) 
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-voice = "0.9.2"
+tauri-plugin-sew-voice = "0.9.3"
 # For a JoinProvider like sew-call-client's example (its JoinProvider docs):
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
@@ -374,7 +385,7 @@ low-latency model, by Hendrik Schröter and the DeepFilterNet authors
 inference. Its weights are not in any crate: your app ships them.
 
 ```toml
-tauri-plugin-sew-voice = { version = "0.9.2", features = ["dfn3"] }
+tauri-plugin-sew-voice = { version = "0.9.3", features = ["dfn3"] }
 ```
 
 The four files come in a GitHub release asset of the Sew release the plugin belongs to, on
@@ -385,8 +396,8 @@ https://github.com/Alakazam-211/sew-releases/releases/download/v<sew-version>/se
 ```
 
 where `<sew-version>` is the Sew version in the heading of this release's CHANGELOG entry.
-For plugin 0.9.2 that is Sew 0.11.2:
-<https://github.com/Alakazam-211/sew-releases/releases/download/v0.11.2/sew-dfn3-0.11.2.tar.gz>
+For plugin 0.9.3 that is Sew 0.11.3:
+<https://github.com/Alakazam-211/sew-releases/releases/download/v0.11.3/sew-dfn3-0.11.3.tar.gz>
 (sha256 `153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697`). Each release's
 `SHA256SUMS` and `release.json` carry the asset's sha256. The tarball holds a `dfn3/` folder
 with these files:
@@ -401,7 +412,7 @@ Fetch and check it at build time (the weights are not committed to your reposito
 example from `src-tauri/`:
 
 ```sh
-v=0.11.2
+v=0.11.3
 curl -fLO "https://github.com/Alakazam-211/sew-releases/releases/download/v$v/sew-dfn3-$v.tar.gz"
 echo "153721fd5f9f33663da7d831b3b611adcb9ca9e65233a6128d94941ad48d6697  sew-dfn3-$v.tar.gz" | sha256sum -c -
 tar -xzf "sew-dfn3-$v.tar.gz"   # writes dfn3/
@@ -439,6 +450,56 @@ removal state says why (`model: "rnnoise"`,
 `model_reason: "unavailable"`); nothing else changes.
 
 Carry `dfn3/NOTICE` (and the two licence texts) in your app's third-party notices.
+
+### How the processing thread is scheduled
+
+The audio pipeline runs its capture processing, noise removal included, on one thread.
+`VoiceControl::set_dsp_sched` sets what that thread asks the OS for. Only macOS and iOS act
+on it; on other platforms the setting is kept and has no effect. It is a Rust call, not a
+plugin command: an app that wants it in its settings wraps it in a command of its own.
+
+```rust,ignore
+use tauri_plugin_sew_voice::{DspSched, DspSchedMode};
+
+voice.set_dsp_sched(Some(DspSched::new(DspSchedMode::OwnWorkgroup)))?;
+```
+
+The modes (`DspSchedMode`):
+
+- `Workgroup`, the default: the thread asks for the OS's real-time policy, and on iOS it
+  also joins the audio unit's own workgroup while the phone's audio unit runs. This is what a
+  call does when nothing is set.
+- `TimeConstraintOnly`: asks for the real-time policy with the figures you give, and no
+  workgroup.
+- `None`: no request. The thread keeps the OS's default scheduling.
+- `OwnWorkgroup`: asks for the real-time policy, and a work interval of the thread's own in place of
+  the audio unit's workgroup. Each block of audio is one interval, due a set time after it starts
+  (the interval deadline).
+
+`DspSched::new(mode)` starts from the pipeline's default figures; `with_time_constraint_us`
+and `with_interval_deadline_us` change them. Figures the pipeline would refuse answer
+`invalid_args`, and nothing changes.
+
+- It does nothing until you call it: a call behaves as before.
+- It applies from the next call. The pipeline reads the setting once, as a call's audio
+  starts, so a call under way keeps what it started with.
+- `set_dsp_sched(None)` goes back to the default.
+- The engine keeps the setting until the process ends: store it with the app's settings and
+  set it again at start.
+
+What a call asked for and what it got are in the `noise_removal` state and event, beside
+`capture_stage_dsp_scheduling`, which says what the OS granted. Each field is absent while
+unset:
+
+- `capture_stage_dsp_sched_requested`: the mode asked for;
+- `capture_stage_dsp_sched_effective`: the mode the thread runs in (`unsupported` on a
+  platform without these calls);
+- `capture_stage_dsp_sched_fallback`: why the two differ, when the OS refused part of the
+  request and the thread fell back to `workgroup`;
+- `capture_stage_dsp_period_us`, `capture_stage_dsp_computation_us`,
+  `capture_stage_dsp_constraint_us`: the time-constraint figures asked for;
+- `capture_stage_dsp_interval_deadline_us`: the interval deadline, in `own_workgroup`;
+- `capture_stage_dsp_intervals`: how many work intervals the thread has finished.
 
 ### Content Security Policy
 

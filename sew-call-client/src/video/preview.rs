@@ -5,6 +5,10 @@
 //!
 //! The camera opens only on [`VideoCapture::preview`] and closes the moment the [`Preview`] is
 //! stopped or dropped (the light goes off then, not when a task gets round to it).
+//!
+//! Its raw frames go to the capture's camera taps as well ([`VideoCapture::camera_tap`]), before
+//! the encoder, with the camera's facing: the tap's feed is `Live` while it runs, `Paused` while
+//! the OS pauses the camera, `Off` once it stops.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -13,10 +17,11 @@ use std::time::Duration;
 use bytes::Bytes;
 use kessel_video::{
     Capabilities, CaptureConstraints, CodecConfig, CodecDirection, EncodeOptions, EncoderConfig,
-    Facing, VideoBackend, VideoEncoder, VideoError,
+    Facing, PixelFormat, VideoBackend, VideoEncoder, VideoError,
 };
 use tokio::sync::{Notify, mpsc};
 
+use super::camera_tap::{CameraFeed, CameraTaps};
 use super::capture::{CameraSource, CaptureEnd, CaptureError, CaptureEvent, VideoCapture};
 use super::types::VideoCodec;
 
@@ -133,6 +138,8 @@ impl Shared {
 
 struct State {
     camera: CameraSource,
+    /// The capture's camera taps (the raw frames, before the encoder).
+    taps: CameraTaps,
     backend: Arc<dyn VideoBackend>,
     codec: VideoCodec,
     facing: Facing,
@@ -197,14 +204,17 @@ impl VideoCapture {
         }
         let codec = preview_codec(&caps).ok_or(CaptureError::CodecUnavailable)?;
         let mut c = CaptureConstraints::new(PREVIEW_WIDTH, PREVIEW_HEIGHT, PREVIEW_FPS);
-        // The pure-Rust VP8 encoder takes CPU planes; an OS H.264 encoder takes its own buffers.
-        c.prefer_native = codec == VideoCodec::H264;
+        // The OS's own buffers where the backend has them (macOS and iOS), as for a call's
+        // camera: the camera taps get them as captured, and the encoder reads them (an encoder
+        // that can't gets CPU planes converted once).
+        c.prefer_native = true;
         let camera = self.open_camera(device, c).await?;
         let facing = self.camera_facing(device);
         let ready = camera.notifier();
         let shared = Arc::new(Shared {
             state: Mutex::new(Some(State {
                 camera,
+                taps: self.camera_taps().clone(),
                 backend: Arc::clone(self.backend()),
                 codec,
                 facing,
@@ -254,6 +264,13 @@ async fn run(shared: Arc<Shared>, tx: mpsc::Sender<PreviewItem>) {
     }
 }
 
+impl Drop for State {
+    fn drop(&mut self) {
+        // The camera closes with it.
+        self.taps.feed(CameraFeed::Off);
+    }
+}
+
 impl State {
     fn open_encoder(&mut self, w: u32, h: u32) -> Result<(), VideoError> {
         let mut cfg = match self.codec {
@@ -278,6 +295,7 @@ impl State {
                     return (out, true);
                 }
                 CaptureEvent::Resumed => keyframe = true,
+                CaptureEvent::Paused(_) => self.taps.feed(CameraFeed::Paused),
                 _ => {}
             }
         }
@@ -285,6 +303,7 @@ impl State {
             enc.request_keyframe();
         }
         while let Some(frame) = self.camera.try_frame() {
+            self.taps.frame(&frame, self.facing);
             let fit =
                 kessel_video::fit_within(frame.width, frame.height, PREVIEW_WIDTH, PREVIEW_HEIGHT);
             if self.encoder.is_some() && self.size != fit {
@@ -301,7 +320,22 @@ impl State {
             let Some(enc) = self.encoder.as_mut() else {
                 break;
             };
-            match enc.submit(&frame, EncodeOptions::default()) {
+            let submitted = match enc.submit(&frame, EncodeOptions::default()) {
+                Err(VideoError::Unsupported(_))
+                    if matches!(frame.buffer, kessel_video::FrameBuffer::Native(_)) =>
+                {
+                    // An OS buffer this encoder can't take: CPU planes instead.
+                    match self
+                        .backend
+                        .convert(&frame, frame.width, frame.height, PixelFormat::I420)
+                    {
+                        Ok(planes) => enc.submit(&planes, EncodeOptions::default()),
+                        Err(e) => Err(e),
+                    }
+                }
+                other => other,
+            };
+            match submitted {
                 Ok(()) | Err(VideoError::Busy) => {}
                 Err(_) => {
                     self.encoder = None;

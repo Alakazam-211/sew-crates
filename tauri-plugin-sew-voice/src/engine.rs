@@ -550,12 +550,55 @@ pub trait VoiceEngine: Send + Sync + 'static {
     fn set_dfn3_idle_unload(&self, after: std::time::Duration) {
         let _ = after;
     }
+    /// What the audio pipeline's processing thread asks the OS for in the calls that start
+    /// after this (sew-call-client's `NoiseRemovalControl::set_dsp_sched`); `None`: the
+    /// pipeline's default. The default: refused with `noise_mode_unavailable`.
+    fn set_dsp_sched(&self, sched: Option<crate::DspSched>) -> Result<(), EngineError> {
+        let _ = sched;
+        Err(EngineError::failed(
+            crate::wire::code::NOISE_MODE_UNAVAILABLE,
+        ))
+    }
+    /// The scheduling set with [`VoiceEngine::set_dsp_sched`]. The default: `None`.
+    fn dsp_sched(&self) -> Option<crate::DspSched> {
+        None
+    }
     #[cfg(feature = "noise-bench")]
     fn noise_bench(&self, duration: std::time::Duration) -> Result<serde_json::Value, EngineError> {
         let _ = duration;
         Err(EngineError::failed(
             crate::wire::code::NOISE_MODE_UNAVAILABLE,
         ))
+    }
+    /// MEASUREMENT ONLY (feature `noise-probe`): the next call's noise removal stage is
+    /// probed (sew-call-client's `noise_probe`). The default: refused with
+    /// `noise_mode_unavailable`.
+    #[cfg(feature = "noise-probe")]
+    fn arm_noise_probe(&self) -> Result<(), EngineError> {
+        Err(EngineError::failed(
+            crate::wire::code::NOISE_MODE_UNAVAILABLE,
+        ))
+    }
+    /// MEASUREMENT ONLY (feature `noise-probe`): labels the probed call's blocks from now on
+    /// as `phase` (it does not change the scheduling; see [`VoiceEngine::set_dsp_sched`]). The
+    /// default: refused with `noise_mode_unavailable`.
+    #[cfg(feature = "noise-probe")]
+    fn set_noise_probe_phase(
+        &self,
+        phase: crate::NoiseProbePhase,
+        deadline: Option<std::time::Duration>,
+    ) -> Result<(), EngineError> {
+        let _ = (phase, deadline);
+        Err(EngineError::failed(
+            crate::wire::code::NOISE_MODE_UNAVAILABLE,
+        ))
+    }
+    /// MEASUREMENT ONLY (feature `noise-probe`): the last probed call's figures as
+    /// sew-call-client's `noise_probe::NoiseProbeReport` in JSON, during the call or after it
+    /// (`None`: no call was probed). The default: `None`.
+    #[cfg(feature = "noise-probe")]
+    fn noise_probe_report(&self) -> Result<Option<serde_json::Value>, EngineError> {
+        Ok(None)
     }
 
     // ── video (the defaults: an engine without video) ──
@@ -650,6 +693,14 @@ pub trait VoiceEngine: Send + Sync + 'static {
     /// delivers H.264 only).
     #[cfg(feature = "video-core")]
     fn native_video_backend(&self) -> Option<Arc<dyn sew_call_client::kessel_video::VideoBackend>> {
+        None
+    }
+    /// A new tap on the camera's raw frames (sew-call-client's `CameraTap`), for a self-view
+    /// native sink: the frames of the camera the engine opens (the preview, a call's camera),
+    /// before any encoder. It must never open the camera. The default: `None` (the self-view
+    /// sink is refused with `video_unsupported`).
+    #[cfg(feature = "video-core")]
+    fn camera_tap(&self) -> Option<sew_call_client::CameraTap> {
         None
     }
     /// A decoder for the decoded-frame fallback (a sink whose webview can't decode the track's
