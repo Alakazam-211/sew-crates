@@ -748,6 +748,24 @@ struct Reconnect {
     attempt: u32,
 }
 
+impl Reconnect {
+    /// When the loop must wake for this reconnect: the window's end and the next try, each
+    /// only while the loop's timeout can act on it. A re-join under way holds both (its answer
+    /// sets a new window, or ends the call), and the next try waits while a connect is under way
+    /// (`connecting`). A deadline the timeout can't act on would stay in the past and wake the
+    /// loop at once on every turn.
+    fn wake(&self, rejoining: bool, connecting: bool) -> Option<Instant> {
+        if rejoining {
+            return None;
+        }
+        if connecting {
+            Some(self.deadline)
+        } else {
+            Some(self.deadline.min(self.next_try))
+        }
+    }
+}
+
 struct SendPath {
     mid: String,
     pt: u8,
@@ -1187,9 +1205,9 @@ impl Engine {
             t = t.min(s);
         }
         if let Some(r) = &self.reconnect {
-            t = t.min(r.deadline);
-            if self.attempt.is_none() && self.link.is_none() && self.rejoining.is_none() {
-                t = t.min(r.next_try);
+            let connecting = self.attempt.is_some() || self.link.is_some();
+            if let Some(w) = r.wake(self.rejoining.is_some(), connecting) {
+                t = t.min(w);
             }
         }
         if let Some(r) = self.renew_at {
@@ -3762,6 +3780,37 @@ mod tests {
         let m = CallMoved::from_update(&u);
         assert_eq!(m.room(), "48831765147549712");
         assert_eq!(m.call_id.as_deref(), Some("48831765147549711"));
+    }
+
+    /// A reconnect whose window ran out starts a re-join and keeps that past window until the
+    /// re-join answers. Meanwhile the loop's timeout does nothing for it, so the window must
+    /// not wake the loop: it would wake at once on every turn (a busy loop) for as long as the
+    /// re-join takes.
+    #[test]
+    fn a_rejoin_under_way_does_not_wake_the_loop_for_a_past_window() {
+        let start = Instant::now();
+        let r = Reconnect {
+            initial: false,
+            kind: Kind::Full,
+            deadline: start,
+            next_try: start,
+            backoff: BACKOFF_MIN,
+            attempt: 1,
+        };
+        // The window's end with nothing under way: due now (the timeout starts the re-join).
+        assert_eq!(r.wake(false, false), Some(start));
+        // A connect under way: the window still counts (its end starts a re-join).
+        assert_eq!(r.wake(false, true), Some(start));
+        // A re-join under way, turn after turn with nothing changing: no wake from the reconnect.
+        for turn in 1..=50u64 {
+            let now = start + Duration::from_millis(turn);
+            let woken = r.wake(true, false).is_some_and(|w| w <= now);
+            assert!(
+                !woken,
+                "turn {turn}: a past window woke the loop during a re-join"
+            );
+            assert_eq!(r.wake(true, true), None, "turn {turn}");
+        }
     }
 
     #[test]

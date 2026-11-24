@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-pending-pair"
+description = "Enables the pending_pair command without any pre-configured scope."
+commands.allow = ["pending_pair"]
+
+[[permission]]
+identifier = "deny-pending-pair"
+description = "Denies the pending_pair command without any pre-configured scope."
+commands.deny = ["pending_pair"]

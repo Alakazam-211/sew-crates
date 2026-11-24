@@ -3,9 +3,10 @@
 [[set]]
 identifier = "upload-file"
 description = """
-`upload_file`: the app reads a file at a path the page names and posts its bytes to an upload
-or an image route. The page can name any file the app may read, so grant it only to a bundled UI
-that takes the path from the person's own pick (a file dialog), never to a window that loads
-other pages.
+`pick_files` and `upload_file`: `pick_files` opens the native file dialog (desktop) and
+answers a handle for each file the person picked; `upload_file` reads the file of such a
+handle in Rust and posts its bytes to an upload or an image route. It takes only handles the
+dialog gave the same page this session, never a path, and doesn't follow a link. Grant it only
+to the app's bundled UI, never to a server's live site.
 """
-permissions = ["allow-upload-file"]
+permissions = ["allow-pick-files", "allow-upload-file"]

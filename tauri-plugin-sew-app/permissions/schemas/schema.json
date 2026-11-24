@@ -451,6 +451,42 @@
           "markdownDescription": "Denies the pair_decline command without any pre-configured scope."
         },
         {
+          "description": "Enables the pending_deep_links command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pending-deep-links",
+          "markdownDescription": "Enables the pending_deep_links command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pending_deep_links command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pending-deep-links",
+          "markdownDescription": "Denies the pending_deep_links command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pending_pair command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pending-pair",
+          "markdownDescription": "Enables the pending_pair command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pending_pair command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pending-pair",
+          "markdownDescription": "Denies the pending_pair command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pick_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pick-files",
+          "markdownDescription": "Enables the pick_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pick_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pick-files",
+          "markdownDescription": "Denies the pick_files command without any pre-configured scope."
+        },
+        {
           "description": "Enables the remove_server command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remove-server",
@@ -583,10 +619,10 @@
           "markdownDescription": "Denies the upload_file command without any pre-configured scope."
         },
         {
-          "description": "Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `confirm_server`,\n`remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,\n`sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list\n(`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed\nin) and `notify` (a notification and the app badge). Every window gets every event\n(`sew-app://servers`, `signed_out`, `warning`, `deep_link`, `pair_request`, `pair_refused`).\nNot in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API\ntransport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,\n`upload_bytes`: `sew-app:transport`); and `upload_file`, which reads a file the page names\n(`sew-app:upload-file`).\n\n#### This default permission set includes:\n\n- `allow-servers`\n- `allow-add-server`\n- `allow-confirm-server`\n- `allow-remove-server`\n- `allow-server-info`\n- `allow-set-active`\n- `allow-sign-in`\n- `allow-pair`\n- `allow-sign-in-door`\n- `allow-sign-in-door-set-password`\n- `allow-pair-confirm`\n- `allow-pair-decline`\n- `allow-sign-out`\n- `allow-devices`\n- `allow-revoke-device`\n- `allow-open`\n- `allow-notify`",
+          "description": "Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `confirm_server`,\n`remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,\n`sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list\n(`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed\nin), `notify` (a notification and the app badge), and `pending_pair` and `pending_deep_links`\n(what a `pair_request`, `pair_refused` or `deep_link` signal is about; the bundled UI only).\nEvery window gets every event (`sew-app://servers`, `signed_out`, `warning`, `deep_link`,\n`pair_request`, `pair_refused`) as a signal with no server, account, link or code in it.\nFrom a saved server's live site the commands act only on that server and its accounts, and\n`servers` lists only those; `add_server` and `confirm_server` answer only the bundled UI.\nNot in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API\ntransport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,\n`upload_bytes`: `sew-app:transport`); and `pick_files` with `upload_file`, which read a file\nthe person picked in the file dialog (`sew-app:upload-file`).\n\n#### This default permission set includes:\n\n- `allow-servers`\n- `allow-add-server`\n- `allow-confirm-server`\n- `allow-remove-server`\n- `allow-server-info`\n- `allow-set-active`\n- `allow-sign-in`\n- `allow-pair`\n- `allow-sign-in-door`\n- `allow-sign-in-door-set-password`\n- `allow-pair-confirm`\n- `allow-pair-decline`\n- `allow-sign-out`\n- `allow-devices`\n- `allow-revoke-device`\n- `allow-open`\n- `allow-notify`\n- `allow-pending-pair`\n- `allow-pending-deep-links`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `confirm_server`,\n`remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,\n`sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list\n(`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed\nin) and `notify` (a notification and the app badge). Every window gets every event\n(`sew-app://servers`, `signed_out`, `warning`, `deep_link`, `pair_request`, `pair_refused`).\nNot in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API\ntransport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,\n`upload_bytes`: `sew-app:transport`); and `upload_file`, which reads a file the page names\n(`sew-app:upload-file`).\n\n#### This default permission set includes:\n\n- `allow-servers`\n- `allow-add-server`\n- `allow-confirm-server`\n- `allow-remove-server`\n- `allow-server-info`\n- `allow-set-active`\n- `allow-sign-in`\n- `allow-pair`\n- `allow-sign-in-door`\n- `allow-sign-in-door-set-password`\n- `allow-pair-confirm`\n- `allow-pair-decline`\n- `allow-sign-out`\n- `allow-devices`\n- `allow-revoke-device`\n- `allow-open`\n- `allow-notify`"
+          "markdownDescription": "Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `confirm_server`,\n`remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,\n`sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list\n(`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed\nin), `notify` (a notification and the app badge), and `pending_pair` and `pending_deep_links`\n(what a `pair_request`, `pair_refused` or `deep_link` signal is about; the bundled UI only).\nEvery window gets every event (`sew-app://servers`, `signed_out`, `warning`, `deep_link`,\n`pair_request`, `pair_refused`) as a signal with no server, account, link or code in it.\nFrom a saved server's live site the commands act only on that server and its accounts, and\n`servers` lists only those; `add_server` and `confirm_server` answer only the bundled UI.\nNot in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API\ntransport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,\n`upload_bytes`: `sew-app:transport`); and `pick_files` with `upload_file`, which read a file\nthe person picked in the file dialog (`sew-app:upload-file`).\n\n#### This default permission set includes:\n\n- `allow-servers`\n- `allow-add-server`\n- `allow-confirm-server`\n- `allow-remove-server`\n- `allow-server-info`\n- `allow-set-active`\n- `allow-sign-in`\n- `allow-pair`\n- `allow-sign-in-door`\n- `allow-sign-in-door-set-password`\n- `allow-pair-confirm`\n- `allow-pair-decline`\n- `allow-sign-out`\n- `allow-devices`\n- `allow-revoke-device`\n- `allow-open`\n- `allow-notify`\n- `allow-pending-pair`\n- `allow-pending-deep-links`"
         },
         {
           "description": "`handoff`: a single-use 60 s code that the calling page trades for the App's cookie session\n(`POST /sew/native/handoff/redeem`). The plugin answers it only to a page on the account's own\nserver. Grant it only to the remote capability of the App's own site, never to a window that\nloads other pages.\n\n#### This permission set includes:\n\n- `allow-handoff`",
@@ -601,10 +637,10 @@
           "markdownDescription": "The API transport, for an App's bundled UI: `api` (the App's client API through the server's\nnative lane, with the device bearer kept in the app), `gateway_open`, `gateway_send` and\n`gateway_close` (the gateway socket held in the app and relayed over a channel, its ticket put in\nby the app), and `upload_bytes` (raw bytes to an upload or an image route). The page never gets\nthe bearer or a ticket. Grant it to the bundled UI's own capability; a server's live site has its\ncookie session and doesn't need it. The `sewfile:` scheme needs no permission: it answers only\nthe bundled UI's pages.\n\n#### This permission set includes:\n\n- `allow-api`\n- `allow-gateway-open`\n- `allow-gateway-send`\n- `allow-gateway-close`\n- `allow-upload-bytes`"
         },
         {
-          "description": "`upload_file`: the app reads a file at a path the page names and posts its bytes to an upload\nor an image route. The page can name any file the app may read, so grant it only to a bundled UI\nthat takes the path from the person's own pick (a file dialog), never to a window that loads\nother pages.\n\n#### This permission set includes:\n\n- `allow-upload-file`",
+          "description": "`pick_files` and `upload_file`: `pick_files` opens the native file dialog (desktop) and\nanswers a handle for each file the person picked; `upload_file` reads the file of such a\nhandle in Rust and posts its bytes to an upload or an image route. It takes only handles the\ndialog gave the same page this session, never a path, and doesn't follow a link. Grant it only\nto the app's bundled UI, never to a server's live site.\n\n#### This permission set includes:\n\n- `allow-pick-files`\n- `allow-upload-file`",
           "type": "string",
           "const": "upload-file",
-          "markdownDescription": "`upload_file`: the app reads a file at a path the page names and posts its bytes to an upload\nor an image route. The page can name any file the app may read, so grant it only to a bundled UI\nthat takes the path from the person's own pick (a file dialog), never to a window that loads\nother pages.\n\n#### This permission set includes:\n\n- `allow-upload-file`"
+          "markdownDescription": "`pick_files` and `upload_file`: `pick_files` opens the native file dialog (desktop) and\nanswers a handle for each file the person picked; `upload_file` reads the file of such a\nhandle in Rust and posts its bytes to an upload or an image route. It takes only handles the\ndialog gave the same page this session, never a path, and doesn't follow a link. Grant it only\nto the app's bundled UI, never to a server's live site.\n\n#### This permission set includes:\n\n- `allow-pick-files`\n- `allow-upload-file`"
         }
       ]
     }

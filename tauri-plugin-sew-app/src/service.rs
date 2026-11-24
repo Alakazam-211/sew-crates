@@ -86,7 +86,8 @@ pub fn default_device_name() -> String {
     format!("Desktop ({os})")
 }
 
-/// What the plugin tells the webview (`sew-app://<name>`).
+/// What happened, with its data: the host's Rust gets it whole (`Builder::on_event`, an
+/// [`AppEventSink`]); every webview gets only [`AppEvent::signal`] on `sew-app://<name>`.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum AppEvent {
@@ -143,7 +144,25 @@ impl AppEvent {
         format!("{}{}", crate::EVENT_PREFIX, self.name())
     }
 
-    /// The JSON payload.
+    /// What every webview gets on `sew-app://<name>`: a signal with no server, account, link
+    /// or code in it, since a Tauri event reaches every page that listens. `servers` and
+    /// `signed_out` are `{"changed": true}` (the page calls `servers`); `pair_request`,
+    /// `pair_refused` and `deep_link` are `{"pending": true}` (the bundled UI calls
+    /// `pending_pair` or `pending_deep_links`); `warning` is its `{code, detail, hint}`, which
+    /// names no server.
+    pub fn signal(&self) -> serde_json::Value {
+        match self {
+            AppEvent::Servers(_) | AppEvent::SignedOut { .. } => {
+                serde_json::json!({ "changed": true })
+            }
+            AppEvent::DeepLink(_) | AppEvent::PairRequest { .. } | AppEvent::PairRefused { .. } => {
+                serde_json::json!({ "pending": true })
+            }
+            AppEvent::Warning(w) => serde_json::to_value(w).unwrap_or(serde_json::Value::Null),
+        }
+    }
+
+    /// The whole data as JSON (the host's Rust; never a webview's).
     pub fn payload(&self) -> serde_json::Value {
         let v = match self {
             AppEvent::Servers(s) => serde_json::to_value(s),
@@ -188,6 +207,39 @@ pub trait VoiceForget: Send + Sync + 'static {
     /// Forget install `install_id`.
     fn forget(&self, install_id: u64) -> BoxFuture<'_, Result<(), AppError>>;
 }
+
+/// A pairing link held for the person's confirm (`pending_pair`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairRequestView {
+    /// The confirmed server the link names.
+    pub server: Origin,
+    /// Its host, for the question.
+    pub host: String,
+    /// How long the confirm may still wait.
+    pub expires_in_ms: u64,
+}
+
+/// A pairing link refused (`pending_pair`): nothing was redeemed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairRefusedView {
+    /// The host the link names (empty when it names none).
+    pub host: String,
+    /// `unknown_server` or `bad_link`.
+    pub reason: String,
+}
+
+/// `pending_pair`'s answer: the links waiting for the person's confirm, and the last refused
+/// one (answered once).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPair {
+    /// The held links, oldest first.
+    pub requests: Vec<PairRequestView>,
+    /// The last refused link since the last `pending_pair`.
+    pub refused: Option<PairRefusedView>,
+}
+
+/// The deep links `pending_deep_links` holds at most (the oldest go first).
+pub const MAX_PENDING_LINKS: usize = 16;
 
 /// An added server waiting for its confirm.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,6 +314,10 @@ struct State {
     door_wait: HashMap<Origin, Instant>,
     /// Pairing links waiting for the person's confirm.
     pairs: HashMap<Origin, (Secret, Instant)>,
+    /// The last refused pairing link, until `pending_pair` answers it.
+    refused: Option<PairRefusedView>,
+    /// The deep links sent since the last `pending_deep_links`.
+    links: Vec<crate::deeplink::DeepLinkEvent>,
 }
 
 struct Inner {
@@ -282,6 +338,8 @@ struct Inner {
     gateways: GatewayTable,
     /// Opens the gateway sockets.
     connector: Mutex<Option<Arc<dyn SocketConnector>>>,
+    /// The files picked in the file dialog this session, by handle.
+    picked: Mutex<HashMap<String, crate::api::Picked>>,
 }
 
 /// The core. Cheap to clone (an `Arc`).
@@ -359,6 +417,8 @@ impl AppService {
                     doors: HashMap::new(),
                     door_wait: HashMap::new(),
                     pairs: HashMap::new(),
+                    refused: None,
+                    links: Vec::new(),
                 }),
                 secrets: tokio::sync::OnceCell::new(),
                 sink,
@@ -368,6 +428,7 @@ impl AppService {
                 bearer_read: tokio::sync::Mutex::new(()),
                 gateways: GatewayTable::default(),
                 connector: Mutex::new(None),
+                picked: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -397,13 +458,67 @@ impl AppService {
         lock(&self.inner.connector).clone()
     }
 
+    pub(crate) fn picked(&self) -> MutexGuard<'_, HashMap<String, crate::api::Picked>> {
+        lock(&self.inner.picked)
+    }
+
     pub(crate) fn gateways(&self) -> &GatewayTable {
         &self.inner.gateways
     }
 
-    /// Sends an event.
+    /// Sends an event. A deep link and a refused pairing link are also held for
+    /// [`AppService::pending_deep_links`] and [`AppService::pending_pair`].
     pub fn emit(&self, event: &AppEvent) {
+        match event {
+            AppEvent::DeepLink(d) => {
+                let mut st = self.state();
+                if st.links.len() >= MAX_PENDING_LINKS {
+                    st.links.remove(0);
+                }
+                st.links.push(d.clone());
+            }
+            AppEvent::PairRefused { host, reason } => {
+                self.state().refused = Some(PairRefusedView {
+                    host: host.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            _ => {}
+        }
         self.inner.sink.emit(event);
+    }
+
+    /// The pairing links waiting for the person's confirm, and the last refused one (answered
+    /// once): what a `pair_request` or `pair_refused` signal is about.
+    pub fn pending_pair(&self) -> PendingPair {
+        let mut st = self.state();
+        st.pairs.retain(|_, (_, at)| at.elapsed() < PAIRING_TTL);
+        let mut held: Vec<(Instant, PairRequestView)> = st
+            .pairs
+            .iter()
+            .map(|(o, (_, at))| {
+                let left = PAIRING_TTL.saturating_sub(at.elapsed());
+                (
+                    *at,
+                    PairRequestView {
+                        server: o.clone(),
+                        host: o.authority().to_owned(),
+                        expires_in_ms: u64::try_from(left.as_millis()).unwrap_or(u64::MAX),
+                    },
+                )
+            })
+            .collect();
+        held.sort_by_key(|(at, _)| *at);
+        PendingPair {
+            requests: held.into_iter().map(|(_, v)| v).collect(),
+            refused: st.refused.take(),
+        }
+    }
+
+    /// The deep links sent since the last call (at most [`MAX_PENDING_LINKS`], oldest first):
+    /// what a `deep_link` signal is about.
+    pub fn pending_deep_links(&self) -> Vec<crate::deeplink::DeepLinkEvent> {
+        std::mem::take(&mut self.state().links)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {

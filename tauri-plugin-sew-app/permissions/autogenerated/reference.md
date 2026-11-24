@@ -4,12 +4,16 @@ Everything a shell's UI needs: the saved servers (`servers`, `add_server`, `conf
 `remove_server`, `server_info`, `set_active`), sign-in (`sign_in`, `pair`, `sign_in_door`,
 `sign_in_door_set_password`, `pair_confirm`, `pair_decline`), sign-out and the device list
 (`sign_out`, `devices`, `revoke_device`), `open` (a server's page in the calling window, signed
-in) and `notify` (a notification and the app badge). Every window gets every event
-(`sew-app://servers`, `signed_out`, `warning`, `deep_link`, `pair_request`, `pair_refused`).
+in), `notify` (a notification and the app badge), and `pending_pair` and `pending_deep_links`
+(what a `pair_request`, `pair_refused` or `deep_link` signal is about; the bundled UI only).
+Every window gets every event (`sew-app://servers`, `signed_out`, `warning`, `deep_link`,
+`pair_request`, `pair_refused`) as a signal with no server, account, link or code in it.
+From a saved server's live site the commands act only on that server and its accounts, and
+`servers` lists only those; `add_server` and `confirm_server` answer only the bundled UI.
 Not in it: `handoff`, which answers a code for the page's cookie (`sew-app:handoff`); the API
 transport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_close`,
-`upload_bytes`: `sew-app:transport`); and `upload_file`, which reads a file the page names
-(`sew-app:upload-file`).
+`upload_bytes`: `sew-app:transport`); and `pick_files` with `upload_file`, which read a file
+the person picked in the file dialog (`sew-app:upload-file`).
 
 #### This default permission set includes the following:
 
@@ -30,6 +34,8 @@ transport for a bundled UI (`api`, `gateway_open`, `gateway_send`, `gateway_clos
 - `allow-revoke-device`
 - `allow-open`
 - `allow-notify`
+- `allow-pending-pair`
+- `allow-pending-deep-links`
 
 ## Permission Table
 
@@ -381,6 +387,84 @@ Denies the pair_decline command without any pre-configured scope.
 <tr>
 <td>
 
+`sew-app:allow-pending-deep-links`
+
+</td>
+<td>
+
+Enables the pending_deep_links command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-app:deny-pending-deep-links`
+
+</td>
+<td>
+
+Denies the pending_deep_links command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-app:allow-pending-pair`
+
+</td>
+<td>
+
+Enables the pending_pair command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-app:deny-pending-pair`
+
+</td>
+<td>
+
+Denies the pending_pair command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-app:allow-pick-files`
+
+</td>
+<td>
+
+Enables the pick_files command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sew-app:deny-pick-files`
+
+</td>
+<td>
+
+Denies the pick_files command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `sew-app:allow-remove-server`
 
 </td>
@@ -709,10 +793,11 @@ the bundled UI's pages.
 </td>
 <td>
 
-`upload_file`: the app reads a file at a path the page names and posts its bytes to an upload
-or an image route. The page can name any file the app may read, so grant it only to a bundled UI
-that takes the path from the person's own pick (a file dialog), never to a window that loads
-other pages.
+`pick_files` and `upload_file`: `pick_files` opens the native file dialog (desktop) and
+answers a handle for each file the person picked; `upload_file` reads the file of such a
+handle in Rust and posts its bytes to an upload or an image route. It takes only handles the
+dialog gave the same page this session, never a path, and doesn't follow a link. Grant it only
+to the app's bundled UI, never to a server's live site.
 
 
 </td>

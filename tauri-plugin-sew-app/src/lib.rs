@@ -11,8 +11,9 @@
 //!   ([`SecretStore`]: macOS Keychain, Windows Credential Manager, the Secret Service), with a
 //!   0600 file only when the app opts in ([`SecretChoice::OsOrFile`]).
 //! - **Sign-in** through the App server's native lane (`/sew/native/*`): the host's sign-in
-//!   door when the server offers it (the password goes from Rust to the host, never through
-//!   the page or the lane), the password form, and pairing with a code a signed-in page shows
+//!   door when the server offers it (the shell's UI hands the typed password to Rust once;
+//!   from there it goes only to the host's own door, never to the App's server or the lane),
+//!   the password form, and pairing with a code a signed-in page shows
 //!   (typed in, or from a pairing link the person confirms). A server that needs a newer shell
 //!   (`info.shell.min`) refuses sign-in with `shell_too_old`.
 //!   **Sign-out** ends the device session on the server, deletes the bearer and,
@@ -24,10 +25,13 @@
 //! - **The API transport**, for a bundled UI that holds no secret: `api` (the App's client
 //!   API through the lane, [`api`]), the gateway socket held in Rust and relayed over a
 //!   channel (`gateway_open`, `gateway_send`, `gateway_close`, [`gateway`]), the signed byte
-//!   routes on the `sewfile:` URI scheme, and uploads (`upload_bytes`, `upload_file`). The
-//!   device bearer and the gateway tickets never reach the page.
+//!   routes on the `sewfile:` URI scheme, and uploads (`upload_bytes`, and `upload_file` of a
+//!   file the person picked in the file dialog, `pick_files`). The device bearer and the
+//!   gateway tickets never reach the page.
 //! - **Shell plumbing** (feature `tauri`): the remote-origin capability of each saved server,
 //!   deep links, single instance and a notifications bridge (`plugin:sew-app|notify`).
+//! - **Scope.** A saved server's live site acts only on its own server and its accounts, and
+//!   lists only those; adding and confirming a server is the bundled UI's ([`scope`]).
 //!
 //! ```ignore
 //! let app = tauri_plugin_sew_app::Builder::new()
@@ -53,6 +57,7 @@ pub mod http;
 pub mod lane;
 pub mod origin;
 pub mod provider;
+pub mod scope;
 pub mod secrets;
 pub mod servers;
 pub mod service;
@@ -65,7 +70,7 @@ mod commands;
 #[cfg(feature = "tauri")]
 mod plugin;
 
-pub use api::{ApiCall, ApiReply, ByteReply, FILE_SCHEME, Upload, UploadData};
+pub use api::{ApiCall, ApiReply, ByteReply, FILE_SCHEME, PickedFile, Upload, UploadData};
 pub use deeplink::{DeepLinkEvent, DeepLinkRoute};
 pub use error::{AppError, code};
 pub use gateway::{
@@ -81,6 +86,7 @@ pub use origin::Origin;
 #[cfg(feature = "tauri")]
 pub use plugin::{Builder, RemoteCapability, TauriAppSink};
 pub use provider::LaneJoinProvider;
+pub use scope::Caller;
 #[cfg(feature = "keyring-store")]
 pub use secrets::KeyringStore;
 pub use secrets::{
@@ -88,8 +94,8 @@ pub use secrets::{
 };
 pub use servers::{Account, AccountKey, AccountState, AccountView, Book, ServerView, ServersView};
 pub use service::{
-    AppConfig, AppEvent, AppEventSink, AppService, HandoffView, NoEvents, PendingServer,
-    SignOutResult, VoiceForget,
+    AppConfig, AppEvent, AppEventSink, AppService, HandoffView, MAX_PENDING_LINKS, NoEvents,
+    PairRefusedView, PairRequestView, PendingPair, PendingServer, SignOutResult, VoiceForget,
 };
 
 /// The plugin's name: commands are `plugin:sew-app|<command>`, permissions `sew-app:*`.

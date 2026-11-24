@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.4 (2026-11-22, Sew 0.11.4)
+
+No change to this crate's own API or behaviour. It moves to sew-call-client 0.9.4, whose
+call engine no longer wakes over and over on one core while a re-join after a lost
+connection waits for its answer, or while a video layer waits to start again (see its
+CHANGELOG).
+
+### Dependencies
+
+- Requires sew-call-client 0.9.4 and sew-proto 0.11.4.
+
 ## 0.9.3 (2026-11-21, Sew 0.11.3)
 
 Additive: a native self-view sink, one more payload variant and one more event variant (both

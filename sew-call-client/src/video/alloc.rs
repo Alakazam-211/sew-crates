@@ -225,10 +225,26 @@ impl Allocator {
                     o.key.0 == l.key.0 && o.key.1 == l.key.1 && o.key.2 < l.key.2 && o.wanted
                 })
                 .all(|o| self.running.contains(&o.key));
+            if !below_running {
+                // A lower layer of the lane waits for its own raise, which comes first: this
+                // layer's hold counts from that layer's, so the timer never falls due while
+                // nothing can be raised (it would stay in the past and wake the engine at
+                // once on every turn).
+                let lower = self
+                    .fits_since
+                    .iter()
+                    .filter(|(k, _)| k.0 == l.key.0 && k.1 == l.key.1 && k.2 < l.key.2)
+                    .map(|(_, t)| *t)
+                    .max();
+                if let Some(lower) = lower.filter(|t| *t > since) {
+                    self.fits_since.insert(l.key, lower);
+                }
+                continue;
+            }
             let spaced = self
                 .last_raise
                 .is_none_or(|t| now.saturating_duration_since(t) >= RAISE_EVERY);
-            if below_running && spaced && now.saturating_duration_since(since) >= RAISE_HOLD {
+            if spaced && now.saturating_duration_since(since) >= RAISE_HOLD {
                 self.running.insert(l.key);
                 self.fits_since.remove(&l.key);
                 self.last_raise = Some(now);
@@ -408,6 +424,47 @@ mod tests {
         assert_eq!(r.len(), 2);
         let r = a.update(t1 + RAISE_HOLD + RAISE_EVERY, up, &layers);
         assert_eq!(r.len(), 3);
+    }
+
+    /// A layer whose hold has run out while a lower layer of its lane, wanted later, still
+    /// waits for its own: the timer must not stay in the past (the engine would wake at once
+    /// on every turn) while nothing can be raised; the raises come as before.
+    #[test]
+    fn a_raise_held_back_by_a_lower_layer_never_leaves_the_timer_in_the_past() {
+        let t0 = Instant::now();
+        let mut layers = cam(1, &[Q, H, F]);
+        let mut a = Allocator::default();
+        // Starts with q only.
+        assert_eq!(a.update(t0, est(Q), &layers).len(), 1);
+        let up = est((Q + H + F) * 2);
+        // h unwanted: f fits from t1.
+        layers[1].wanted = false;
+        let t1 = t0 + Duration::from_secs(1);
+        assert_eq!(a.update(t1, up, &layers).len(), 1);
+        // h wanted from t1 + 1 s: it fits from there, and f waits for it.
+        layers[1].wanted = true;
+        let t2 = t1 + Duration::from_secs(1);
+        assert_eq!(a.update(t2, up, &layers).len(), 1);
+        // f's hold runs out at t1 + 3 s; h's at t2 + 3 s. Turn after turn in between, with
+        // nothing changing, the timer is never due.
+        for ms in 0..1_000u64 {
+            let now = t1 + RAISE_HOLD + Duration::from_millis(ms);
+            assert_eq!(a.update(now, up, &layers).len(), 1, "at {ms} ms");
+            let d = a.deadline().expect("raises are pending");
+            assert!(
+                d > now,
+                "at {ms} ms: the timer is {:?} in the past",
+                now - d
+            );
+        }
+        // h at its own 3 s, f two seconds after.
+        assert_eq!(a.update(t2 + RAISE_HOLD, up, &layers).len(), 2);
+        assert_eq!(a.deadline(), Some(t2 + RAISE_HOLD + RAISE_EVERY));
+        assert_eq!(
+            a.update(t2 + RAISE_HOLD + RAISE_EVERY, up, &layers).len(),
+            3
+        );
+        assert_eq!(a.deadline(), None);
     }
 
     /// A camera with a backup: the primary lane's caps, then the backup's (lane 1).

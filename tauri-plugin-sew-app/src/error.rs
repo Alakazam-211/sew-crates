@@ -68,15 +68,21 @@ pub mod code {
     pub const PAIRING_NOT_PENDING: &str = "pairing_not_pending";
     /// The App server has no native lane at this route (a `404` it did not explain).
     pub const LANE_NOT_FOUND: &str = "lane_not_found";
-    /// `handoff` asked from a page whose origin is not the account's server.
+    /// A server's live site named another server or one of its accounts (a live site's
+    /// commands act only on its own server), or `handoff` asked from a page whose origin is
+    /// not the account's server.
     pub const WRONG_ORIGIN: &str = "wrong_origin";
+    /// The command answers only the app's bundled UI (`add_server`, `confirm_server`).
+    pub const BUNDLED_ONLY: &str = "bundled_only";
     /// The saved server list could not be read or written.
     pub const STORE: &str = "store";
     /// A notification could not be shown.
     pub const NOTIFY_FAILED: &str = "notify_failed";
     /// A window or webview operation failed (navigation, focus).
     pub const WINDOW: &str = "window";
-    /// `upload_file` could not read the file (`detail` says how, never the contents).
+    /// `upload_file` or `pick_files` could not use the file: the handle is not one the file
+    /// dialog gave this page, or the file can't be read. One answer for every case, so a page
+    /// learns nothing about files it wasn't given.
     pub const FILE: &str = "file";
     /// `gateway_send` or `gateway_close` named no open socket (it closed, or never was).
     pub const UNKNOWN_SOCKET: &str = "unknown_socket";

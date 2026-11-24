@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.6.4 (2026-11-22, Sew 0.11.4)
+
+A live site's commands now act only on its own server, and confirming a new server needs the
+bundled UI. `upload_file` accepts only files picked in the file dialog. The events are signals
+with no data. **This is a breaking change for hosts** (below), in a patch version since the
+crate is mirror-only.
+
+### Changed
+
+- A saved server's live site (the run-time remote capability) acts only on its own server and
+  its accounts. The plugin reads the server from the calling page's origin, never from an
+  argument: a `server` or `key` of another server is refused `wrong_origin`,
+  and a command without `key` uses the active account only when it is on the site's own server
+  (`no_account` otherwise). `servers` and `set_active` answer the site its own server and
+  accounts only. The bundled UI keeps full access.
+- `add_server` and `confirm_server` answer only the bundled UI (`tauri://localhost`,
+  `http(s)://tauri.localhost`, the `devUrl` in a development build, or an origin given to
+  `Builder::file_protocol_origin`); a live site is refused with the new code `bundled_only`.
+  `add_server`'s probe of a typed address (`GET /sew/native/info`, no credential) is the
+  bundled UI's alone.
+- A frame of another origin inside a window's page is refused (`wrong_origin`): the commands
+  act for the window's own page only.
+- `upload_file`'s `file` is a handle from the new `pick_files` command (the native file
+  dialog, desktop; in `sew-app:upload-file` with `upload_file`), good for the page that asked,
+  for this session. A path, an unknown handle or another page's handle is refused with the
+  same `file` error as a file that can't be read. A link is not followed, and a file swapped
+  since the pick is refused. `AppService::upload` with `UploadData::File` doesn't follow a link
+  either.
+- A gateway socket answers only the page (window and origin) that opened it: `gateway_send`
+  from another is `unknown_socket`, `gateway_close` from another `false`.
+- The events carry no data, since a Tauri event reaches every page that listens:
+  `sew-app://servers` and `signed_out` are `{"changed": true}`; `pair_request`,
+  `pair_refused` and `deep_link` are `{"pending": true}`. `warning` is unchanged (it names no
+  server). A Rust `listen_any` on these names gets the same signal.
+- `sewfile:` answers carry a `sandbox` CSP and `nosniff`, and a request
+  whose `Origin` is not the bundled UI's is refused `403`.
+
+### Added
+
+- `Builder::on_event(Fn(&AppEvent))`: the host's Rust gets every event with its data
+  (`AppEvent::Servers`, `SignedOut`, `PairRequest`, `PairRefused`, `DeepLink`, `Warning`), and
+  `AppEvent::signal`, what the webviews get.
+- `pending_pair` → `{requests: [{server, host, expires_in_ms}], refused}` and
+  `pending_deep_links` → `[{url, server, path, navigated}]`, in `sew-app:default`, for the
+  bundled UI only (`bundled_only` otherwise); `AppService::pending_pair`,
+  `AppService::pending_deep_links`, `PendingPair`, `PairRequestView`, `PairRefusedView`.
+- `pick_files {multiple?, title?}` → `[{handle, name, size}]`, `PickedFile`, and
+  `AppService::picked_file` for a host that runs its own file dialog.
+- `scope::Caller` (what a calling page may act on) and the code `bundled_only`.
+
+### What a host changes
+
+- A host whose bundled UI calls `upload_file` with a path: call `pick_files` first and pass its
+  `handle` as `file` (or pick in the host's own dialog and pass `AppService::picked_file`'s
+  handle). Grant `sew-app:upload-file` only to the bundled UI, never to a live site.
+- A live site that listed, signed out or managed another server's accounts, or added a server,
+  now gets `wrong_origin` or `bundled_only`: do that from the bundled UI.
+- A bundled UI that frames another origin: the frame can't call the plugin, and its `sewfile:`
+  fetches are refused.
+- **A page that read an event's payload**: `servers` and `signed_out` now carry
+  `{"changed": true}`; call `servers`. `pair_request` and `pair_refused` carry
+  `{"pending": true}`; call `pending_pair` from the bundled UI. `deep_link` carries
+  `{"pending": true}`; call `pending_deep_links` from the bundled UI.
+- **Rust code that used `listen_any` on `sew-app://pair_request`, `pair_refused`,
+  `signed_out`, `deep_link` or `servers` for the data**: use `Builder::on_event` instead.
+- Nothing else: the other command names and arguments and the capability sets are the same
+  (`sew-app:default` gains `pending_pair` and `pending_deep_links`).
+
+### Dependencies
+
+- Requires tauri-plugin-sew-voice 0.9.4.
+- Adds `rfd` 0.17 (feature `tauri`, desktop: the file dialog; GTK 3 on Linux, already in
+  Tauri's tree).
+
 ## 0.6.3 (2026-11-21, Sew 0.11.3)
 
 No change to this crate's own API or behaviour. It moves to tauri-plugin-sew-voice 0.9.3

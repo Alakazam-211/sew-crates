@@ -14,9 +14,10 @@ use crate::error::AppError;
 
 /// The commands, as the webview invokes them after `plugin:sew-app|`: the seventeen of
 /// `sew-app:default`, then `handoff` (permission `sew-app:handoff` only), then the API
-/// transport: the five of `sew-app:transport` ([`TRANSPORT_COMMANDS`]) and `upload_file`
-/// (`sew-app:upload-file` only).
-pub const COMMANDS: [&str; 24] = [
+/// transport: the five of `sew-app:transport` ([`TRANSPORT_COMMANDS`]), and `pick_files` with
+/// `upload_file` (`sew-app:upload-file` only), then `pending_pair` and `pending_deep_links`
+/// (in `sew-app:default`; the bundled UI only).
+pub const COMMANDS: [&str; 27] = [
     "servers",
     "add_server",
     "confirm_server",
@@ -40,7 +41,10 @@ pub const COMMANDS: [&str; 24] = [
     "gateway_send",
     "gateway_close",
     "upload_bytes",
+    "pick_files",
     "upload_file",
+    "pending_pair",
+    "pending_deep_links",
 ];
 
 /// `sew-app:transport`: the API transport for a bundled UI.

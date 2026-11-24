@@ -2,21 +2,29 @@
 
 tauri-plugin-sew-app is the shell of a Tauri 2 App on a Sew server: saved servers, sign-in with
 the device session in the OS keychain, a ready voice `JoinProvider` for
-[`tauri-plugin-sew-voice`](../tauri-plugin-sew-voice), the handoff into the webview, deep links,
-single instance and notifications. Desktop (macOS, Windows, Linux) for now; the phone half is
-next (below).
+[`tauri-plugin-sew-voice`](https://docs.rs/tauri-plugin-sew-voice), the handoff into the
+webview, deep links, single instance and notifications. Desktop only (macOS, Windows, Linux).
 
 A Tauri App on a Sew server is a thin shell: its window loads the App's live site, and its Rust
 signs in to the App's server. Every such shell needs the same parts; this plugin is those parts.
-It talks only to the App's server, through its **native lane** (`/sew/native/*`, lane 1), and
-never to Sew directly.
+It talks only to the App's server, through its **native lane** (`/sew/native/*`), and never to
+Sew directly.
+
+Three words this guide uses:
+
+- **The native lane** is the set of HTTP routes under `/sew/native/` that an App server serves
+  for native shells; **lane 1** is its version (`info.lane`), the one this plugin speaks.
+- **The door** (the host's sign-in door) is the sign-in page of the host the App runs on, on
+  the App's own address (K2's `/.k2/auth/*`), when the server offers it.
+- **A Sew install** is one Sew server (one company's chat, with its own install id, which the
+  lane's `whoami` names); the voice plugin keeps its call keys per install.
 
 Licence: MIT OR Apache-2.0.
 
 - Source: <https://github.com/Alakazam-211/sew-crates> (read-only: it is generated from Sew's
   repository at each release, so pull requests are not merged there)
-- API documentation: <https://docs.rs/tauri-plugin-sew-app> once it is on crates.io; until then
-  `cargo doc -p tauri-plugin-sew-app --open` in the sew-crates repository
+- API documentation: `cargo doc -p tauri-plugin-sew-app --open` in the sew-crates repository
+  (the crate is not on crates.io or docs.rs)
 - Issues: <https://github.com/Alakazam-211/sew-crates/issues/new/choose>,
   with the `tauri-plugin-sew-app` form, which labels the issue `crate:tauri-plugin-sew-app`
 - Security problems: report them privately, as
@@ -25,7 +33,7 @@ Licence: MIT OR Apache-2.0.
 
 ## Quick start
 
-The crate is not published on crates.io yet (the voice plugin and engine it builds on,
+The crate is not published on crates.io (the voice plugin and engine it builds on,
 `tauri-plugin-sew-voice` and `sew-call-client`, are). Get it from the read-only
 [sew-crates](https://github.com/Alakazam-211/sew-crates) repository, which holds it with the Sew
 crates it depends on: clone it into your project (for example as `third_party/sew-crates`) and
@@ -36,8 +44,8 @@ README).
 ```toml
 [dependencies]
 tauri = "2"
-tauri-plugin-sew-app = "0.5"
-tauri-plugin-sew-voice = "0.8"
+tauri-plugin-sew-app = "0.6"
+tauri-plugin-sew-voice = "0.9"
 ```
 
 The shell's plugins go on the app's Tauri builder, with the voice provider that joins through
@@ -75,7 +83,6 @@ fn main() {
 
 and the bundled UI's capability lists `sew-app:default` (with `core:default` and
 `sew-voice:default` as it needs). The fake mode (below) runs a shell with no server.
-`docs/tauri-app-sdk.md` is the checklist for a whole shell.
 
 ## Servers and accounts
 
@@ -90,6 +97,11 @@ const pending = await app("add_server", { url: "chat.example.com" });
 // Show pending.host; on "Add":
 const view = await app("confirm_server", { server: pending.origin });
 ```
+
+Both answer only the bundled UI: a server's live site is refused `bundled_only`, so a page
+can never add or confirm a server with no person involved. `add_server`'s probe (`GET
+/sew/native/info`, with no credential) goes to whatever https address is typed, which is why it
+is the bundled UI's alone.
 
 `add_server` asks the server's `GET /sew/native/info`: an address that is not an App server
 with a native lane is refused `not_a_sew_app`, an older lane `lane_too_old` (show "this server
@@ -110,7 +122,8 @@ own session; the same person signing in as a new account replaces their older ac
 One account is **active**: the voice provider and `open` use it when no `key` is named
 (`set_active {key}`; a sign-in makes its account active).
 
-`servers` answers the whole list, and `sew-app://servers` sends it after every change:
+`servers` answers the whole list to the bundled UI; after every change `sew-app://servers`
+signals `{"changed": true}` (no list: call `servers`, [Events](#events)):
 
 ```json
 {"servers": [{"origin": "https://chat.example.com", "host": "chat.example.com",
@@ -125,6 +138,17 @@ One account is **active**: the voice provider and `open` use it when no `key` is
 
 The list lives in `servers.json` (mode 0600) under the app's data directory (`sew-app/`). It
 never holds a secret.
+
+### What a live site may do
+
+A command called from a saved server's live site acts only on that server and its accounts.
+The plugin reads the server from the calling page's origin, never from an argument: a `server`
+or `key` naming another server is refused `wrong_origin`, and a command with no `key` uses the
+active account only when it is on the site's own server (`no_account` otherwise). `servers`
+answers the site its own server and accounts only (and `active` only when it is one of them).
+`add_server` and `confirm_server` are refused (`bundled_only`). A frame of another origin
+inside a page is refused (`wrong_origin`): the commands act for the window's own page only.
+The bundled UI keeps full access.
 
 ## Secrets
 
@@ -161,7 +185,8 @@ form when `info.signin.password`, then a pairing code when `info.signin.pairing`
 After a sign-in the plugin reads `whoami` for the person's name and the Sew install id. When the
 server ends a session (a revoke, a replacement, the idle limit, an admin), the next call that
 uses it answers `401 signed_out`: the account turns `{"state": "signed_out", "reason": "revoked"}`,
-its bearer is deleted, `sew-app://signed_out {key, reason}` is sent, and the install's call
+its bearer is deleted, `sew-app://signed_out` signals `{"changed": true}` (the account and
+reason are in `servers`, and the host's `Builder::on_event` gets them), and the install's call
 keys are forgotten when it was the last signed-in account there. The account stays listed
 until the person signs it in again (`account` named) or signs it out.
 
@@ -172,8 +197,9 @@ Every rejection is `{code, detail, hint}`: the plugin's codes (`error::code`) or
 ### The host's sign-in door
 
 On a host that serves a sign-in door on the App's own address (K2's `/.k2/auth/*`), the
-password goes from the shell's Rust to the host and never through the page, the App's server
-or the lane. `sign_in_door` does it all:
+shell's UI passes the password the person typed to `sign_in_door` once; from there it goes
+from the shell's Rust to the host's own door only, never to the App's server or the lane, and
+nothing secret comes back to the page. `sign_in_door` does it all:
 
 1. `GET <server>/.k2/auth/ping` must answer exactly `{"k2": true}`; anything else is
    `signin_door_unavailable` with `detail.reason: "ping"`, and no password is sent (use the
@@ -196,19 +222,22 @@ plugin keeps the begin and a retry goes with the same challenge. On
 `{token, password, challenge}` to `/.k2/auth/set-password` and finishes the sign-in; the
 host's `password_too_short`, `password_too_long`, `password_unchanged` and `bad_token` pass
 through, `password_set_no_signin` means the password is set but the person can't use this
-App, and `no_password_change` means no change was pending. Neither the password, the code,
-the challenge, the id nor the change token ever reaches the webview.
+App, and `no_password_change` means no change was pending. The passwords the person types in
+the shell's UI pass from the webview to Rust once and go only to the host's own door; the
+door's code, the challenge, the id and the change token never reach the webview.
 
 ### Pairing links
 
 A signed-in page can show a pairing code as a link, `<scheme>://<host>/native/pair#code=…`.
 The plugin never opens it as a page and never passes it on. When `<host>` is a confirmed
-server, it keeps the code for 2 minutes and sends `sew-app://pair_request`
-`{server, host, expires_in_ms}`: ask "Sign in to <host>?", then call `pair_confirm {server}`
-(which redeems the code, as `pair` does) or `pair_decline {server}`. Any other host is
-`sew-app://pair_refused` `{host, reason: "unknown_server"}` (a link without a usable code:
-`bad_link`), and nothing is redeemed. `pair_confirm` without a held code is
-`pairing_not_pending`.
+server, it keeps the code for 2 minutes and signals `sew-app://pair_request`
+`{"pending": true}`. The bundled UI calls `pending_pair` → `{requests: [{server, host,
+expires_in_ms}], refused}`, asks "Sign in to <host>?", then calls `pair_confirm {server}`
+(which redeems the code, as `pair` does) or `pair_decline {server}`. Any other host signals
+`sew-app://pair_refused` `{"pending": true}`, and `pending_pair`'s `refused` is
+`{host, reason: "unknown_server"}` once (a link without a usable code: `bad_link`); nothing is
+redeemed. `pair_confirm` without a held code is `pairing_not_pending`. `pending_pair` answers
+the bundled UI only (`bundled_only`).
 
 ## Voice
 
@@ -291,7 +320,9 @@ any server that answers the lane's contract is served the same way.
 - **`gateway_send {id, data}`** sends one frame. The page sends IDENTIFY (op 2) and RESUME
   (op 4) with any placeholder in `d.ticket`, and REAUTH (op 11) with one in `d.token`; Rust puts
   a ticket there (the socket's own for the first, a fresh one after). Other frames go as they
-  are. `unknown_socket` when the socket is gone.
+  are. `unknown_socket` when the socket is gone, or another page opened it: a socket answers
+  only the page (window and origin) that opened it, and `gateway_close` of another page's
+  socket is `false`.
 - **`gateway_close {id, code?, reason?}`** → whether it was open. `code` is `1000` (the
   default) or `3000` to `4999`; the `close` event follows.
 - **`sewfile:` URLs** serve the signed byte routes to `<img>`, `<video>` and `fetch`:
@@ -310,6 +341,12 @@ any server that answers the lane's contract is served the same way.
     the `devUrl` in a development build; `Builder::file_protocol_origin` adds one). A server's
     live site in the same webview gets `403`. `Builder::file_protocol(false)` turns the scheme
     off.
+  - Tauri tells the scheme which webview asked, not which frame, so the check is on the
+    webview's page. A request that carries an `Origin` (a `fetch`) must come from the bundled
+    UI's origin too; a plain `<img>` or `<video>` load carries none. So a bundled UI should not
+    frame other origins.
+  - Every answer carries a `sandbox` CSP and `nosniff`: opened as a page, a
+    file runs no script.
 - **`upload_bytes`**: the invoke's raw body, with the headers `sew-path` (`/uploads/{id}/data`,
   `/me/avatar`, `/spaces/{id}/icon` or `/spaces/{id}/emoji`), `content-type`
   (`application/octet-stream`, the default, or `image/*`), optionally `content-range`, and
@@ -317,9 +354,18 @@ any server that answers the lane's contract is served the same way.
   `invoke('plugin:sew-app|upload_bytes', bytes, {headers: {'sew-path': '/uploads/9/data'}})`.
   Answers like `api`. The lane's caps: 16 MiB for an upload's data, 5 MiB for an image, 256 KiB
   for an emoji.
-- **`upload_file {key?, path, file, content_type?, content_range?}`**: the same, with the bytes
-  read in Rust from `file`. In its own set, `sew-app:upload-file`: the page names a path on this
-  machine, so grant it only to a bundled UI that takes the path from the person's own pick.
+- **`pick_files {multiple?, title?}`** → `[{handle, name, size}]`: opens the native file
+  dialog (desktop) and answers a handle for each file the person picked (none when they
+  cancel). The page never sees a path.
+- **`upload_file {key?, path, file, content_type?, content_range?}`**: the same as
+  `upload_bytes`, with the bytes read in Rust from the file of `file`, a handle `pick_files`
+  gave this same page this session. A path, an unknown handle or another page's handle is
+  refused with the same `file` error as a file that can't be read, so a page learns nothing
+  about files it wasn't given. A link is not followed, and a file swapped since the pick is
+  refused. A host with its own dialog passes the picked path to `AppService::picked_file` and
+  gives the page the handle.
+  Both are in their own set, `sew-app:upload-file`. **Grant it only to your bundled UI, never to
+  a server's live site.**
 
 The bearer is read from the keychain once and kept in memory for the calls after it (one read
 at a time, so a burst of calls on start reads it once); signing in again, signing out or the
@@ -329,7 +375,8 @@ own sign-in), so the page never refreshes anything.
 ## Shell plumbing
 
 - **The remote capability.** The shell's window shows the App's live site, so that origin needs
-  a capability to call the plugins. For every saved server, at start and on each confirm, the
+  a capability to call the plugins (what the site may do with it is scoped to its own server:
+  [What a live site may do](#what-a-live-site-may-do)). For every saved server, at start and on each confirm, the
   plugin adds one at run time (Tauri's `dynamic-acl`): `remote.urls = ["<origin>/*"]`, the
   windows and permissions of `RemoteCapability` (default window `main`, `core:event:default`
   and `sew-app:default`; `.with_voice()` adds `sew-voice:default` and `sew-voice:call-details`;
@@ -341,8 +388,9 @@ own sign-in), so the page never refreshes anything.
   opens `https://<host>/<path>` in the main window when `<host>` is a saved server (signed in
   through the handoff page when the active account is on it), and brings the window forward.
   A pairing link (`myapp://<host>/native/pair#code=…`) asks first (above). Any other link is
-  only the `sew-app://deep_link` event (`{url, server, path, navigated}`); a link never adds a
-  server. Schemes are registered with the OS at start on Linux and Windows
+  only the `sew-app://deep_link` signal (`{"pending": true}`): the bundled UI calls
+  `pending_deep_links` → `[{url, server, path, navigated}]` (each link answered once, the last
+  16 held; `bundled_only` for any other page). A link never adds a server. Schemes are registered with the OS at start on Linux and Windows
   in debug builds (`Builder::register_schemes`); an installer registers them in a release.
 - **Single instance.** A second launch brings the running window forward; its deep link reaches
   the running instance.
@@ -358,18 +406,43 @@ them itself uses `Builder::build()` instead.
 
 | Set | Commands |
 |---|---|
-| `sew-app:default` | `servers`, `add_server`, `confirm_server`, `remove_server`, `server_info`, `set_active`, `sign_in`, `pair`, `sign_in_door`, `sign_in_door_set_password`, `pair_confirm`, `pair_decline`, `sign_out`, `devices`, `revoke_device`, `open`, `notify` |
+| `sew-app:default` | `servers`, `add_server`, `confirm_server`, `remove_server`, `server_info`, `set_active`, `sign_in`, `pair`, `sign_in_door`, `sign_in_door_set_password`, `pair_confirm`, `pair_decline`, `sign_out`, `devices`, `revoke_device`, `open`, `notify`, `pending_pair`, `pending_deep_links` |
 | `sew-app:handoff` | `handoff` |
 | `sew-app:transport` | `api`, `gateway_open`, `gateway_send`, `gateway_close`, `upload_bytes` |
-| `sew-app:upload-file` | `upload_file` |
+| `sew-app:upload-file` | `pick_files`, `upload_file` |
 
 The default set is the shell's own UI; it holds neither the transport nor `upload_file`, and the
-remote capability holds `sew-app:default` only. Each command also has its own
-`sew-app:allow-<command>`. Events (`sew-app://servers`, `signed_out`, `warning`, `deep_link`,
-`pair_request`, `pair_refused`) go to every window. A typical App lists, for its bundled UI:
+remote capability holds `sew-app:default` only, which a live site uses on its own server only.
+`sew-app:transport` and `sew-app:upload-file` are for the bundled UI; never grant them to a live
+site. Each command also has its own
+`sew-app:allow-<command>`. Events go to every window as signals only ([Events](#events)). A
+typical App lists, for its bundled UI:
 `core:default`, `sew-app:default`, `sew-app:transport`, `sew-voice:default`; and for its live
 site (the remote capability): `core:event:default`, `sew-app:default`, `sew-voice:default`,
 `sew-voice:call-details` (and `sew-voice:video` for video).
+
+## Events
+
+A Tauri event reaches every page that listens, whatever its target, so the plugin's events
+carry no server, account, link or code. They are scoped like the commands: a page that gets a
+signal fetches what it may see.
+
+| Event | Signal | What to call |
+|---|---|---|
+| `sew-app://servers` | `{"changed": true}` | `servers` (a live site gets its own server only) |
+| `sew-app://signed_out` | `{"changed": true}` | `servers` (the account shows `state: "signed_out"` and its `reason`) |
+| `sew-app://pair_request` | `{"pending": true}` | `pending_pair` (bundled UI only) |
+| `sew-app://pair_refused` | `{"pending": true}` | `pending_pair`'s `refused` (bundled UI only) |
+| `sew-app://deep_link` | `{"pending": true}` | `pending_deep_links` (bundled UI only) |
+| `sew-app://warning` | `{code, detail, hint}` | nothing (it names no server: `secret_storage_file`) |
+
+The host's Rust gets every event with its data through `Builder::on_event(|e: &AppEvent| …)`:
+`AppEvent::Servers(ServersView)`, `SignedOut {key, reason}`, `PairRequest {server, host,
+expires_in_ms}`, `PairRefused {host, reason}`, `DeepLink(DeepLinkEvent)`, `Warning(AppError)`.
+A Rust `listen_any("sew-app://…")` gets only the signal, as the pages do (and a page can emit
+those names itself; the hook hears only the plugin). The hook runs on the plugin's thread as
+the event happens, sometimes with the plugin's state held: it must not call `AppService`
+there (spawn a task for that).
 
 ## Fake mode
 
@@ -390,7 +463,7 @@ HELLO, READY for a valid ticket, RESUMED, heartbeats, 2 sockets per device;
 
 | Feature | Default | What |
 |---|---|---|
-| `tauri` | yes | The Tauri glue (needs Tauri's Linux libraries: webkit2gtk-4.1, gtk3, libsoup3). |
+| `tauri` | yes | The Tauri glue (needs Tauri's Linux libraries: webkit2gtk-4.1, gtk3, libsoup3), and on desktop the native file dialog of `pick_files` (`rfd`, GTK 3 on Linux). |
 | `http` | yes | The lane over HTTPS: rustls with the platform's trust store, the voice engine's TLS setup. No cookie, no Origin, no redirects followed. The gateway socket over WebSocket (`tokio-tungstenite`, as sew-call-client). |
 | `keyring-store` | yes | The OS credential store. |
 | `builtin-ring-provider` | yes | The TLS fallback to ring when the host installs no rustls provider. |
@@ -408,10 +481,8 @@ alone; `cargo test --features tauri-test` adds the capability tests on Tauri's m
 `tests/real_lane.rs` runs against a live App server and is built only with
 `--cfg sew_real_lane` (its header says how).
 
-## Next: phones
+## Platforms
 
-Not in this version: the iOS Keychain store with an access group shared with the App's
-extensions (a Notification Service Extension, a ReplayKit extension), the Android
-Keystore-wrapped store, data-protection classes for the files Rust writes, push-token
-registration, and in-app QR pairing. The store interface (`SecretStore`, `KeychainOptions`) is
-shaped for them.
+Desktop only: macOS, Windows and Linux. The plugin has no iOS Keychain store (with an access
+group for an App's extensions), no Android Keystore store, no data-protection classes for the
+files Rust writes, no push-token registration and no in-app QR pairing.

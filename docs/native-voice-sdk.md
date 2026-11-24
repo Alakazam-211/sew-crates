@@ -18,7 +18,7 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.9.3"
+tauri-plugin-sew-voice = "0.9.4"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
@@ -461,7 +461,7 @@ this device can do, checked at run time (never assumed from the OS):
   `[voice.video] backup_codec`, on by default, with both `vp8` and `h264` listed in either
   order), dynacast is on, and this device has a usable OS H.264 encoder: a hardware encoder that
   is listed, opens hardware-only, and reports hardware once open. Today that is macOS and iOS
-  (VideoToolbox); Android and Windows publish VP8 only for now; Linux always publishes VP8 only.
+  (VideoToolbox); Android and Windows publish VP8 only; Linux always publishes VP8 only.
   The backup's m-line is negotiated with the publish, and its VP8 encoders run only while the
   media server says some subscriber needs VP8 (a Linux client, a browser without H.264). It
   never stops for heat while a VP8-only subscriber depends on it; on phones it is capped at
@@ -489,7 +489,7 @@ until the app quits, so set it again at start. `video_caps.codec_preference` rea
 (`"automatic"`, `"prefer_h264"`, `"prefer_vp8"`), `effective` the codec it gives on this device
 (`"h264"`, with the backup, or `"vp8"`) and, only when Prefer H.264 can't apply, `reason`:
 `"not_detected"` (no usable hardware H.264 encoder found at run time), `"platform"` (no run-time
-check on Linux, Android or Windows yet, or an iOS before 17.4) or `"policy"` (the live call's
+check on Linux, Android or Windows, or an iOS before 17.4) or `"policy"` (the live call's
 policy doesn't allow H.264). An engine without video publish leaves `codec_preference` out.
 `effective` is what the backend's capabilities say; the encoder's hardware-only open when the
 camera turns on is the last word. A change applies from the next camera or screen publish.
@@ -691,7 +691,7 @@ event, the `recording` event's `can_record` and `can_stop`, and the `state` comm
   sending rights for it.
 - A move clears them until the destination's first value arrives.
 - `record_unavailable` is Sew's hint while `can_record` is `true`: Record is allowed but would
-  be refused for now, because the install already runs as many recordings as it allows
+  be refused right now, because the install already runs as many recordings as it allows
   (`recording_capacity`) or the recorder does not answer (`recorder_unavailable`). Grey Record
   out with that reason, or show Sew's refusal if the person presses it anyway.
 - The `state` command writes `recording_controls` whenever `source` is `sew`, even with both
@@ -985,7 +985,7 @@ the app encodes and encrypts. Build with `video` and `mobile` (`mobile` turns on
   the ring in your own App Group only. iOS ends a suspended app that holds a file lock in a
   shared container (`0xdead10cc`): the plugin takes the ring's lock for a moment only while a
   share runs (the call's audio keeps the app awake then), never between shares. Neither this
-  nor the rotation mapping above has been checked on a device yet.
+  nor the rotation mapping above has been checked on a device.
 
 **Screen share on Android: MediaProjection.** The app asks, the plugin publishes:
 
@@ -1046,7 +1046,7 @@ let pip = control.open_native_sink(NativeSinkTarget::ActiveSpeaker, (640, 360),
   `CVBufferRetain` it to keep it longer, then wrap it in a `CMSampleBuffer` for the layer).
   Without a video backend a VP8 track can't be opened (`decoded_unsupported`), and an
   active-speaker sink shows only H.264 speakers. Where the backend makes no OS buffer (kessel-video
-  0.1.1's Apple backend makes none from a decoded frame yet), the frame comes as NV12 CPU planes
+  0.1.1's Apple backend makes none from a decoded frame), the frame comes as NV12 CPU planes
   (`apple_pixel_buffer()` answers `None`): the sink logs that once and counts the frames in
   `stats().cpu_planes`; the consumer then copies the planes into a `CVPixelBuffer` of its own
   (a `CVPixelBufferPool`), and that copy counts in `consumer_us_avg`.
@@ -1263,8 +1263,7 @@ The example has all of these; copy them into your app.
   - `examples/tauri-voice-mobile` does all of this; see its README.
 - **iOS:** `NSMicrophoneUsageDescription` (Tauri merges `src-tauri/Info.ios.plist`). The
   `AVAudioSession` category and its activation are the app's (CallKit's): the plugin opens the
-  microphone only after `session_activated()` (§3b). The example's iOS side has not been built
-  yet.
+  microphone only after `session_activated()` (§3b). The example's iOS side has not been built.
 
 ## 6. Device keys
 
@@ -1523,7 +1522,7 @@ microphone prompt, the Keystore device key, `android_init`, the network watch an
 audio mode, with a small Kotlin and Swift bridge (`src-tauri/voice-bridge`). Its README lists
 the bridge behaviours a third-party app should copy (key lookup errors, the public key length,
 the network watch, the iOS permission and Bluetooth calls). Android builds and its iOS side is
-not built yet. `scripts/android-example-build.sh` installs the Android
+not built. `scripts/android-example-build.sh` installs the Android
 tools in user space (pinned, checksums checked) and builds debug APKs for aarch64 and the
 x86_64 emulator.
 

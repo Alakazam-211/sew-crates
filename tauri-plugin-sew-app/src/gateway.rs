@@ -15,6 +15,9 @@
 //! Each account holds at most [`MAX_GATEWAY_SOCKETS`] sockets, the lane's limit per device, so
 //! a reconnect can overlap the old socket; a third is refused `rate_limited` before anything
 //! is sent.
+//!
+//! A socket a page opened answers only that page (its window and origin): `gateway_send` and
+//! `gateway_close` from any other page find no such socket.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -146,6 +149,8 @@ pub struct GatewayOpened {
 
 struct Sock {
     key: AccountKey,
+    /// The page that opened it (`None`: the host's Rust).
+    owner: Option<String>,
     /// `None` while the socket opens.
     tx: Option<mpsc::UnboundedSender<WsOut>>,
     /// The ticket minted with the socket, for its first IDENTIFY or RESUME.
@@ -182,7 +187,7 @@ impl GatewayTable {
     }
 
     /// A slot for `key`'s next socket, or `None` at the limit.
-    fn reserve(&self, key: &AccountKey) -> Result<Option<String>, AppError> {
+    fn reserve(&self, key: &AccountKey, owner: Option<String>) -> Result<Option<String>, AppError> {
         let id = new_id()?;
         let mut s = self.lock();
         if s.values().filter(|x| &x.key == key).count() >= MAX_GATEWAY_SOCKETS {
@@ -192,6 +197,7 @@ impl GatewayTable {
             id.clone(),
             Sock {
                 key: key.clone(),
+                owner,
                 tx: None,
                 ticket: None,
             },
@@ -255,6 +261,11 @@ pub fn gateway_url(origin: &Origin) -> Result<Url, AppError> {
         .map_err(|_| AppError::with_detail(code::BAD_ANSWER, "the gateway's URL"))
 }
 
+/// Whether `owner` may use `sock`: the host's Rust any; a page only its own.
+fn owns(owner: Option<&str>, sock: &Sock) -> bool {
+    owner.is_none_or(|w| sock.owner.as_deref() == Some(w))
+}
+
 fn limit_error() -> AppError {
     AppError {
         code: code::RATE_LIMITED.to_owned(),
@@ -283,11 +294,21 @@ impl AppService {
         sink: GatewaySink,
     ) -> Result<GatewayOpened, AppError> {
         let key = self.account_or_active(key)?;
+        self.gateway_open_as(key, None, sink).await
+    }
+
+    /// [`AppService::gateway_open`] for a page: only `owner` may send on or close it.
+    pub(crate) async fn gateway_open_as(
+        &self,
+        key: AccountKey,
+        owner: Option<String>,
+        sink: GatewaySink,
+    ) -> Result<GatewayOpened, AppError> {
         let connector = self.socket_connector().ok_or_else(|| {
             AppError::with_detail(code::UNREACHABLE, "no gateway connector is configured")
         })?;
         let table = self.gateways();
-        let id = table.reserve(&key)?.ok_or_else(limit_error)?;
+        let id = table.reserve(&key, owner)?.ok_or_else(limit_error)?;
         let mut slot = Slot {
             table,
             id: id.clone(),
@@ -377,6 +398,17 @@ impl AppService {
     /// socket's ticket in `d.ticket` (a fresh one when it was used), REAUTH (op 11) a fresh
     /// ticket in `d.token`; whatever the page put there is replaced.
     pub async fn gateway_send(&self, id: &str, data: &str) -> Result<(), AppError> {
+        self.gateway_send_as(None, id, data).await
+    }
+
+    /// [`AppService::gateway_send`] from page `owner` (`None`: the host's Rust, any socket):
+    /// another page's socket is `unknown_socket`.
+    pub(crate) async fn gateway_send_as(
+        &self,
+        owner: Option<&str>,
+        id: &str,
+        data: &str,
+    ) -> Result<(), AppError> {
         if data.len() > MAX_PAGE_FRAME {
             return Err(AppError::invalid_args("a frame up to 1 MiB"));
         }
@@ -384,6 +416,7 @@ impl AppService {
             let mut s = self.gateways().lock();
             let sock = s
                 .get_mut(id)
+                .filter(|x| owns(owner, x))
                 .ok_or_else(|| AppError::new(code::UNKNOWN_SOCKET))?;
             let tx = sock
                 .tx
@@ -444,6 +477,18 @@ impl AppService {
         code: Option<u16>,
         reason: Option<String>,
     ) -> Result<bool, AppError> {
+        self.gateway_close_as(None, id, code, reason)
+    }
+
+    /// [`AppService::gateway_close`] from page `owner` (`None`: the host's Rust, any socket):
+    /// another page's socket is `false`, as if none were open.
+    pub(crate) fn gateway_close_as(
+        &self,
+        owner: Option<&str>,
+        id: &str,
+        code: Option<u16>,
+        reason: Option<String>,
+    ) -> Result<bool, AppError> {
         let c = code.unwrap_or(1000);
         if !(c == 1000 || (3000..=4999).contains(&c)) {
             return Err(AppError::invalid_args(
@@ -455,7 +500,11 @@ impl AppService {
             return Err(AppError::invalid_args("a close reason is up to 123 bytes"));
         }
         let s = self.gateways().lock();
-        match s.get(id).and_then(|x| x.tx.as_ref()) {
+        match s
+            .get(id)
+            .filter(|x| owns(owner, x))
+            .and_then(|x| x.tx.as_ref())
+        {
             Some(tx) => Ok(tx.send(WsOut::Close(c, reason)).is_ok()),
             None => Ok(false),
         }

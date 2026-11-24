@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.4 (2026-11-22, Sew 0.11.4)
+
+A fix; no change to the API.
+
+### Fixed
+
+- The call engine's loop no longer wakes over and over on one core in two cases: while a
+  re-join after a lost connection waits for its answer, and while a video layer waits to start
+  again behind a lower layer that is still waiting. Layers start at the same times as before.
+
+### Dependencies
+
+- Requires the Sew crates at 0.11.4 (sew-proto, sew-lkproto, sew-lk-compat, sew-e2ee and
+  sew-noise). kessel-audio stays at 0.2.5.
+
 ## 0.9.3 (2026-11-21, Sew 0.11.3)
 
 Additive: camera taps on `VideoCapture` and their types, the processing thread's scheduling on

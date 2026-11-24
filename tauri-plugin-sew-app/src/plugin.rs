@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tauri::ipc::CapabilityBuilder;
+use tauri::ipc::{CapabilityBuilder, Invoke};
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_sew_voice::sew_call_client::rustls::crypto::CryptoProvider;
@@ -26,6 +26,11 @@ use crate::service::{AppConfig, AppEvent, AppEventSink, AppService, VoiceForget}
 /// `remote.urls = ["<origin>/*"]`, so the App's live site can call the plugins while the
 /// shell shows it. The bundled UI (`tauri://localhost`) is not in it; it keeps the app's own
 /// capability files.
+///
+/// What a live site may do with `sew-app:default` is scoped to its own server: its commands
+/// act only on that server and its accounts (the server comes from the page's origin, never
+/// from an argument), `servers` lists only those, and `add_server` and `confirm_server` are
+/// refused (`bundled_only`): adding a server is the bundled UI's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteCapability {
     /// The windows (labels) it applies to.
@@ -95,6 +100,9 @@ impl Default for RemoteCapability {
 pub(crate) struct Shell {
     pub(crate) main_window: String,
     pub(crate) scheme: Option<String>,
+    /// The origins besides `tauri://localhost` and `http(s)://tauri.localhost` that are the
+    /// bundled UI (a development server's).
+    pub(crate) bundled: Vec<String>,
     remote: Option<RemoteCapability>,
     added: Mutex<BTreeSet<Origin>>,
 }
@@ -144,7 +152,11 @@ pub struct Builder {
     main_window: String,
     memory_only: bool,
     provider: LaneJoinProvider,
+    on_event: Option<EventHook>,
 }
+
+/// The host's hook for the plugin's events, with their data.
+type EventHook = Arc<dyn Fn(&AppEvent) + Send + Sync + 'static>;
 
 impl std::fmt::Debug for Builder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -191,7 +203,20 @@ impl Builder {
             main_window: "main".into(),
             memory_only: false,
             provider: LaneJoinProvider::unbound(),
+            on_event: None,
         }
+    }
+
+    /// The host's Rust gets every event here with its data (the server list, the account and
+    /// reason of a `signed_out`, a pairing link's server, a deep link). The webviews get only
+    /// a signal on `sew-app://<name>` ([`AppEvent::signal`]), and so does a Rust
+    /// `listen_any` on those names: a Tauri event reaches every page that listens (and a page
+    /// can emit those names too; this hook hears only the plugin). It runs as the event
+    /// happens, sometimes with the plugin's state held: it must not call [`AppService`] there
+    /// (spawn a task for that).
+    pub fn on_event(mut self, f: impl Fn(&AppEvent) + Send + Sync + 'static) -> Builder {
+        self.on_event = Some(Arc::new(f));
+        self
     }
 
     /// The fake mode: `lane` in memory, the secrets in memory, nothing saved.
@@ -355,7 +380,7 @@ impl Builder {
                 },
             );
         }
-        pb.invoke_handler(tauri::generate_handler![
+        let handler = typed_handler::<R, _>(tauri::generate_handler![
             crate::commands::servers,
             crate::commands::add_server,
             crate::commands::confirm_server,
@@ -379,8 +404,22 @@ impl Builder {
             crate::commands::gateway_send,
             crate::commands::gateway_close,
             crate::commands::upload_bytes,
+            crate::commands::pick_files,
             crate::commands::upload_file,
-        ])
+            crate::commands::pending_pair,
+            crate::commands::pending_deep_links,
+        ]);
+        pb.invoke_handler(move |invoke: Invoke<R>| {
+            if !frame_is_page(&invoke) {
+                invoke.resolver.reject(AppError {
+                    code: crate::error::code::WRONG_ORIGIN.to_owned(),
+                    detail: serde_json::Value::Null,
+                    hint: Some("Only the window's own page calls the app.".to_owned()),
+                });
+                return true;
+            }
+            handler(invoke)
+        })
         .setup(move |app, _api| {
             let svc = self.core(app)?;
             svc.set_voice_forget(Arc::new(TauriVoiceForget { app: app.clone() }));
@@ -396,6 +435,7 @@ impl Builder {
             let shell = Shell {
                 main_window: self.main_window.clone(),
                 scheme: self.scheme.clone(),
+                bundled: file_origins(app, &self.file_origins),
                 remote: self.remote.clone(),
                 added: Mutex::new(BTreeSet::new()),
             };
@@ -442,7 +482,10 @@ impl Builder {
             Some(t) => Arc::clone(t),
             None => default_transport(app, self.crypto_provider.clone())?,
         };
-        let sink = Arc::new(TauriAppSink { app: app.clone() });
+        let sink = Arc::new(TauriAppSink {
+            app: app.clone(),
+            hook: self.on_event.clone(),
+        });
         Ok(AppService::new(cfg, LaneClient::new(transport), sink)?)
     }
 }
@@ -474,6 +517,35 @@ fn default_connector<R: Runtime>(
 ) -> Result<Option<Arc<dyn SocketConnector>>, Box<dyn std::error::Error>> {
     // Without `http` there is no socket unless the app passes one.
     Ok(None)
+}
+
+/// The commands' handler, typed (so the closure's argument is known).
+fn typed_handler<R: Runtime, F: Fn(Invoke<R>) -> bool + Send + Sync + 'static>(f: F) -> F {
+    f
+}
+
+/// Whether the invoke came from the window's own page, as its commands read it
+/// (`Webview::url`): Tauri let it in by the capability of a local page and the page is the
+/// bundled UI, or by a remote capability whose URL pattern the page matches. A frame of
+/// another origin inside the page (which Tauri reads by its own origin) is refused, so a
+/// command never acts for a frame as if it were the page around it.
+fn frame_is_page<R: Runtime>(invoke: &Invoke<R>) -> bool {
+    use tauri::utils::acl::ExecutionContext;
+    let Some(acl) = &invoke.acl else {
+        return false;
+    };
+    let webview = invoke.message.webview();
+    let Ok(page) = webview.url() else {
+        return false;
+    };
+    let bundled = webview
+        .try_state::<Shell>()
+        .map(|s| s.bundled.clone())
+        .unwrap_or_default();
+    acl.iter().any(|c| match &c.context {
+        ExecutionContext::Local => crate::scope::is_bundled(&page, &bundled),
+        ExecutionContext::Remote { url } => url.test(&page),
+    })
 }
 
 /// The origins (besides the bundled UI's) that may load `sewfile:` URLs: the app's own, and
@@ -512,10 +584,26 @@ async fn file_response<R: Runtime>(
     };
     // A webview window's webview has the window's label (Tauri's multi-webview windows are
     // behind its `unstable` feature; a webview this can't find is refused).
+    //
+    // Tauri hands a URI scheme handler the webview's label, not the frame that asked, so the
+    // check is on the webview's page. When the request carries an `Origin` (a fetch, a CORS
+    // load), that origin must be the bundled UI's too: a frame of another origin inside a
+    // bundled page is refused. A plain `<img>` or `<video>` load sends none, so a bundled UI
+    // should not frame other origins.
     let caller = app.get_webview_window(label).and_then(|w| w.url().ok());
-    let allowed = caller
-        .as_ref()
-        .is_some_and(|u| file_caller_allowed(u, &file_origins(app, extra)));
+    let origins = file_origins(app, extra);
+    let frame_ok = match request.headers().get("origin") {
+        None => true,
+        Some(v) => v
+            .to_str()
+            .ok()
+            .and_then(|o| url::Url::parse(o).ok())
+            .is_some_and(|u| file_caller_allowed(&u, &origins)),
+    };
+    let allowed = frame_ok
+        && caller
+            .as_ref()
+            .is_some_and(|u| file_caller_allowed(u, &origins));
     let reply = if !allowed {
         refuse(
             403,
@@ -543,6 +631,10 @@ async fn file_response<R: Runtime>(
     for (k, v) in &reply.headers {
         b = b.header(k.as_str(), v.as_str());
     }
+    // A `sewfile:` answer is bytes to show, never a page that runs: opened as a document, it
+    // gets no script and no origin (Tauri counts the scheme as one of the app's own).
+    b = b.header("content-security-policy", "sandbox");
+    b = b.header("x-content-type-options", "nosniff");
     // The bundled UI's own origin may read the answer with fetch() as well as show it.
     if let Some(u) = &caller
         && allowed
@@ -670,9 +762,11 @@ pub(crate) fn handle_link<R: Runtime>(app: &AppHandle<R>, link: url::Url) {
     });
 }
 
-/// Emits the core's events to every window as `sew-app://<name>`.
+/// Gives the host's hook ([`Builder::on_event`]) each event with its data, and every window
+/// its signal ([`AppEvent::signal`]) as `sew-app://<name>`.
 pub struct TauriAppSink<R: Runtime> {
     app: AppHandle<R>,
+    hook: Option<EventHook>,
 }
 
 impl<R: Runtime> std::fmt::Debug for TauriAppSink<R> {
@@ -683,7 +777,10 @@ impl<R: Runtime> std::fmt::Debug for TauriAppSink<R> {
 
 impl<R: Runtime> AppEventSink for TauriAppSink<R> {
     fn emit(&self, event: &AppEvent) {
-        if let Err(e) = self.app.emit(&event.event_name(), event.payload()) {
+        if let Some(h) = &self.hook {
+            h(event);
+        }
+        if let Err(e) = self.app.emit(&event.event_name(), event.signal()) {
             tracing::warn!(event = event.name(), error = %e, "sew-app: emit failed");
         }
     }

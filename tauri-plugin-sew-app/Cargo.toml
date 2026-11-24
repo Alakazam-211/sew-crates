@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "tauri-plugin-sew-app"
-version = "0.6.3"
+version = "0.6.4"
 build = "build.rs"
 links = "tauri-plugin-sew-app"
 include = [
@@ -70,6 +70,7 @@ tauri = [
     "dep:tauri-plugin-notification",
     "dep:tauri-plugin-deep-link",
     "dep:tauri-plugin-single-instance",
+    "dep:rfd",
 ]
 tauri-test = [
     "tauri",
@@ -156,7 +157,7 @@ version = "2"
 optional = true
 
 [dependencies.tauri-plugin-sew-voice]
-version = "0.9.3"
+version = "0.9.4"
 default-features = false
 
 [dependencies.tauri-plugin-single-instance]
@@ -214,6 +215,15 @@ default-features = false
 version = "2"
 features = ["build"]
 optional = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies.rfd]
+version = "0.17"
+features = [
+    "gtk3",
+    "common-controls-v6",
+]
+optional = true
+default-features = false
 
 [target.'cfg(target_os = "linux")'.dependencies.keyring]
 version = "=3.6.3"

@@ -3,13 +3,15 @@
 A Tauri App on a Sew server (on K2, or a standalone Sew) is a thin shell: its window loads the
 App's live site, and its Rust signs in to the App's server through the server's **native lane**
 (`/sew/native/*`, lane 1, served by the App's server). `tauri-plugin-sew-app` is the part every
-such shell needs; `tauri-plugin-sew-voice` is the call engine beside it. The crate's README
-(`crates/tauri-plugin-sew-app/README.md`) is the full guide; this page is the checklist.
+such shell needs; `tauri-plugin-sew-voice` is the call engine beside it. The crate's own
+README is the full guide; this page is the checklist.
 
 ## What the plugin does
 
-- **Servers**: `add_server` then `confirm_server` (the person checks the host first), several
-  accounts per server, everything keyed `{server, account}`; `servers.json` holds no secret.
+- **Servers**: `add_server` then `confirm_server` (the person checks the host first, in the
+  bundled UI: a live site can't add or confirm a server), several accounts per server,
+  everything keyed `{server, account}`; `servers.json` holds no secret. A live site's
+  commands act only on its own server and its accounts, and `servers` lists only those.
 - **Secrets**: the device bearer (`sewdv_…`) in the OS keychain (macOS Keychain, Windows
   Credential Manager, the Secret Service), a 0600 file only when the app opts in.
 - **Sign-in**: the host's sign-in door when the server offers it (`info.signin.door`; done in
@@ -17,13 +19,21 @@ such shell needs; `tauri-plugin-sew-voice` is the call engine beside it. The cra
   confirmed server's own `/.k2/auth/sign-in`, the lane's `signin/door/finish`; K2's
   `password_change_required` through `sign_in_door_set_password`), the password form, and
   pairing with a code from a signed-in page, typed in or from a pairing link
-  (`<scheme>://<host>/native/pair#code=…`, confirmed by the person; `sew-app://pair_request`).
+  (`<scheme>://<host>/native/pair#code=…`, confirmed by the person; the
+  `sew-app://pair_request` signal, then `pending_pair`).
   A server whose `info.shell.min` is above the shell's version refuses sign-in with
-  `shell_too_old`. No password, door code, challenge or pairing code reaches the webview.
+  `shell_too_old`. The password the person types in the shell's UI passes from the webview to
+  Rust once and goes only to the host's own door (a pairing code typed there goes to Rust once
+  the same way); the door's code and challenge, K2's change token and a pairing link's code
+  never reach the webview.
   **Sign-out** ends the device
   session, deletes the bearer and calls the voice plugin's `forget_server` when no signed-in
   account is left on that Sew install. A server-side end (revoke, idle, replaced) turns the
-  account `signed_out` with its reason on the next call and sends `sew-app://signed_out`.
+  account `signed_out` with its reason on the next call and signals `sew-app://signed_out`.
+- **Events** are signals only (`{"changed": true}`, `{"pending": true}`): a Tauri event reaches
+  every page. Pages fetch the details with the scoped commands (`servers`, and in the bundled
+  UI `pending_pair`, `pending_deep_links`); the host's Rust gets the data through
+  `Builder::on_event`.
 - **Voice**: `Builder::join_provider()`, the voice plugin's `JoinProvider` over the lane's
   `voice/join`, `voice/consent` and (Sew 0.9.0) `voice/recording` (Record and Stop; a lane without it is `recording_unsupported`). A `404` with no code of its own is `lane_not_found`; a `401`
   is `signin_required`.
@@ -63,7 +73,12 @@ The remote capability needs Tauri's `dynamic-acl` (in Tauri's defaults). A shell
 live site never lists `tauri://localhost` in it: the bundled UI's own capability covers that
 origin, and the plugin's capability test (`tests/tauri_acl.rs`, Tauri's mock runtime) checks
 that a confirmed server's origin is allowed at run time while another origin, another window
-and `handoff` without its set are refused.
+and `handoff` without its set are refused, that a live site acts only on its own server and
+can't add or confirm one, that `upload_file` takes only files picked in the file dialog, and
+that a gateway socket answers only the window that opened it.
+
+`sew-app:upload-file` (`pick_files`, `upload_file`) and `sew-app:transport` are for the bundled
+UI's own capability; never grant them to the live site.
 
 ## Testing
 
@@ -77,7 +92,7 @@ and `handoff` without its set are refused.
   `SEW_APP_LANE_URL`, `SEW_APP_LANE_USER`, `SEW_APP_LANE_PASSWORD` and optionally
   `SEW_APP_LANE_ROOM`, then `RUSTFLAGS="--cfg sew_real_lane" cargo test --test real_lane`.
 
-## Not yet
+## Platforms
 
-The phone half: the iOS Keychain store with an access group for the App's extensions, the
-Android Keystore store, data-protection classes, push tokens and in-app QR pairing.
+Desktop only: macOS, Windows and Linux. The plugin has no iOS or Android secret store,
+data-protection classes, push tokens or in-app QR pairing.

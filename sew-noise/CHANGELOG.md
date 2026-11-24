@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.4 (2026-11-22)
+
+- The version follows Sew 0.11.4. No API or behaviour change.
+
 ## 0.11.3 (2026-11-21)
 
 Additive: one opt-in feature; no change without it.

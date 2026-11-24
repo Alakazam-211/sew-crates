@@ -10,6 +10,8 @@
 //!   and `Set-Cookie`.
 //! - [`AppService::upload`] (`upload_bytes`, `upload_file`): raw bytes to
 //!   `uploads/{id}/data`, `me/avatar`, `spaces/{id}/icon` or `spaces/{id}/emoji`.
+//!   `upload_file` takes a handle of a file the person picked in the file dialog
+//!   (`pick_files`, or [`AppService::picked_file`] from the host's own dialog), never a path.
 //!
 //! The paths are checked against the lane's own allowlist before anything is sent, and a
 //! refusal has the lane's shape (`{ok: false, code, detail, error: {code, hint}}`) and the
@@ -22,7 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -607,15 +609,7 @@ pub fn parse_file_request(path: &str, query: Option<&str>) -> Option<(String, St
 /// (`tauri://localhost`, `http(s)://tauri.localhost`) or one of `extra` (an origin, such as
 /// a development server's). A server's live site in the same webview is not.
 pub fn file_caller_allowed(url: &Url, extra: &[String]) -> bool {
-    let bundled = match url.scheme() {
-        "tauri" => url.host_str() == Some("localhost"),
-        "http" | "https" => url.host_str() == Some("tauri.localhost"),
-        _ => false,
-    };
-    bundled
-        || extra
-            .iter()
-            .any(|o| o.trim_end_matches('/') == url.origin().ascii_serialization())
+    crate::scope::is_bundled(url, extra)
 }
 
 /// An `api` call: `{method, path, body?, idempotency_key?}`. `path` is the route under
@@ -682,7 +676,8 @@ impl fmt::Debug for ByteReply {
 pub enum UploadData {
     /// These bytes.
     Bytes(Vec<u8>),
-    /// The file at this path, read in Rust (it never passes through the page).
+    /// The file at this path, read in Rust (it never passes through the page). A link is
+    /// not followed: the path must name a regular file.
     File(PathBuf),
 }
 
@@ -707,6 +702,82 @@ pub struct Upload {
     pub content_range: Option<String>,
     /// The bytes.
     pub data: UploadData,
+}
+
+/// A file the person picked in the file dialog, as the page sees it: a handle for
+/// `upload_file`, its name and size. Never its path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PickedFile {
+    /// The handle `upload_file` takes (`file`), good for this session.
+    pub handle: String,
+    /// The file's name (its last path part).
+    pub name: String,
+    /// Its size in bytes when picked.
+    pub size: u64,
+}
+
+/// A picked file, held in Rust.
+pub(crate) struct Picked {
+    path: PathBuf,
+    /// The page that may use it (`None`: any page with `sew-app:upload-file`).
+    #[cfg_attr(not(feature = "tauri"), allow(dead_code))]
+    owner: Option<String>,
+    /// The file it was when picked (device and inode, on Unix).
+    id: Option<(u64, u64)>,
+}
+
+/// The one answer to a handle or file that can't be used: it says nothing about whether a
+/// file exists.
+fn file_error() -> AppError {
+    AppError::with_detail(code::FILE, "the file can't be used")
+}
+
+#[cfg(unix)]
+fn file_id(m: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((m.dev(), m.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_m: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Reads the regular file at `path` without following a link at its end, up to `cap` bytes
+/// (`Ok(None)` when larger). With `want`, the opened file must be the one picked.
+fn read_regular(path: &Path, cap: usize, want: Option<(u64, u64)>) -> Result<Option<Vec<u8>>, ()> {
+    use std::io::Read as _;
+    let link = std::fs::symlink_metadata(path).map_err(drop)?;
+    if !link.file_type().is_file() {
+        return Err(());
+    }
+    if link.len() > cap as u64 {
+        return Ok(None);
+    }
+    let f = std::fs::File::open(path).map_err(drop)?;
+    let opened = f.metadata().map_err(drop)?;
+    if !opened.is_file() || file_id(&opened) != file_id(&link) {
+        return Err(());
+    }
+    if want.is_some() && file_id(&opened) != want {
+        return Err(());
+    }
+    let mut buf = Vec::new();
+    f.take(cap as u64 + 1).read_to_end(&mut buf).map_err(drop)?;
+    if buf.len() > cap {
+        return Ok(None);
+    }
+    Ok(Some(buf))
+}
+
+fn new_handle() -> Result<String, AppError> {
+    use base64::Engine as _;
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).map_err(|_| file_error())?;
+    Ok(format!(
+        "sf_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+    ))
 }
 
 fn is_header_value(v: &str, max: usize) -> bool {
@@ -931,20 +1002,14 @@ impl AppService {
         let bytes = match up.data {
             UploadData::Bytes(b) => b,
             UploadData::File(path) => {
-                let read =
-                    tokio::task::spawn_blocking(move || -> std::io::Result<Option<Vec<u8>>> {
-                        let len = std::fs::metadata(&path)?.len();
-                        if len > cap as u64 {
-                            return Ok(None);
-                        }
-                        std::fs::read(&path).map(Some)
-                    })
+                let want = self.picked_id(&path);
+                let read = tokio::task::spawn_blocking(move || read_regular(&path, cap, want))
                     .await
-                    .map_err(|_| AppError::with_detail(code::FILE, "the reading thread failed"))?;
+                    .map_err(|_| file_error())?;
                 match read {
                     Ok(Some(b)) => b,
                     Ok(None) => return Ok(LocalRefusal::too_large(cap).reply()),
-                    Err(e) => return Err(AppError::with_detail(code::FILE, e.kind().to_string())),
+                    Err(()) => return Err(file_error()),
                 }
             }
         };
@@ -966,6 +1031,72 @@ impl AppService {
         };
         let resp = self.exchange(&key, req).await?;
         AppService::api_reply(&resp, &bearer)
+    }
+
+    /// A handle for the file at `path`, which the person picked in the host's own file
+    /// dialog: `upload_file` takes it from any page with `sew-app:upload-file`. The plugin's
+    /// `pick_files` gives handles that only the page that asked may use. A path that is not a
+    /// regular file is refused (`file`, one answer for every case).
+    pub fn picked_file(&self, path: &Path) -> Result<PickedFile, AppError> {
+        self.picked_file_for(path, None)
+    }
+
+    /// A handle for a picked file that only `owner` (a page) may use.
+    pub(crate) fn picked_file_for(
+        &self,
+        path: &Path,
+        owner: Option<String>,
+    ) -> Result<PickedFile, AppError> {
+        // The person picked this file: a link they picked is resolved once, here.
+        let path = std::fs::canonicalize(path).map_err(|_| file_error())?;
+        let m = std::fs::symlink_metadata(&path).map_err(|_| file_error())?;
+        if !m.file_type().is_file() {
+            return Err(file_error());
+        }
+        let handle = new_handle()?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.picked().insert(
+            handle.clone(),
+            Picked {
+                path,
+                owner,
+                id: file_id(&m),
+            },
+        );
+        Ok(PickedFile {
+            handle,
+            name,
+            size: m.len(),
+        })
+    }
+
+    /// The picked file's path for `handle`, when `owner` may use it (`file` otherwise, the
+    /// same answer as an unreadable file).
+    #[cfg_attr(not(feature = "tauri"), allow(dead_code))]
+    pub(crate) fn picked_path(
+        &self,
+        handle: &str,
+        owner: Option<&str>,
+    ) -> Result<PathBuf, AppError> {
+        let picked = self.picked();
+        let p = picked.get(handle).ok_or_else(file_error)?;
+        if let (Some(o), Some(w)) = (&p.owner, owner)
+            && o != w
+        {
+            return Err(file_error());
+        }
+        Ok(p.path.clone())
+    }
+
+    /// The file a picked `path` was when picked, if it was picked.
+    fn picked_id(&self, path: &Path) -> Option<(u64, u64)> {
+        self.picked()
+            .values()
+            .find(|p| p.path == path)
+            .and_then(|p| p.id)
     }
 
     /// The account a `sewfile:` URL names: an account id, or `active`.
@@ -1219,5 +1350,74 @@ mod tests {
     fn route_constants_agree() {
         assert_eq!(route::API, "/sew/native/api/v1");
         assert!(route::GATEWAY.starts_with(route::API));
+    }
+
+    fn service() -> AppService {
+        let mut cfg = crate::service::AppConfig::new("com.example.picked");
+        cfg.secrets = crate::secrets::SecretChoice::Memory;
+        AppService::new(
+            cfg,
+            crate::lane::LaneClient::new(std::sync::Arc::new(crate::fake::FakeLane::new())),
+            std::sync::Arc::new(crate::service::NoEvents),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_picked_file_answers_only_its_page_and_never_a_link() {
+        let svc = service();
+        let dir = std::env::temp_dir().join(format!("sew-app-picked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.bin");
+        std::fs::write(&f, b"abc").unwrap();
+        let p = svc
+            .picked_file_for(&f, Some("main https://a.example.com".into()))
+            .unwrap();
+        assert_eq!((p.name.as_str(), p.size), ("a.bin", 3));
+        // Its own page gets the path; another page, or a made-up handle, the one answer.
+        assert!(
+            svc.picked_path(&p.handle, Some("main https://a.example.com"))
+                .is_ok()
+        );
+        let other = svc
+            .picked_path(&p.handle, Some("main https://b.example.com"))
+            .unwrap_err();
+        let unknown = svc.picked_path("sf_x", None).unwrap_err();
+        assert_eq!(other, file_error());
+        assert_eq!(unknown, file_error());
+        // A directory can't be picked; neither can a missing file: the same answer.
+        assert_eq!(svc.picked_file(&dir).unwrap_err(), file_error());
+        assert_eq!(
+            svc.picked_file(&dir.join("missing")).unwrap_err(),
+            file_error()
+        );
+        // The file read is the one picked, and a link at the path is not followed.
+        let path = svc.picked_path(&p.handle, None).unwrap();
+        assert_eq!(
+            read_regular(&path, 16, file_id(&std::fs::metadata(&path).unwrap())).unwrap(),
+            Some(b"abc".to_vec())
+        );
+        assert_eq!(read_regular(&path, 2, None).unwrap(), None);
+        #[cfg(unix)]
+        {
+            let secret = dir.join("secret.bin");
+            std::fs::write(&secret, b"not picked").unwrap();
+            let link = dir.join("link.bin");
+            std::os::unix::fs::symlink(&secret, &link).unwrap();
+            assert!(read_regular(&link, 64, None).is_err());
+            // The picked file swapped for a link to another: refused.
+            let want = file_id(&std::fs::metadata(&path).unwrap());
+            std::fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(&secret, &path).unwrap();
+            assert!(read_regular(&path, 64, want).is_err());
+            // ... and for another regular file: refused too.
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, b"swapped").unwrap();
+            let fresh = file_id(&std::fs::metadata(&path).unwrap());
+            if fresh != want {
+                assert!(read_regular(&path, 64, want).is_err());
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
