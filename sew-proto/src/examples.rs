@@ -3005,6 +3005,8 @@ impl Example for PersonNotificationsPage {
         reply.thread_root_id = Some(ID_MESSAGE);
         reply.from_external_id = Some("k2:principal:5b1c0000-0000-4000-8000-000000000004".into());
         reply.app_id = Some("atrium".into());
+        reply.attachment_count = 3;
+        reply.attachment_kinds = vec![FileKind::Image, FileKind::Document];
         let mut read =
             PersonNotification::new(PersonNotificationKind::Read, t(240_000), ID_CHANNEL, ID_ME);
         read.seq = 83;

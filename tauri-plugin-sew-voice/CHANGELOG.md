@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.5 (2026-11-25, Sew 0.11.5)
+
+No change to this crate's own API or behaviour. It moves to sew-call-client 0.9.5
+(dependency updates only; see its CHANGELOG).
+
+### Dependencies
+
+- Requires sew-call-client 0.9.5 and sew-proto 0.11.5.
+
 ## 0.9.4 (2026-11-22, Sew 0.11.4)
 
 No change to this crate's own API or behaviour. It moves to sew-call-client 0.9.4, whose

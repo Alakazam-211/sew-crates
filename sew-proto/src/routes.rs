@@ -33,6 +33,8 @@ pub const RESOLVE: &str = "/api/v1/resolve";
 pub const CHANNEL_MESSAGES: &str = "/api/v1/channels/{id}/messages";
 /// `GET`: messages by `ids=`.
 pub const MESSAGES_BY_IDS: &str = "/api/v1/messages";
+/// `GET`: one message (flag `message_get`).
+pub const MESSAGE: &str = "/api/v1/messages/{id}";
 /// `POST`: edit a message.
 pub const MESSAGE_EDIT: &str = "/api/v1/messages/{id}/edit";
 /// `POST`: delete a message.

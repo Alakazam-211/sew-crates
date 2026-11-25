@@ -19,10 +19,14 @@
 //!   and rules (flag [`FEATURE_PERSON_CHANNEL_NOTIFY`]).
 //! - No message text unless the install policy `notifications.mgmt_preview` is on; then a
 //!   message item carries `preview`, at most [`PERSON_NOTIFICATION_PREVIEW_MAX_CHARS`] chars.
+//! - Since flag [`FEATURE_FEED_ATTACHMENT_INFO`], a message item with files carries
+//!   `attachment_count` and `attachment_kinds` (never names, sizes, URLs or ids), so a push for
+//!   a message with files and no text can say what was sent.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::api::files::FileKind;
 use crate::error::{Validate, ValidationError};
 use crate::id::Id;
 use crate::time::Timestamp;
@@ -46,6 +50,9 @@ pub const FEATURE_VOICE_STARTED_FEED: &str = "voice_started_feed";
 /// decline and cancel, `GET /api/v1/me/voice/invites`, the client event `voice_invite`,
 /// `ReadyChannel.voice_invites` and the feed kinds `voice_invite` and `voice_invite_stopped`.
 pub const FEATURE_VOICE_INVITES: &str = "voice_invites";
+/// Since 0.11.5: the feature flag of `attachment_count` and `attachment_kinds` on the feed's
+/// message items.
+pub const FEATURE_FEED_ATTACHMENT_INFO: &str = "feed_attachment_info";
 /// The longest long-poll, in seconds.
 pub const PERSON_NOTIFICATIONS_WAIT_MAX_S: u32 = 30;
 /// The default page size.
@@ -213,6 +220,19 @@ pub struct PersonNotification {
     /// When the invite expires, on `voice_invite` (the push's expiry).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<Timestamp>,
+    /// Since flag `feed_attachment_info`: how many files the message has, on message items
+    /// only; absent (`0`) when it has none, on other kinds, and from an older server.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub attachment_count: u32,
+    /// Since flag `feed_attachment_info`: the distinct kinds of the message's files, in the
+    /// order they first appear among its files; absent when it has none, on other kinds, and
+    /// from an older server. No file names, sizes, URLs or ids are on the feed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_kinds: Vec<FileKind>,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 impl PersonNotification {
@@ -240,6 +260,8 @@ impl PersonNotification {
             preview: None,
             invite_id: None,
             expires_at: None,
+            attachment_count: 0,
+            attachment_kinds: Vec::new(),
         }
     }
 }
@@ -433,6 +455,46 @@ mod tests {
         for absent in ["invite_id", "expires_at", "message_id"] {
             assert!(v.get(absent).is_none(), "{v}");
         }
+    }
+
+    #[test]
+    fn attachment_info_wire_shape() {
+        // A message item with files carries the count and the distinct kinds; without files
+        // (and from an older server) neither key is there.
+        let mut i = PersonNotification::new(
+            PersonNotificationKind::Dm,
+            Timestamp::from_unix_ms_saturating(0),
+            Id::from_i64(2).unwrap(),
+            Id::from_i64(3).unwrap(),
+        );
+        let v = serde_json::to_value(&i).unwrap();
+        for absent in ["attachment_count", "attachment_kinds"] {
+            assert!(v.get(absent).is_none(), "{v}");
+        }
+        i.attachment_count = 3;
+        i.attachment_kinds = vec![FileKind::Image, FileKind::Document];
+        let v = serde_json::to_value(&i).unwrap();
+        assert_eq!(v["attachment_count"], 3);
+        assert_eq!(
+            v["attachment_kinds"],
+            serde_json::json!(["image", "document"])
+        );
+        let back: PersonNotification = serde_json::from_value(v).unwrap();
+        assert_eq!(back, i);
+        let old = r#"{"seq": 5, "kind": "dm", "at": "2026-09-27T12:00:01.500Z",
+            "channel_id": "2", "from_member_id": "3", "app_id": null}"#;
+        let old: PersonNotification = serde_json::from_str(old).unwrap();
+        assert_eq!(old.attachment_count, 0);
+        assert!(old.attachment_kinds.is_empty());
+        // A kind a later server adds reads as `Unknown`.
+        let new = r#"{"seq": 5, "kind": "dm", "at": "2026-09-27T12:00:01.500Z",
+            "channel_id": "2", "from_member_id": "3", "app_id": null,
+            "attachment_count": 2, "attachment_kinds": ["model", "image"]}"#;
+        let new: PersonNotification = serde_json::from_str(new).unwrap();
+        assert_eq!(
+            new.attachment_kinds,
+            vec![FileKind::Unknown, FileKind::Image]
+        );
     }
 
     #[test]

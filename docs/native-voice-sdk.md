@@ -18,7 +18,7 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.9.4"
+tauri-plugin-sew-voice = "0.9.5"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,

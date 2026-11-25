@@ -74,8 +74,8 @@ pub use member_channels::{
     MgmtMemberChannelsResponse, MgmtMemberChannelsSkip,
 };
 pub use notifications::{
-    CursorExpiredDetails, FEATURE_FEED_ALL_MESSAGES, FEATURE_FEED_HEAD,
-    FEATURE_PERSON_CHANNEL_NOTIFY, FEATURE_PERSON_NOTIFICATIONS,
+    CursorExpiredDetails, FEATURE_FEED_ALL_MESSAGES, FEATURE_FEED_ATTACHMENT_INFO,
+    FEATURE_FEED_HEAD, FEATURE_PERSON_CHANNEL_NOTIFY, FEATURE_PERSON_NOTIFICATIONS,
     PERSON_NOTIFICATION_PREVIEW_MAX_CHARS, PERSON_NOTIFICATIONS_LIMIT_DEFAULT,
     PERSON_NOTIFICATIONS_LIMIT_MAX, PERSON_NOTIFICATIONS_WAIT_MAX_S, PersonNotification,
     PersonNotificationKind, PersonNotificationsHead, PersonNotificationsPage,
@@ -892,6 +892,9 @@ pub const FEATURES: &[&str] = &[
     // The person feed's `message`, `keyword`, `read` and `call_ring_stopped` kinds, inline
     // replies, `from_external_id`, `thread_root_id` and the page's `head`.
     FEATURE_FEED_ALL_MESSAGES,
+    // Since 0.11.5: `attachment_count` and `attachment_kinds` on the person feed's message
+    // items.
+    FEATURE_FEED_ATTACHMENT_INFO,
     // `GET /mgmt/v1/people/{external_id}/notifications/head` (the person feed's start).
     FEATURE_FEED_HEAD,
     // Since 0.9.2: group DM names (the update's `name` on a group DM, the rename notice).
@@ -910,6 +913,8 @@ pub const FEATURES: &[&str] = &[
     FEATURE_MEMBER_CHANNELS_LEVEL_ONLY,
     // `external_id` on the client `Member` (K2 installs, shared Spaces and DMs).
     crate::api::members::FEATURE_MEMBER_EXTERNAL_ID,
+    // Since 0.11.5: `GET /api/v1/messages/{id}` (one message, under the history read rule).
+    crate::api::messages::FEATURE_MESSAGE_GET,
     // Since 0.9.0: the mgmt recording reads, the transcript route and an App's recording feed
     // (`recordings/{id}`, `spaces/{space_id}/recordings`, `apps/{app_id}/recordings/changes`).
     FEATURE_MGMT_RECORDING_READS,

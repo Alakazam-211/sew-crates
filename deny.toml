@@ -24,11 +24,17 @@ allow = [
   "ISC",
   "Zlib",
   "Unicode-3.0",
+  # Ruled 2026-11-25, with the whole-workspace check.
+  "BSL-1.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "0BSD",
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
-# Exactly eight crates outside the allowlist are allowed by name, each with its own licence
-# (ruled 2026-11-03, tiny-keccak 2026-11-08); any other crate with a licence outside the
-# allowlist fails.
+# Eight crates are allowed by name, each with its own licence (ruled 2026-11-03, tiny-keccak
+# 2026-11-08); any other crate with a licence outside the allowlist fails. Since 2026-11-25 the
+# allowlist itself holds CDLA-Permissive-2.0 and Apache-2.0 WITH LLVM-exception, so the
+# webpki-root-certs and target-lexicon rows below are kept as the record of their rulings.
 exceptions = [
   # Tauri 2's own MPL-2.0 crates (HTML tooling through tauri-utils; option-ext through dirs),
   # in tauri-plugin-sew-voice's default graph.
@@ -55,4 +61,14 @@ wildcards = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# Exactly two git sources, each taken at an exact rev (`rev = "<40 hex>"` in the manifest,
+# the same commit in Cargo.lock; required-git-spec refuses a branch or tag):
+allow-git = [
+  # Our reviewed fork of str0m (the WebRTC stack of the media engine), at the rev the
+  # [patch.crates-io] rows name.
+  "https://github.com/Alakazam-211/str0m",
+  # Hugging Face's candle (MIT OR Apache-2.0), the transcriber's inference library, at an
+  # upstream commit (not a fork, not patched).
+  "https://github.com/huggingface/candle",
+]
+required-git-spec = "rev"

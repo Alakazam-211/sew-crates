@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.11.5 (2026-11-25)
+
+The version follows Sew 0.11.5. Additions only.
+
+### Added
+
+- **Files on the person feed.** `PersonNotification` (already `#[non_exhaustive]`) has
+  `attachment_count` and `attachment_kinds` (`api::files::FileKind`): on message items, how
+  many files the message has and each kind once, in the order the kinds first appear among
+  its files. Both are absent on the wire when there are none, and an item from an older
+  server reads with `0` and an empty list. The feed never carries file names, sizes, URLs or
+  ids. The feature flag is `mgmt::FEATURE_FEED_ATTACHMENT_INFO` (`feed_attachment_info`).
+- **One message by id.** `routes::MESSAGE` (`GET /api/v1/messages/{id}`) answers a `Message`,
+  read as `GET /api/v1/messages?ids=` reads it: a deleted message is its tombstone, and a
+  missing, purged or unreadable one is the masked `404`. The feature flag is
+  `api::messages::FEATURE_MESSAGE_GET` (`message_get`).
+
 ## 0.11.4 (2026-11-22)
 
 - The version follows Sew 0.11.4. No API or behaviour change.

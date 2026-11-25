@@ -524,7 +524,7 @@ pub fn all() -> Vec<WireType> {
             Record,
             "api/messages",
             Message,
-            "events message_created, message_updated"
+            "GET /api/v1/messages/{id}, events message_created, message_updated"
         ),
         wire!(
             Response,

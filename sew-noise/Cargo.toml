@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "sew-noise"
-version = "0.11.4"
+version = "0.11.5"
 build = false
 include = [
     "src/**",

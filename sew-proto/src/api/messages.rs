@@ -13,6 +13,10 @@ use crate::limits::{
 };
 use crate::time::Timestamp;
 
+/// Since 0.11.5: the feature flag of `GET /api/v1/messages/{id}` (one [`Message`], under the
+/// history read rule; listed in [`crate::mgmt::FEATURES`]).
+pub const FEATURE_MESSAGE_GET: &str = "message_get";
+
 /// Longest Unicode emoji value in bytes.
 pub const EMOJI_VALUE_MAX_BYTES: usize = 64;
 /// Longest custom emoji name in bytes.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.5 (2026-11-25, Sew 0.11.5)
+
+Dependency updates only; no change to the API.
+
+### Dependencies
+
+- Dependency updates in the workspace's Cargo.lock: lettre 0.11.24 and quinn-udp 0.5.16. The
+  crate's own dependency ranges are unchanged.
+- Requires the Sew crates at 0.11.5 (sew-proto, sew-lkproto, sew-lk-compat, sew-e2ee and
+  sew-noise). kessel-audio stays at 0.2.5.
+
 ## 0.9.4 (2026-11-22, Sew 0.11.4)
 
 A fix; no change to the API.
