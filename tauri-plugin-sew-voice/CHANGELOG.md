@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.6 (2026-11-25, Sew 0.11.6)
+
+Additive: new `NativeVideoEvent` variants on macOS and iOS (the enum was already open to
+additions); the commands, the contract files and other targets are unchanged.
+
+### Added
+
+- A self-view straight from the camera on macOS and iOS (feature `video`): the self-view
+  native sink (`local:camera`) also passes on `NativeVideoEvent::PreviewReady`, with the camera
+  source's own `ApplePreview` (kessel-video's handle on its `AVCaptureSession`) for an
+  `AVCaptureVideoPreviewLayer` on that session, and `NativeVideoEvent::PreviewGone` when that
+  source goes, in the order sew-call-client's camera tap gives them. A sink opened while such
+  a source is live gets its `PreviewReady` right after the first `SelfView`. Neither is ever
+  dropped or merged, while the frames still skip to the newest for a slow consumer. The host
+  makes the layer with `new_preview_layer` on the main thread, mirrors it for a front camera,
+  and removes or hides it on `PreviewGone`. Frames keep coming as before.
+
+### Dependencies
+
+- Requires kessel-video 0.1.9 (the dev-dependency of its tests).
+- Requires sew-call-client 0.9.6 and sew-proto 0.11.6.
+
 ## 0.9.5 (2026-11-25, Sew 0.11.5)
 
 No change to this crate's own API or behaviour. It moves to sew-call-client 0.9.5

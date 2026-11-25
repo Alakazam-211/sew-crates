@@ -18,7 +18,7 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.9.5"
+tauri-plugin-sew-voice = "0.9.6"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
@@ -1141,6 +1141,48 @@ let me = control.open_native_sink(NativeSinkTarget::Track("local:camera".into())
   be open at once (hide the webview tile while the native one shows).
 - Refused with `video_unsupported` when the engine has no video backend. `"local:screen"` is
   never a native sink (`unknown_track`, `detail.self_view: true`).
+
+**The zero-hop self-view (macOS and iOS, the plugin's `video`).** The frames above reach the view
+through the sink and an `AVSampleBufferDisplayLayer`. On Apple the self-view sink also hands
+over the camera source's own capture session, so the host can show an
+`AVCaptureVideoPreviewLayer` the system draws straight from the camera, with no hop through the
+sink. It needs kessel-video 0.1.9, which sew-call-client requires.
+
+```rust
+NativeVideoEvent::PreviewReady { preview, facing, generation } => {
+    // On the main thread. SAFETY: the main thread; the layer (+1) goes to Swift, which takes
+    // it with takeRetainedValue() and so releases it once.
+    let layer = unsafe { preview.new_preview_layer(None) }?; // None: mirrored for Facing::Front
+    show_preview_layer(generation, layer.as_ptr());          // replaces any older generation's
+}
+NativeVideoEvent::PreviewGone { generation } => remove_preview_layer(generation),
+```
+
+- **The events.** `PreviewReady { preview, facing, generation }` when a camera source with a
+  preview is live: `preview` is kessel-video's `ApplePreview` (`Send`, `Sync`, `Clone`,
+  `Debug`; holding, cloning and dropping it needs no `unsafe`; only `new_preview_layer` and
+  `capture_session` are `unsafe`, and only the host calls them). `PreviewGone { generation }`
+  when that source goes.
+- **Generations.** Each camera source opened is one generation more: the pre-join `preview`,
+  `camera {on}`, a `set_video_device` switch (the old camera closes first), the reopen after a
+  background pause the OS never ended. A background pause and resume that keep the source send
+  nothing (the preview keeps running while frames to the encoder pause). The old source's
+  `PreviewGone` always comes before the new one's `PreviewReady`; `camera {off}`, the call's end
+  and `preview {on: false}` send `PreviewGone`. A source without a preview takes a generation
+  and sends neither.
+- **Late sinks.** A sink opened while a source with a preview is live gets its `PreviewReady`
+  at once, right after the first `SelfView`.
+- **Delivery.** `PreviewReady` and `PreviewGone` are never dropped or coalesced: they queue in
+  order beside the one frame the sink holds, so a slow consumer that skips frames still gets
+  every one of them.
+- **The layer.** Make it with `new_preview_layer` on the main thread, once per generation; mirror
+  it for `Facing::Front` (`None` does). Remove or hide it on `PreviewGone`: whether a dropped
+  source's layer goes black or keeps its last frame is not promised, and each switch or reopen
+  is a new session that needs a new layer. The layer follows the app's interface, not the
+  phone: an interface that rotates turns the layer's connection itself (kessel-video's
+  `ApplePreview` docs say how).
+- **The frames keep coming** as before: the fallback before the layer shows or without one,
+  and for picture in picture. On other targets neither event exists.
 
 ## 3c. Call details (0.4.1)
 

@@ -190,7 +190,7 @@ needs a Sew server to join calls on (see the
 
 ```toml
 [dependencies]
-sew-call-client = "0.9.5"
+sew-call-client = "0.9.6"
 ```
 
 An app also needs, for its `JoinProvider` and to run a call:

@@ -271,6 +271,10 @@ pub struct Capture {
     device: Option<String>,
     ended: Option<CaptureEnd>,
     paused: Option<CapturePause>,
+    /// A camera's generation for the camera taps' preview items: after `source`, so it goes
+    /// (its `PreviewGone`) once the source has.
+    #[cfg(any(sew_preview_events, test))]
+    _preview: Option<super::camera_tap::PreviewLease>,
 }
 
 impl std::fmt::Debug for Capture {
@@ -300,6 +304,8 @@ impl Capture {
             device,
             ended: None,
             paused: None,
+            #[cfg(any(sew_preview_events, test))]
+            _preview: None,
         }
     }
 
@@ -442,6 +448,11 @@ impl FrameSource for Capture {
     fn stats(&self) -> SourceStats {
         self.source.stats()
     }
+
+    #[cfg(sew_apple_preview)]
+    fn apple_preview(&self) -> Option<kessel_video::ApplePreview> {
+        self.source.apple_preview()
+    }
 }
 
 /// A running camera ([`VideoCapture::open_camera`]). Everything of [`Capture`] through `Deref`.
@@ -536,6 +547,10 @@ pub struct VideoCapture {
     preview: Arc<Mutex<Option<Weak<super::preview::Shared>>>>,
     /// The open camera taps (raw frames for a native self-view).
     taps: super::camera_tap::CameraTaps,
+    /// TEST ONLY, off Apple: the stand-in preview the next camera opened gets
+    /// (`FakePreview(n)`, then `n + 1` for the one after); `0`: none.
+    #[cfg(all(not(sew_apple_preview), any(test, feature = "testing")))]
+    fake_previews: Arc<Mutex<u64>>,
 }
 
 impl std::fmt::Debug for VideoCapture {
@@ -562,6 +577,68 @@ impl VideoCapture {
             backend,
             preview: Arc::new(Mutex::new(None)),
             taps: super::camera_tap::CameraTaps::default(),
+            #[cfg(all(not(sew_apple_preview), any(test, feature = "testing")))]
+            fake_previews: Arc::default(),
+        }
+    }
+
+    /// TEST ONLY: the cameras opened from now on get stand-in previews `FakePreview(from)`,
+    /// `FakePreview(from + 1)`, …; `0`: none.
+    #[cfg(all(test, not(sew_apple_preview)))]
+    pub(crate) fn fake_previews(&self, from: u64) {
+        *self
+            .fake_previews
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = from;
+    }
+
+    /// The camera source's own zero-hop preview, if it has one, and its facing: kessel-video's
+    /// `ApplePreview`, taken from the backend's source itself before anything wraps it.
+    #[cfg(sew_apple_preview)]
+    fn preview_of(
+        &self,
+        source: &dyn FrameSource,
+        _device: Option<&str>,
+    ) -> (
+        Option<super::camera_tap::PreviewHandle>,
+        kessel_video::Facing,
+    ) {
+        match source.apple_preview() {
+            Some(p) => {
+                let facing = p.facing();
+                (Some(p), facing)
+            }
+            None => (None, kessel_video::Facing::Unknown),
+        }
+    }
+
+    /// TEST ONLY, off Apple: the stand-in preview set with `fake_previews`, if any.
+    #[cfg(all(not(sew_apple_preview), any(test, feature = "testing")))]
+    fn preview_of(
+        &self,
+        _source: &dyn FrameSource,
+        device: Option<&str>,
+    ) -> (
+        Option<super::camera_tap::PreviewHandle>,
+        kessel_video::Facing,
+    ) {
+        let next = {
+            let mut n = self
+                .fake_previews
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let this = *n;
+            if this != 0 {
+                *n += 1;
+            }
+            (this != 0).then_some(this)
+        };
+        match next {
+            Some(n) => (
+                Some(super::camera_tap::FakePreview(n)),
+                self.camera_facing(device),
+            ),
+            None => (None, kessel_video::Facing::Unknown),
         }
     }
 
@@ -718,13 +795,20 @@ impl VideoCapture {
         let source = blocking(move || backend.open_camera(asked.as_deref(), constraints, wake))
             .await
             .map_err(camera_error)?;
-        Ok(CameraSource(Capture::new(
-            CaptureKind::Camera,
-            source,
-            hub,
-            constraints,
-            id,
-        )))
+        // A new generation for the camera taps' preview items, with the source's own preview
+        // (taken here, from the backend's source, before anything wraps it).
+        #[cfg(any(sew_preview_events, test))]
+        let lease = {
+            let (preview, facing) = self.preview_of(&*source, device);
+            self.taps.preview_open(preview, facing)
+        };
+        let capture = Capture::new(CaptureKind::Camera, source, hub, constraints, id);
+        #[cfg(any(sew_preview_events, test))]
+        let capture = Capture {
+            _preview: Some(lease),
+            ..capture
+        };
+        Ok(CameraSource(capture))
     }
 
     /// The displays and windows to share, each with a PNG thumbnail when the backend has one.

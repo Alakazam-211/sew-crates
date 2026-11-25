@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.6 (2026-11-25, Sew 0.11.6)
+
+No change to this crate's own API or behaviour. It moves to tauri-plugin-sew-voice 0.9.6
+(additions on macOS and iOS only; see its CHANGELOG).
+
+### Dependencies
+
+- Requires tauri-plugin-sew-voice 0.9.6.
+
 ## 0.6.5 (2026-11-25, Sew 0.11.5)
 
 No change to this crate's own API or behaviour. It moves to tauri-plugin-sew-voice 0.9.5

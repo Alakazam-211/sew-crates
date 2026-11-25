@@ -62,7 +62,11 @@
 //! camera's raw frames, as captured and before any encoder, with the camera's facing; the
 //! tap's feed is `Paused` while the camera pauses (the background, another app holding it)
 //! and `Off` when the publication ends. While a tap is open the camera keeps capturing even
-//! when no layer is wanted; nothing more is encoded for it.
+//! when no layer is wanted; nothing more is encoded for it. On macOS and iOS (feature `video`)
+//! the taps also get each camera source's zero-hop preview (`PreviewReady` and `PreviewGone`,
+//! one generation per source): the camera turning on, a switch (the old source's
+//! `PreviewGone` before the new one's `PreviewReady`), a reopen after the background, and the
+//! camera turning off or the publication ending (`PreviewGone`).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -802,6 +806,12 @@ impl FrameSource for Primed {
     }
     fn stats(&self) -> kessel_video::SourceStats {
         self.inner.stats()
+    }
+    // The camera taps' preview items don't rely on this (the capture takes the handle when it
+    // opens the camera); forwarded so the wrapper hides nothing.
+    #[cfg(sew_apple_preview)]
+    fn apple_preview(&self) -> Option<kessel_video::ApplePreview> {
+        self.inner.apple_preview()
     }
 }
 
@@ -3083,6 +3093,176 @@ mod tests {
         thread.join().expect("the pipeline ends");
     }
 
+    /// A camera tap's preview items as the bridge's pipeline sees its sources: `(ready, gen)`
+    /// for each one within `within` (feed changes and frames skipped).
+    #[cfg(not(sew_apple_preview))]
+    fn preview_items(tap: &super::super::CameraTap, within: Duration) -> Vec<(bool, u64)> {
+        use super::super::CameraTapItem;
+        let until = std::time::Instant::now() + within;
+        let mut out = Vec::new();
+        loop {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            match tap.recv_timeout(left) {
+                Some(CameraTapItem::PreviewReady { generation, .. }) => {
+                    out.push((true, generation));
+                }
+                Some(CameraTapItem::PreviewGone { generation }) => out.push((false, generation)),
+                Some(_) => {}
+                None => return out,
+            }
+        }
+    }
+
+    /// The bridge's own camera path (`VideoBridge::open`, the pipeline's `Release` and
+    /// `Source`): the publish's camera is a preview generation; a switch sends the old one's
+    /// Gone before the new one's Ready; a background pause and resume (no reopen) sends
+    /// nothing; a reopen is a new generation; the pipeline's end sends Gone.
+    #[cfg(not(sew_apple_preview))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pipelines_camera_sources_are_preview_generations() {
+        let backend: Arc<dyn VideoBackend> = HwFake::new(kessel_video::fake::FakeConfig::default());
+        let bridge = VideoBridge::new(Arc::clone(&backend));
+        bridge.capture().fake_previews(1);
+        let tap = bridge.capture().camera_tap();
+        let policy = media_policy(&[sew_proto::voice::VideoCodec::H264], false);
+        let bell = Arc::new(Bell::default());
+        let (src, _size) = bridge
+            .open(None, &policy, &bell)
+            .await
+            .expect("the camera opens");
+        assert_eq!(
+            preview_items(&tap, Duration::from_millis(300)),
+            vec![(true, 1)],
+            "the camera on"
+        );
+        let cap = backend
+            .capabilities()
+            .best(kessel_video::VideoCodec::H264, CodecDirection::Encode)
+            .expect("the fake's H.264")
+            .clone();
+        let encs = open_encoders(
+            &backend,
+            VideoCodec::H264,
+            &cap,
+            vec![LayerSpec::new("q", 320, 180, 150, 30)],
+            ContentHint::Camera,
+            &bell.wake(),
+        );
+        assert_eq!(encs.len(), 1);
+        let (publication, _rx, _ctl) = VideoPublication::for_test(VideoSource::Camera);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (to_pipe, from_bridge) = std::sync::mpsc::channel();
+        let (cmd, _cmds) = mpsc::unbounded_channel();
+        let mut pipe = Pipe {
+            backend: backend.clone(),
+            kind: VideoSource::Camera,
+            codec: VideoCodec::H264,
+            content: ContentHint::Camera,
+            src,
+            facing: Facing::Unknown,
+            was_facing: Facing::Unknown,
+            facing_since_us: 0,
+            released_us: None,
+            encs: encs.into_iter().map(|e| (e.spec.rid.clone(), e)).collect(),
+            self_rid: None,
+            publication,
+            ctl: VideoCtl::new(cmd),
+            taps: bridge.taps.clone(),
+            stop: stop.clone(),
+            ended: Arc::new(AtomicBool::new(false)),
+            self_key: Arc::new(AtomicBool::new(false)),
+            bell: bell.clone(),
+            from_bridge,
+            paused: false,
+            hidden: false,
+            hidden_why: None,
+            fresh_since_us: 0,
+            held: Arc::default(),
+            scene_paused: false,
+            end_asked: false,
+            call: 1,
+            backup: None,
+            vp8: None,
+            temporal: None,
+            live: Arc::new(Mutex::new(VideoCodec::H264)),
+            phone: false,
+            machine: backend.subscribe(),
+            thermal: kessel_video::ThermalLevel::Nominal,
+            backup_converts: Arc::default(),
+        };
+        let thread = std::thread::spawn(move || pipe.run());
+        let release = |what: &str| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            to_pipe.send(ToPipe::Release(tx)).expect("release");
+            bell.ring();
+            rx.recv_timeout(RELEASE_WAIT)
+                .unwrap_or_else(|_| panic!("{what}: the pipeline released its source"));
+        };
+
+        // A switch: the old camera closes first, then the new one opens.
+        release("the switch");
+        assert_eq!(
+            preview_items(&tap, Duration::from_millis(300)),
+            vec![(false, 1)],
+            "the old camera's Gone, before anything opens"
+        );
+        let (src, _) = bridge
+            .open(None, &policy, &bell)
+            .await
+            .expect("the new camera opens");
+        to_pipe
+            .send(ToPipe::Source(src, Vec::new(), Facing::Back))
+            .expect("source");
+        bell.ring();
+        assert_eq!(
+            preview_items(&tap, Duration::from_millis(300)),
+            vec![(true, 2)],
+            "the new camera's Ready"
+        );
+
+        // A background pause and its resume keep the source: nothing.
+        to_pipe.send(ToPipe::Pause(true)).expect("pause");
+        bell.ring();
+        to_pipe.send(ToPipe::Pause(false)).expect("resume");
+        bell.ring();
+        assert_eq!(preview_items(&tap, Duration::from_millis(300)), vec![]);
+
+        // A late tap gets the live one.
+        let late = bridge.capture().camera_tap();
+        assert_eq!(
+            preview_items(&late, Duration::from_millis(300)),
+            vec![(true, 2)]
+        );
+
+        // A reopen (a resume the OS never ended): the same as a switch.
+        release("the reopen");
+        let (src, _) = bridge
+            .open(None, &policy, &bell)
+            .await
+            .expect("the camera opens again");
+        to_pipe
+            .send(ToPipe::Source(src, Vec::new(), Facing::Back))
+            .expect("source");
+        bell.ring();
+        assert_eq!(
+            preview_items(&tap, Duration::from_millis(300)),
+            vec![(false, 2), (true, 3)]
+        );
+
+        // The end (the camera off, the call over): Gone.
+        stop.store(true, Ordering::SeqCst);
+        bell.ring();
+        thread.join().expect("the pipeline ends");
+        assert_eq!(
+            preview_items(&tap, Duration::from_millis(300)),
+            vec![(false, 3)]
+        );
+        assert_eq!(
+            preview_items(&late, Duration::from_millis(300)),
+            vec![(false, 2), (true, 3), (false, 3)]
+        );
+    }
+
     #[test]
     fn a_source_that_ends_asks_the_engine_to_unpublish_with_its_reason() {
         let mut cfg = kessel_video::fake::FakeConfig::default();
@@ -4429,6 +4609,9 @@ mod tests {
                     facings.push(f.facing);
                 }
                 super::super::CameraTapItem::Feed(f) => feeds.push(f),
+                // The preview items (off Apple, only with a stand-in preview) aren't these
+                // tests' concern.
+                _ => {}
             }
         }
         (facings, feeds)
@@ -4444,6 +4627,7 @@ mod tests {
             match item {
                 super::super::CameraTapItem::Feed(f) => feeds.push(f),
                 super::super::CameraTapItem::Frame(_) => panic!("{what}: a frame came"),
+                _ => {}
             }
         }
         feeds

@@ -93,7 +93,7 @@ malicious protocol messages. Never enable it outside tests.**
 
 ```toml
 [dependencies]
-sew-e2ee = "0.11.5"
+sew-e2ee = "0.11.6"
 ```
 
 A host enrols its device (`identity`), builds an `E2eeClient` from the device identity and the

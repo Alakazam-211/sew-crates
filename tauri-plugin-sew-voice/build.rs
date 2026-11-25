@@ -45,6 +45,16 @@ const COMMANDS: &[&str] = &[
 ];
 
 fn main() {
+    // `cfg(sew_apple_preview)`: macOS or iOS with feature `video`, where sew-call-client's camera
+    // taps carry kessel-video's `ApplePreview` (the self-view sink's preview events).
+    println!("cargo::rustc-check-cfg=cfg(sew_apple_preview)");
+    let apple = matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("macos" | "ios")
+    );
+    if apple && std::env::var_os("CARGO_FEATURE_VIDEO").is_some() {
+        println!("cargo::rustc-cfg=sew_apple_preview");
+    }
     #[cfg(feature = "tauri")]
     tauri_plugin::Builder::new(COMMANDS).build();
 }

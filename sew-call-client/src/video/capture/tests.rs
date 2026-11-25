@@ -962,3 +962,122 @@ async fn a_camera_tap_gets_the_previews_raw_frames_and_never_opens_the_camera() 
     drop(cam);
     drop(tap);
 }
+
+/// The next preview item within 10 s (feed changes and frames skipped).
+#[cfg(not(sew_apple_preview))]
+fn next_preview(tap: &crate::video::CameraTap, what: &str) -> crate::video::CameraTapItem {
+    use crate::video::CameraTapItem;
+    let until = std::time::Instant::now() + WAIT;
+    loop {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        match tap.recv_timeout(left) {
+            Some(CameraTapItem::Feed(_) | CameraTapItem::Frame(_)) => {}
+            Some(item) => return item,
+            None => panic!("{what}: no preview item within 10 s"),
+        }
+    }
+}
+
+/// No preview item for 300 ms.
+#[cfg(not(sew_apple_preview))]
+fn no_preview(tap: &crate::video::CameraTap, what: &str) {
+    use crate::video::CameraTapItem;
+    while let Some(item) = tap.recv_timeout(Duration::from_millis(300)) {
+        assert!(
+            matches!(item, CameraTapItem::Feed(_) | CameraTapItem::Frame(_)),
+            "{what}: {item:?}"
+        );
+    }
+}
+
+#[cfg(not(sew_apple_preview))]
+fn ready(item: crate::video::CameraTapItem) -> (u64, kessel_video::Facing, u64) {
+    match item {
+        crate::video::CameraTapItem::PreviewReady {
+            preview,
+            facing,
+            generation,
+        } => (preview.0, facing, generation),
+        other => panic!("PreviewReady, not {other:?}"),
+    }
+}
+
+#[cfg(not(sew_apple_preview))]
+fn gone(item: crate::video::CameraTapItem) -> u64 {
+    match item {
+        crate::video::CameraTapItem::PreviewGone { generation } => generation,
+        other => panic!("PreviewGone, not {other:?}"),
+    }
+}
+
+/// Each camera opened through the capture is a preview generation (the pre-join preview, the
+/// camera publish taking it over, a reopen, one without a preview), the old one's Gone always
+/// before the new one's Ready; a late tap gets the live one's Ready; the last close is Gone.
+#[cfg(not(sew_apple_preview))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_camera_the_capture_opens_is_a_preview_generation() {
+    let p = Probe::new(FakeConfig::default(), same);
+    let cap = capture(&p);
+    let facing = cap.camera_facing(None);
+    cap.fake_previews(100);
+    let tap = cap.camera_tap();
+
+    let (preview, _rx) = cap.preview(None).await.expect("preview");
+    assert_eq!(ready(next_preview(&tap, "the preview's")), (100, facing, 1));
+
+    // The camera publish takes the camera over from the preview.
+    let cam = cap
+        .clone()
+        .open_camera(None, CaptureConstraints::new(640, 360, 30))
+        .await
+        .expect("a camera source");
+    assert!(!preview.is_running());
+    assert_eq!(gone(next_preview(&tap, "the preview's end")), 1);
+    assert_eq!(ready(next_preview(&tap, "the publish's")), (101, facing, 2));
+
+    // A late tap: the live one at once.
+    let late = cap.camera_tap();
+    assert_eq!(
+        ready(next_preview(&late, "the late tap's")),
+        (101, facing, 2)
+    );
+
+    // A reopen (a switch, or a resume that reopens): the old one closes, then the new one.
+    drop(cam);
+    assert_eq!(gone(next_preview(&tap, "the closed one")), 2);
+    let cam = cap
+        .open_camera(None, CaptureConstraints::new(640, 360, 30))
+        .await
+        .expect("the camera again");
+    assert_eq!(ready(next_preview(&tap, "the reopened")), (102, facing, 3));
+
+    // A source without a preview: a generation of its own and no Ready.
+    cap.fake_previews(0);
+    drop(cam);
+    assert_eq!(gone(next_preview(&tap, "before the bare one")), 3);
+    let bare = cap
+        .open_camera(None, CaptureConstraints::new(640, 360, 30))
+        .await
+        .expect("a bare camera");
+    no_preview(&tap, "a source without a preview");
+    drop(bare);
+    no_preview(&tap, "its close");
+
+    // Its generation was counted: the next one is 5. The last close sends Gone.
+    cap.fake_previews(200);
+    let cam = cap
+        .open_camera(None, CaptureConstraints::new(640, 360, 30))
+        .await
+        .expect("the camera once more");
+    assert_eq!(ready(next_preview(&tap, "the last")), (200, facing, 5));
+    drop(cam);
+    assert_eq!(gone(next_preview(&tap, "the last close")), 5);
+
+    // The late tap saw the same, in the same order.
+    assert_eq!(gone(next_preview(&late, "late")), 2);
+    assert_eq!(ready(next_preview(&late, "late")), (102, facing, 3));
+    assert_eq!(gone(next_preview(&late, "late")), 3);
+    assert_eq!(ready(next_preview(&late, "late")), (200, facing, 5));
+    assert_eq!(gone(next_preview(&late, "late")), 5);
+    drop(preview);
+}

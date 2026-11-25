@@ -55,6 +55,15 @@ pub use bridge::{
     CameraRequest, CameraState, CodecPlan, PlannedCodec, SelfViewFrames, SelfViewItem, SourceFeed,
     SourceNote, VideoBridge, choose_codec, choose_codecs,
 };
+#[cfg(all(
+    feature = "video-core",
+    not(sew_apple_preview),
+    any(test, feature = "testing")
+))]
+#[doc(hidden)]
+pub use camera_tap::FakePreview;
+#[cfg(all(feature = "video-core", any(sew_preview_events, test)))]
+pub use camera_tap::PreviewHandle;
 #[cfg(feature = "video-core")]
 pub use camera_tap::{CameraFeed, CameraFrame, CameraTap, CameraTapItem, CameraTapSender};
 #[cfg(feature = "video-core")]

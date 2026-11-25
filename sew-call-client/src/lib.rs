@@ -132,6 +132,18 @@ pub use stats::{
     BeaconOutcome, BeforeFirstWindow, CallStatsReport, PlayoutSource, PlayoutStats, PlayoutTotals,
     StatsWindow,
 };
+/// TEST ONLY (feature `testing`, off Apple): the stand-in preview handle.
+#[cfg(all(
+    feature = "video-core",
+    not(sew_apple_preview),
+    any(test, feature = "testing")
+))]
+#[doc(hidden)]
+pub use video::FakePreview;
+/// The zero-hop self-view preview's handle (macOS and iOS with `video`: kessel-video's
+/// `ApplePreview`), as `CameraTapItem::PreviewReady` carries it.
+#[cfg(all(feature = "video-core", any(sew_preview_events, test)))]
+pub use video::PreviewHandle;
 /// The per-device video codec preference and the run-time H.264 check it rests on.
 #[cfg(feature = "video-core")]
 pub use video::h264_encode_detection;

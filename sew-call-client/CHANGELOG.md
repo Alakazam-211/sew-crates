@@ -1,5 +1,36 @@
 # Changelog
 
+<!-- Maintainers: an entry describes only what this crate or the sew-crates mirror changes (its code, its manifest, the mirror's Cargo.lock), never another workspace's lock. -->
+
+## 0.9.6 (2026-11-25, Sew 0.11.6)
+
+Additive: new `CameraTapItem` variants on macOS and iOS (the enum was already open to
+additions), the type they carry and the sender methods that queue them; nothing changes on
+other targets.
+
+### Added
+
+- A self-view straight from the camera on macOS and iOS (feature `video`): a camera tap also
+  gets `CameraTapItem::PreviewReady` with the camera source's own `ApplePreview`
+  (kessel-video's handle on its `AVCaptureSession`, re-exported as `PreviewHandle`), for an
+  `AVCaptureVideoPreviewLayer` on that session, and `CameraTapItem::PreviewGone` when that
+  source goes. Each camera source opened through the `VideoCapture` (the pre-join preview, the
+  camera turning on, a switch, a reopen) is a new generation; the old source's `PreviewGone`
+  comes before the new one's `PreviewReady`, and the last close sends `PreviewGone`. A tap
+  opened while such a source is live gets its `PreviewReady` first thing after the feed.
+  Preview items queue in order and are never dropped or merged, while frames still skip to the
+  newest. The host makes the layer on the main thread, mirrors it for a front camera, and
+  removes or hides it on `PreviewGone`. Frames keep coming as before.
+- `CameraTapSender::preview_ready` and `CameraTapSender::preview_gone` (macOS and iOS), for a
+  tap the host feeds itself.
+
+### Dependencies
+
+- Requires kessel-video 0.1.9 (`FrameSource::apple_preview`).
+- The sew-crates mirror's Cargo.lock takes rustls-webpki 0.103.17.
+- Requires the Sew crates at 0.11.6 (sew-proto, sew-lkproto, sew-lk-compat, sew-e2ee and
+  sew-noise). kessel-audio stays at 0.2.5.
+
 ## 0.9.5 (2026-11-25, Sew 0.11.5)
 
 Dependency updates only; no change to the API.

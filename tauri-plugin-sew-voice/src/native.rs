@@ -43,6 +43,21 @@
 //! camera's size, each one whole). The webview's `local:camera` sink runs as before, and both
 //! can be open at once. `local:screen` is never a native sink (`unknown_track`).
 //!
+//! **The zero-hop self-view** (macOS and iOS, the plugin's `video`): the self-view sink also
+//! gets `NativeVideoEvent::PreviewReady` with each camera source's `ApplePreview` (kessel-video's
+//! handle on the camera's own `AVCaptureSession`), so the host can show an
+//! `AVCaptureVideoPreviewLayer` the system draws straight from the camera, with no hop through
+//! this sink, and `NativeVideoEvent::PreviewGone` when that
+//! source goes. Each camera source opened (the pre-join preview, the camera on, a switch, a
+//! reopen) is one generation more; the old one's `PreviewGone` always comes before the new
+//! one's `PreviewReady`, and the last close sends `PreviewGone`. A sink opened late gets the live
+//! source's `PreviewReady` at once. These two are never dropped or coalesced: the frames may
+//! skip to the newest, they never do. The host makes the layer with `new_preview_layer` on the
+//! main thread, mirrors it for `Facing::Front`, and removes or hides it on `PreviewGone`
+//! (whether a dropped source's layer goes black or keeps its last frame isn't promised). The
+//! frames keep coming as the fallback and for picture in picture. On other targets neither
+//! event exists.
+//!
 //! **Keeping up.** Each sink has its own thread (on Apple at the user-interactive QoS class,
 //! set before the VP8 decoder's thread is started from it). A VP8 frame goes to the decoder
 //! without blocking; the sink takes its output when the decoder's wake callback runs (a job on
@@ -179,6 +194,38 @@ pub enum NativeVideoEvent {
     SelfView {
         /// The feed now.
         feed: CameraFeed,
+    },
+    /// macOS and iOS (feature `video`), a self-view sink only: a camera source with a
+    /// zero-hop preview is live. `preview` is kessel-video's `ApplePreview`, a handle on the
+    /// source's own `AVCaptureSession`: the host makes its self-view layer from it with
+    /// `new_preview_layer`, **on the main thread** (the layer is the host's to release), for
+    /// an `AVCaptureVideoPreviewLayer` the system draws straight from the camera, with no hop
+    /// through this sink. Mirror it for `Facing::Front` (`new_preview_layer(None)` does). It
+    /// takes the place of any earlier generation's layer. Holding, cloning and dropping the
+    /// handle needs no `unsafe`; only its pointer methods do, and only the host calls them.
+    /// The frames keep coming as before, as the fallback (before the layer shows, or without
+    /// one) and for picture in picture. Never dropped or coalesced, unlike frames; in order
+    /// with [`NativeVideoEvent::PreviewGone`]. A sink opened while such a source is live gets
+    /// its `PreviewReady` at once, after the first `SelfView`.
+    #[cfg(any(sew_apple_preview, test))]
+    PreviewReady {
+        /// The handle on the source's capture session.
+        preview: sew_call_client::PreviewHandle,
+        /// Which way the source's camera faces.
+        facing: kv::Facing,
+        /// The source's generation: one more for each camera source opened (the camera on, a
+        /// switch, a reopen, the pre-join preview); a source without a preview takes one too.
+        generation: u64,
+    },
+    /// macOS and iOS (feature `video`), a self-view sink only: the camera source of
+    /// `generation` went (closed, switched, reopened, or the camera turned off). Remove or
+    /// hide that generation's layer now: whether a dropped source's layer goes black or keeps
+    /// its last frame is not promised. Always before the next generation's `PreviewReady`, and
+    /// on the final close. Never dropped or coalesced.
+    #[cfg(any(sew_apple_preview, test))]
+    PreviewGone {
+        /// The generation that went.
+        generation: u64,
     },
 }
 
@@ -1346,6 +1393,21 @@ impl SelfViewRun {
                     self.consumer.on_video(NativeVideoEvent::SelfView { feed });
                 }
                 Some(CameraTapItem::Frame(frame)) => self.deliver(frame),
+                // The tap queues these and never drops one: each goes out, in order.
+                #[cfg(any(sew_apple_preview, test))]
+                Some(CameraTapItem::PreviewReady {
+                    preview,
+                    facing,
+                    generation,
+                }) => self.consumer.on_video(NativeVideoEvent::PreviewReady {
+                    preview,
+                    facing,
+                    generation,
+                }),
+                #[cfg(any(sew_apple_preview, test))]
+                Some(CameraTapItem::PreviewGone { generation }) => self
+                    .consumer
+                    .on_video(NativeVideoEvent::PreviewGone { generation }),
                 _ => {}
             }
             self.count();
@@ -1696,6 +1758,93 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("timed out after 10 s waiting for: {what}");
+    }
+
+    /// A slow self-view consumer: frames skip to the newest, but every preview event comes, in
+    /// order, after the first feed, while the camera side never waits.
+    #[cfg(not(sew_apple_preview))]
+    #[test]
+    fn a_slow_self_view_consumer_gets_every_preview_event_while_frames_are_skipped() {
+        use sew_call_client::FakePreview;
+        let (tx, tap) = CameraTap::channel();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let consumer: Arc<dyn NativeVideoConsumer> = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |e: NativeVideoEvent| {
+                if matches!(e, NativeVideoEvent::Frame(_)) {
+                    // Slower than the camera.
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                seen.lock().unwrap_or_else(PoisonError::into_inner).push(e);
+            })
+        };
+        let worker =
+            SelfViewWorker::start_with(consumer, tap, Tuning::DEFAULT).expect("the sink's thread");
+        let mut want = Vec::new();
+        let mut n = 0u32;
+        for g in 1..=20u64 {
+            if g > 1 {
+                assert!(tx.preview_gone(g - 1));
+                want.push((false, g - 1));
+            }
+            assert!(tx.preview_ready(FakePreview(g), kv::Facing::Front, g));
+            want.push((true, g));
+            for _ in 0..10 {
+                n += 1;
+                let frame = kv::fake::pattern_frame(16, 16, n, u64::from(n)).expect("a frame");
+                assert!(tx.send(CameraFrame::new(frame, kv::Facing::Front)));
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        assert!(tx.preview_gone(20));
+        want.push((false, 20));
+        let previews = || -> Vec<(bool, u64)> {
+            seen.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .filter_map(|e| match e {
+                    NativeVideoEvent::PreviewReady {
+                        preview,
+                        facing,
+                        generation,
+                    } => {
+                        assert_eq!(preview.0, *generation);
+                        assert_eq!(*facing, kv::Facing::Front);
+                        Some((true, *generation))
+                    }
+                    NativeVideoEvent::PreviewGone { generation } => Some((false, *generation)),
+                    _ => None,
+                })
+                .collect()
+        };
+        until("every preview event", || previews().len() == want.len());
+        assert_eq!(previews(), want, "every one, in order");
+        let events = seen.lock().unwrap_or_else(PoisonError::into_inner).len();
+        assert!(
+            matches!(
+                seen.lock().unwrap_or_else(PoisonError::into_inner).first(),
+                // `Off`, or already `Live` if a frame came before the thread's first take (a
+                // feed change is the newest feed, not a queue).
+                Some(NativeVideoEvent::SelfView { .. })
+            ),
+            "the feed first"
+        );
+        let frames = seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|e| matches!(e, NativeVideoEvent::Frame(_)))
+            .count();
+        assert!(events > want.len(), "frames came too");
+        assert!(
+            (frames as u64) < u64::from(n),
+            "frames were skipped: {frames} of {n}"
+        );
+        assert!(
+            worker.stats().get().dropped_queue_full > 0,
+            "counted dropped"
+        );
+        worker.close();
     }
 
     #[test]
