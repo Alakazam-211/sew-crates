@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.95"
 name = "tauri-plugin-sew-app"
-version = "0.6.6"
+version = "0.6.7"
 build = "build.rs"
 links = "tauri-plugin-sew-app"
 include = [
@@ -157,7 +157,7 @@ version = "2"
 optional = true
 
 [dependencies.tauri-plugin-sew-voice]
-version = "0.9.6"
+version = "0.9.7"
 default-features = false
 
 [dependencies.tauri-plugin-single-instance]

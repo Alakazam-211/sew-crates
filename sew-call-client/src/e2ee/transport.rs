@@ -88,6 +88,30 @@ fn failure_from(status: u16, retry_after_s: Option<u64>, body: &[u8]) -> ApiFail
         .with_retry_after_ms(retry_after_ms)
 }
 
+/// A failed device enrolment (`POST /api/v1/devices`): as [`failure_from`], and a `403` whose
+/// envelope code is `quota_exceeded` with no `details.reason` (a server from before the device
+/// cap named its reason) reads as `device_quota_exceeded`.
+pub(crate) fn enroll_failure_from(
+    status: u16,
+    retry_after_s: Option<u64>,
+    body: &[u8],
+) -> ApiFailure {
+    let f = failure_from(status, retry_after_s, body);
+    if f.status != 403 || f.reason.is_some() {
+        return f;
+    }
+    let code = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("error")?.get("code")?.as_str().map(str::to_owned));
+    if code.as_deref() == Some("quota_exceeded") {
+        f.with_reason(Some(
+            sew_proto::e2ee::reasons::DEVICE_QUOTA_EXCEEDED.to_owned(),
+        ))
+    } else {
+        f
+    }
+}
+
 fn retryable(f: &ApiFailure) -> bool {
     f.is_retryable()
         || (f.status == 429
@@ -163,6 +187,8 @@ impl KeyTransport {
         let bytes = resp.bytes().await.map_err(|_| ApiFailure::transport())?;
         if (200..300).contains(&status) {
             Ok(bytes_or_empty::Body(bytes.to_vec()))
+        } else if post && path == r::DEVICES {
+            Err(enroll_failure_from(status, retry_after_s, &bytes))
         } else {
             Err(failure_from(status, retry_after_s, &bytes))
         }
@@ -340,6 +366,29 @@ mod tests {
         assert!(!retryable(&failure_from(429, None, b"")));
         assert!(retryable(&failure_from(429, Some(1), b"")));
         assert!(!retryable(&failure_from(429, Some(60), b"")));
+    }
+
+    #[test]
+    fn an_enrolment_at_the_device_cap_reads_device_quota_exceeded() {
+        // Sew with the reason.
+        let body = br#"{"ok":false,"error":{"code":"quota_exceeded","hint":"at most 20 devices per member","details":{"reason":"device_quota_exceeded"}}}"#;
+        let f = enroll_failure_from(403, None, body);
+        assert_eq!(f.status, 403);
+        assert!(f.is("device_quota_exceeded"));
+        // An older Sew: the code only.
+        let body = br#"{"ok":false,"error":{"code":"quota_exceeded","hint":"at most 20 devices per member"}}"#;
+        let f = enroll_failure_from(403, None, body);
+        assert!(f.is("device_quota_exceeded"));
+        // Other refusals keep their reason, or none.
+        let body = br#"{"ok":false,"error":{"code":"policy_denied","hint":"x","details":{"reason":"agents_not_in_voice"}}}"#;
+        assert!(enroll_failure_from(403, None, body).is("agents_not_in_voice"));
+        let body = br#"{"ok":false,"error":{"code":"missing_permission","hint":"x"}}"#;
+        assert!(enroll_failure_from(403, None, body).reason.is_none());
+        let body = br#"{"ok":false,"error":{"code":"quota_exceeded","hint":"x"}}"#;
+        assert!(enroll_failure_from(422, None, body).reason.is_none());
+        // Other routes never map the code.
+        let body = br#"{"ok":false,"error":{"code":"quota_exceeded","hint":"x"}}"#;
+        assert!(failure_from(403, None, body).reason.is_none());
     }
 
     #[test]

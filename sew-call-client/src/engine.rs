@@ -58,6 +58,7 @@ use crate::e2ee::{
     CredentialHandle, E2eeContext, E2eeError, E2eeEvent, E2eeEvents, E2eeProvider, KeySession,
     RemoteTrack, Subscribe,
 };
+use crate::gateway::SocketClosed;
 use crate::pc::{IceState, Pc, PcEvent};
 use crate::provider::{
     CallCredential, ConsentAnswer, ConsentRequired, JoinAnswer, JoinProvider, JoinRequest,
@@ -979,6 +980,17 @@ struct Flags {
     speak_denied: bool,
 }
 
+/// A key refusal's `errors` code as the call's end: `device_quota_exceeded` (Sew refused to
+/// enrol this device at the member's device cap) is its own end, every other code
+/// `e2ee_refused`.
+pub(crate) fn end_for_key_refusal(code: &str) -> EndReason {
+    if code == crate::e2ee::session::DEVICE_QUOTA_EXCEEDED {
+        EndReason::DeviceQuotaExceeded
+    } else {
+        EndReason::E2eeRefused
+    }
+}
+
 /// Sew's reason for ending this join (a voice leave reason: the call socket's self copy or its
 /// `4011` close; the key group's removal only as the fallback) as the call's end: passed on
 /// unchanged,
@@ -989,6 +1001,19 @@ pub(crate) fn end_for_sew_reason(reason: &str) -> EndReason {
         "replaced" => EndReason::CredentialLost,
         "left" => EndReason::Left,
         r => EndReason::Removed(r.to_owned()),
+    }
+}
+
+/// A call socket that ended for good as the call's end, whichever path saw the close: a
+/// `4011` that names Sew's reason as [`end_for_sew_reason`]; a reason-less `4011` (another
+/// socket took the credential over) or a `4004` (Sew refused the credential) is
+/// `credential_lost`, as a credential Sew no longer accepts; a protocol error is `network`.
+/// Never `e2ee_refused`: the keys refused nothing.
+pub(crate) fn end_for_socket_close(closed: &SocketClosed) -> EndReason {
+    match closed {
+        SocketClosed::Ended { reason } => end_for_sew_reason(reason),
+        SocketClosed::Revoked | SocketClosed::AuthenticationFailed => EndReason::CredentialLost,
+        SocketClosed::Protocol(_) | SocketClosed::Closed => EndReason::Network,
     }
 }
 
@@ -1160,7 +1185,7 @@ impl Engine {
                     }
                     Ok(Err(e)) => {
                         self.error(&e.code, &e.detail);
-                        self.end(EndReason::E2eeRefused).await;
+                        self.end(end_for_key_refusal(&e.code)).await;
                     }
                     Err(e) => {
                         self.error("e2ee_refused", &e.to_string());
@@ -1788,7 +1813,7 @@ impl Engine {
             }
             E2eeEvent::Refused { code, detail } => {
                 self.error(&code, &detail);
-                self.ended_soon(EndReason::E2eeRefused);
+                self.ended_soon(end_for_key_refusal(&code));
             }
             E2eeEvent::Warning { code, detail } => self.error(&code, &detail),
             E2eeEvent::Members(m) => {
@@ -1844,6 +1869,23 @@ impl Engine {
                     .pending_end
                     .take()
                     .map_or(EndReason::CredentialLost, |(_, r)| r);
+                self.ended_soon(r);
+            }
+            E2eeEvent::SocketClosed(why) => {
+                // The call socket is gone, so no reason from Sew follows: a wait for one
+                // already under way (the engine's Disconnect, the key group's removal) ends
+                // now with its own; otherwise the close decides, as it does on any path.
+                tracing::info!(target: "sew_call_client", ?why, "the call socket ended");
+                let r = match self.pending_end.take() {
+                    Some((_, r)) => r,
+                    None => {
+                        let end = end_for_socket_close(&why);
+                        if end == EndReason::Network {
+                            self.error("network", &format!("the call socket ended: {why:?}"));
+                        }
+                        end
+                    }
+                };
                 self.ended_soon(r);
             }
             E2eeEvent::Ended { reason } => {
@@ -3748,6 +3790,94 @@ mod tests {
         // A swap is the device takeover; a leave from elsewhere is a leave.
         assert_eq!(end_for_sew_reason("replaced"), EndReason::CredentialLost);
         assert_eq!(end_for_sew_reason("left"), EndReason::Left);
+    }
+
+    #[test]
+    fn a_call_socket_close_ends_as_the_close_never_e2ee_refused() {
+        assert_eq!(
+            end_for_socket_close(&SocketClosed::Revoked),
+            EndReason::CredentialLost
+        );
+        assert_eq!(
+            end_for_socket_close(&SocketClosed::AuthenticationFailed),
+            EndReason::CredentialLost
+        );
+        for c in [4001, 4002, 4012] {
+            assert_eq!(
+                end_for_socket_close(&SocketClosed::Protocol(c)),
+                EndReason::Network,
+                "{c}"
+            );
+        }
+        assert_eq!(
+            end_for_socket_close(&SocketClosed::Ended {
+                reason: "perms_lost".into()
+            }),
+            EndReason::Removed("perms_lost".into())
+        );
+        assert_eq!(
+            end_for_socket_close(&SocketClosed::Ended {
+                reason: "replaced".into()
+            }),
+            EndReason::CredentialLost
+        );
+    }
+
+    /// An enrolment refused at the member's device cap ends the call `device_quota_exceeded`,
+    /// from a Sew that names the reason and from an older one that answers only `403
+    /// quota_exceeded`; every other enrolment refusal still ends `e2ee_refused`.
+    #[test]
+    fn an_enrolment_at_the_device_cap_ends_device_quota_exceeded() {
+        use crate::device::DeviceError;
+        use crate::e2ee::session::KeyError;
+        use crate::e2ee::transport::enroll_failure_from;
+        let end_of = |status: u16, body: &[u8]| {
+            let f = enroll_failure_from(status, None, body);
+            let e = KeyError::Device(DeviceError::EnrollRefused {
+                status: f.status,
+                reason: f.reason,
+            });
+            (e.code(), end_for_key_refusal(e.code()))
+        };
+        let with_reason = br#"{"ok":false,"error":{"code":"quota_exceeded","hint":"x","details":{"reason":"device_quota_exceeded"}}}"#;
+        let code_only = br#"{"ok":false,"error":{"code":"quota_exceeded","hint":"x"}}"#;
+        for body in [&with_reason[..], &code_only[..]] {
+            assert_eq!(
+                end_of(403, body),
+                ("device_quota_exceeded", EndReason::DeviceQuotaExceeded)
+            );
+        }
+        for (status, body) in [
+            (
+                409,
+                &br#"{"ok":false,"error":{"code":"conflict","hint":"x","details":{"reason":"device_key_in_use"}}}"#[..],
+            ),
+            (
+                422,
+                &br#"{"ok":false,"error":{"code":"invalid_state","hint":"x","details":{"reason":"device_revoked"}}}"#[..],
+            ),
+            (
+                403,
+                &br#"{"ok":false,"error":{"code":"policy_denied","hint":"x","details":{"reason":"agents_not_in_voice"}}}"#[..],
+            ),
+            (403, &br#"{"ok":false,"error":{"code":"missing_permission","hint":"x"}}"#[..]),
+            (422, &code_only[..]),
+            (500, &b"not json"[..]),
+        ] {
+            assert_eq!(
+                end_of(status, body),
+                ("e2ee_refused", EndReason::E2eeRefused),
+                "{status}"
+            );
+        }
+        assert_eq!(
+            end_for_key_refusal("ca_pin_mismatch"),
+            EndReason::E2eeRefused
+        );
+        assert_eq!(
+            serde_json::to_value(EndReason::DeviceQuotaExceeded).unwrap(),
+            serde_json::json!("device_quota_exceeded")
+        );
     }
 
     #[test]

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.7 (2026-11-28)
+
+The version follows Sew 0.11.7. Additions only.
+
+### Added
+
+- `e2ee::reasons::DEVICE_QUOTA_EXCEEDED` (`device_quota_exceeded`): the `details.reason` of
+  the `quota_exceeded` refusal a device enrolment gets at the member's device cap. Only devices
+  whose login has not ended count toward the cap. It is also in `e2ee::reasons::ALL`.
+
 ## 0.11.6 (2026-11-25)
 
 - The version follows Sew 0.11.6. No API or behaviour change.

@@ -166,6 +166,7 @@ fn fixture_ended_payloads_are_the_state_event() {
         ]
     );
     assert_eq!(reasons("recording_reasons"), reason::RECORDING.to_vec());
+    assert_eq!(reasons("key_reasons"), vec![reason::DEVICE_QUOTA_EXCEEDED]);
     // The kicked fallback is also what a Sew older than 0.7.1 ends a removal with.
     assert!(
         f["ended"]["fallbacks"][0]["cause"]

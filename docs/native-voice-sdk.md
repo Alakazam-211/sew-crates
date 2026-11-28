@@ -18,7 +18,7 @@ Browsers and web Apps don't use this plugin. They keep `@sew/voice`.
 ```toml
 [dependencies]
 tauri = { version = "2" }
-tauri-plugin-sew-voice = "0.9.6"
+tauri-plugin-sew-voice = "0.9.7"
 ```
 
 The plugin depends on `sew-call-client` and its path crates (`sew-lk-compat`, `sew-lkproto`,
@@ -305,7 +305,10 @@ Events go to every window as `sew-voice://<name>`:
   Sew 0.7.3's `recording_declined`, `recording_withdrawn`, `recording_consent_timeout` where
   declining means not joining, Sew 0.8.0's `app_unlinked`, …), or one of the plugin's: `left`, `signin_required`
   (also when Sew refuses a credential renewal `signed_out`: the login has no live session),
-  `network`, `e2ee_refused`, `credential_lost` (another device took the call over),
+  `network` (also when the call socket ends on a protocol error), `e2ee_refused` (the keys
+  refused the call), `device_quota_exceeded` (Sew refused to enrol this device because the
+  account has too many call devices; see below), `credential_lost` (another device took the call over, or Sew refused the
+  call credential on the call socket),
   `credential_expired` (Sew refused a renewal `expired`, or no renewal got through before the
   credential ran out), `unavailable`, `provider_error`, `engine_stopped`, or your provider's
   refusal code. The `errors` event before the end carries Sew's renewal refusal reason as its
@@ -317,6 +320,12 @@ Events go to every window as `sew-voice://<name>`:
   the key group's.
   Against a Sew older than 0.7.1 a removal ends `kicked`; against one older than 0.7.2 a
   sign-out ends `credential_lost`.
+- `device_quota_exceeded`: each sign-in on a device enrols a new call device, and Sew caps how
+  many a member has at once (devices of a sign-in that has ended don't count). Tell the person
+  the account has too many call devices, and that an admin can clear old ones, or that signing
+  out on another device frees one. The `errors` event before the end has the same code. The
+  engine also reads an older Sew's forbidden `quota_exceeded` with no reason on device
+  enrolment as this end; such a call ended `e2ee_refused` before.
 - Treat reasons you don't know as "call ended".
 - The exact payloads are in the plugin's `contracts/native-voice-contract.json`; the fake engine
   (`fake::FakeCall::end`, `fake::FakeCall::set_speak_denied`) produces them with no call.
@@ -332,7 +341,8 @@ you muted yourself meanwhile you stay muted.
 
 **Error codes.**
 - From the engine: `mic_denied`, `mic_unavailable`, `device_lost`, `turn_unreachable`,
-  `relay_only_no_turns`, `e2ee_refused`, `ca_pin_mismatch`, and `key_storage_file` (a warning:
+  `relay_only_no_turns`, `e2ee_refused`, `device_quota_exceeded`, `ca_pin_mismatch`, and
+  `key_storage_file` (a warning:
   no OS keystore, so the device key is in a file).
 - From commands: `already_in_call`, `not_in_call`, `invalid_args`, `left` (a `join` that a
   `leave` cancelled), for `consent` / `withdraw_consent` `no_recording`,

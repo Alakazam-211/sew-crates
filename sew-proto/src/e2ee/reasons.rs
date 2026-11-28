@@ -55,6 +55,9 @@ pub const E2EE_RELEASE_MALFORMED: &str = "e2ee_release_malformed";
 pub const DEVICE_REVOKED: &str = "device_revoked";
 /// `409`: the key is enrolled for another member.
 pub const DEVICE_KEY_IN_USE: &str = "device_key_in_use";
+/// `403 quota_exceeded`: a new device would pass the member's device cap (only devices whose
+/// login has not ended count toward it).
+pub const DEVICE_QUOTA_EXCEEDED: &str = "device_quota_exceeded";
 /// `403`: key and device routes refuse act-as, as voice does.
 pub const AGENTS_NOT_IN_VOICE: &str = "agents_not_in_voice";
 /// `503`: the DS is rebuilding and cannot answer (`details.engine = syncing`, `Retry-After: 1`).
@@ -186,6 +189,7 @@ pub const ALL: &[&str] = &[
     E2EE_RELEASE_MALFORMED,
     DEVICE_REVOKED,
     DEVICE_KEY_IN_USE,
+    DEVICE_QUOTA_EXCEEDED,
     AGENTS_NOT_IN_VOICE,
     VOICE_UNAVAILABLE,
 ];

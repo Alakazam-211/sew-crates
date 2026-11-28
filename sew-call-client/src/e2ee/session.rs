@@ -192,12 +192,21 @@ impl KeyError {
         match self {
             KeyError::PinMismatch(_) => "ca_pin_mismatch",
             KeyError::Refused { .. } | KeyError::Session(_) => "e2ee_refused",
+            // The member has too many call devices: the host tells the person why.
+            KeyError::Device(DeviceError::EnrollRefused {
+                status: 403,
+                reason: Some(r),
+            }) if r == sew_proto::e2ee::reasons::DEVICE_QUOTA_EXCEEDED => DEVICE_QUOTA_EXCEEDED,
             KeyError::Device(_) => "e2ee_refused",
             KeyError::Closed => "credential_lost",
             _ => "network",
         }
     }
 }
+
+/// The `errors.code` and `ended.reason` of a device enrolment refused at the member's device
+/// cap ([`crate::EndReason::DeviceQuotaExceeded`]).
+pub(crate) const DEVICE_QUOTA_EXCEEDED: &str = "device_quota_exceeded";
 
 fn refused(f: &ApiFailure) -> KeyError {
     KeyError::Refused {

@@ -149,6 +149,13 @@ pub enum E2eeEvent {
     /// Sew no longer accepts the credential for this join (`call_credential_stale`, a swap):
     /// the call ends with `credential_lost`.
     CredentialLost,
+    /// The call socket ended for good with a close that names no Sew reason: `4004` (Sew
+    /// refused the credential) or a protocol error (`4001`, `4002`, `4012`). Nothing was
+    /// refused by the keys: the call ends as the close says, the way the engine ends any call
+    /// socket close (a reason-less `4011` or a `4004`: `credential_lost`; a protocol error:
+    /// `network`; a `4011` that names a reason: Sew's reason). A wait for Sew's reason already
+    /// under way keeps its reason.
+    SocketClosed(crate::gateway::SocketClosed),
     /// A recording as this member sees it (Sew 0.7.3: the call socket's own
     /// `recording_updated`, or its READY's `recording`); `None`: the call has no active
     /// recording. The engine keeps its call channel's and feeds it back through

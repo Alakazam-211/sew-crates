@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.7 (2026-11-28, Sew 0.11.7)
+
+Additive: a new end reason and `errors` code, and a new list in the contract file.
+
+### Added
+
+- The end reason and `errors` code `device_quota_exceeded` (`wire::reason::DEVICE_QUOTA_EXCEEDED`),
+  from sew-call-client's `EndReason::DeviceQuotaExceeded`: Sew refused to enrol this device
+  because the account has too many call devices. Show the person that, and that an admin can
+  clear old devices, or that signing out on another device frees one. Before this, such a call
+  ended `e2ee_refused`.
+- `contracts/native-voice-contract.json` lists it under `ended.key_reasons`.
+
+### Dependencies
+
+- Requires sew-call-client 0.9.7 and sew-proto 0.11.7.
+
 ## 0.9.6 (2026-11-25, Sew 0.11.6)
 
 Additive: new `NativeVideoEvent` variants on macOS and iOS (the enum was already open to

@@ -57,6 +57,10 @@ pub enum EndReason {
     Network,
     /// The keys refused the call.
     E2eeRefused,
+    /// Sew refused to enrol this device because the account has too many call devices
+    /// (`device_quota_exceeded`; the `errors` event has the same code). Tell the person to ask
+    /// an admin to clear old devices, or to sign out on another device.
+    DeviceQuotaExceeded,
     /// Sew no longer accepts the call credential (another device took over: `replaced`, or a
     /// 4011 from a Sew older than 0.7.2 with no engine `Disconnect` before it).
     CredentialLost,

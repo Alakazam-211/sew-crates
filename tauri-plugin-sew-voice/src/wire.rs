@@ -50,7 +50,8 @@ pub enum CallState {
     /// removal (`disconnected` for a reason the key protocol cannot name), the engine's when
     /// Sew gave none within 1.5 s of its `Disconnect` (`kicked`, `room_closed`), or one of the
     /// plugin's: `left`, `signin_required`, `network`,
-    /// `e2ee_refused`, `credential_lost` (another device took the call over), `unavailable`,
+    /// `e2ee_refused`, `device_quota_exceeded` (the account has too many call devices),
+    /// `credential_lost` (another device took the call over), `unavailable`,
     /// `provider_error`, `engine_stopped`, or a provider refusal's code. See [`reason`].
     Ended {
         /// Why it ended. An open set: show unknown reasons as "call ended".
@@ -127,6 +128,10 @@ pub mod reason {
     /// The call credential expired: Sew refused its renewal as `expired`, or no renewal got
     /// through before it ran out.
     pub const CREDENTIAL_EXPIRED: &str = "credential_expired";
+    /// Sew refused to enrol this device because the account has too many call devices (also
+    /// the `errors` code). Tell the person to ask an admin to clear old devices, or to sign out
+    /// on another device.
+    pub const DEVICE_QUOTA_EXCEEDED: &str = "device_quota_exceeded";
     /// The app called `leave`.
     pub const LEFT: &str = "left";
     /// The provider answered [`ProviderError::SigninRequired`](crate::ProviderError).
@@ -266,7 +271,8 @@ pub struct DeviceList {
 /// The `errors` event, and every command's error: `{code, detail}`.
 ///
 /// Codes: `mic_denied`, `mic_unavailable`, `device_lost`, `turn_unreachable`,
-/// `relay_only_no_turns`, `e2ee_refused`, `ca_pin_mismatch`, `key_storage_file` (a warning),
+/// `relay_only_no_turns`, `e2ee_refused`, `device_quota_exceeded`, `ca_pin_mismatch`,
+/// `key_storage_file` (a warning),
 /// the command errors `already_in_call`, `not_in_call`, `invalid_args`, `left`, and the
 /// provider's refusals passed through as given.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]

@@ -14,8 +14,8 @@
 //!   ([`PublishGuard`], [`KeySession::published`]).
 //! - **events** to the engine: `Active{epoch}` when a key epoch is active and the local sender
 //!   has its key, `Members` from the verified roster, `VoiceStates`, `ServerUpdated` and
-//!   `Recording` from the call socket, `Warning` (`key_storage_file`, `pins_reset`), `Refused`
-//!   and `CredentialLost`.
+//!   `Recording` from the call socket, `Warning` (`key_storage_file`, `pins_reset`), `Refused`,
+//!   `CredentialLost` and `SocketClosed`.
 //! - **recording**: the engine's [`KeySession::recording`] reaches the key session
 //!   ([`MlsSession::set_recording`]) in order, through the bridge.
 //! - **renewal**: the engine renews the credential; each new token reaches the key routes and
@@ -533,34 +533,7 @@ async fn bridge(
                     code: e.code().to_owned(),
                     detail: format!("the move's key join failed: {e}"),
                 }),
-                KeySessionEvent::Ended(KeyEnd::CredentialLost { .. }) => {
-                    out.push(E2eeEvent::CredentialLost);
-                }
-                KeySessionEvent::Ended(KeyEnd::Ended { reason }) => {
-                    out.push(E2eeEvent::Ended { reason });
-                }
-                KeySessionEvent::Ended(KeyEnd::Socket(why)) => out.push(E2eeEvent::Refused {
-                    code: "network".to_owned(),
-                    detail: format!("the call socket ended: {why:?}"),
-                }),
-                // The key group removed this device and said why (Sew's voice leave reason,
-                // or `disconnected` for one the key protocol cannot name, so the call socket's
-                // reason still wins; a move re-keys instead of ending the call).
-                KeySessionEvent::Ended(KeyEnd::Left(LeftReason::Removed(r)))
-                    if r != RemoveReason::Moved =>
-                {
-                    out.push(E2eeEvent::KeysRemoved {
-                        reason: r.as_str().to_owned(),
-                    });
-                }
-                KeySessionEvent::Ended(KeyEnd::Left(why)) => out.push(E2eeEvent::Refused {
-                    code: "e2ee_refused".to_owned(),
-                    detail: format!("the key session left: {why:?}"),
-                }),
-                KeySessionEvent::Ended(KeyEnd::Device(e)) => out.push(E2eeEvent::Refused {
-                    code: "e2ee_refused".to_owned(),
-                    detail: format!("the device key could not sign: {e}"),
-                }),
+                KeySessionEvent::Ended(end) => out.push(ended_event(end)),
             }
         }
         let members = session.members();
@@ -599,6 +572,34 @@ fn self_left(u: &VoiceStateUpdated, me: Id) -> Option<String> {
         return None;
     }
     u.reason.map(|r| r.as_str().to_owned())
+}
+
+/// What the key session's own end tells the engine. A call socket that ended for good with a
+/// close naming no Sew reason (`4004`, a protocol error) is that close, not a refusal: the
+/// engine ends the call as the close says. The keys refuse the call only when the key session
+/// left or the device key could not sign.
+fn ended_event(end: KeyEnd) -> E2eeEvent {
+    match end {
+        KeyEnd::CredentialLost { .. } => E2eeEvent::CredentialLost,
+        KeyEnd::Ended { reason } => E2eeEvent::Ended { reason },
+        KeyEnd::Socket(why) => E2eeEvent::SocketClosed(why),
+        // The key group removed this device and said why (Sew's voice leave reason, or
+        // `disconnected` for one the key protocol cannot name, so the call socket's reason
+        // still wins; a move re-keys instead of ending the call).
+        KeyEnd::Left(LeftReason::Removed(r)) if r != RemoveReason::Moved => {
+            E2eeEvent::KeysRemoved {
+                reason: r.as_str().to_owned(),
+            }
+        }
+        KeyEnd::Left(why) => E2eeEvent::Refused {
+            code: "e2ee_refused".to_owned(),
+            detail: format!("the key session left: {why:?}"),
+        },
+        KeyEnd::Device(e) => E2eeEvent::Refused {
+            code: "e2ee_refused".to_owned(),
+            detail: format!("the device key could not sign: {e}"),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -642,5 +643,26 @@ mod tests {
             None
         );
         assert_eq!(self_left(&left(7, None), me), None);
+    }
+
+    #[test]
+    fn a_call_socket_close_is_the_close_not_a_refusal() {
+        use crate::gateway::SocketClosed;
+        for c in [
+            SocketClosed::AuthenticationFailed,
+            SocketClosed::Protocol(4001),
+            SocketClosed::Protocol(4002),
+            SocketClosed::Protocol(4012),
+        ] {
+            match ended_event(KeyEnd::Socket(c.clone())) {
+                E2eeEvent::SocketClosed(got) => assert_eq!(got, c),
+                other => panic!("{c:?}: {other:?}"),
+            }
+        }
+        // A genuine refusal stays one: the key session left.
+        match ended_event(KeyEnd::Left(LeftReason::Failed("create_failed"))) {
+            E2eeEvent::Refused { code, .. } => assert_eq!(code, "e2ee_refused"),
+            other => panic!("{other:?}"),
+        }
     }
 }

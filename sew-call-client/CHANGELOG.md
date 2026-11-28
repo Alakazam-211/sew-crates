@@ -2,6 +2,37 @@
 
 <!-- Maintainers: an entry describes only what this crate or the sew-crates mirror changes (its code, its manifest, the mirror's Cargo.lock), never another workspace's lock. -->
 
+## 0.9.7 (2026-11-28, Sew 0.11.7)
+
+Additive: new `E2eeEvent` and `EndReason` variants (both enums were already open to
+additions).
+
+### Added
+
+- `E2eeEvent::SocketClosed`: the call socket ended for good with a close that names no Sew
+  reason (Sew refused the credential, or a protocol error).
+- `EndReason::DeviceQuotaExceeded` (`device_quota_exceeded`): Sew refused to enrol this device
+  because the account has too many call devices. The call ends with it, and the `errors`
+  event carries the same code, instead of `e2ee_refused`. It is read from Sew's
+  `details.reason = "device_quota_exceeded"`, and from an older Sew's forbidden `quota_exceeded`
+  with no reason on the enrolment route. A host should tell the person the account has too
+  many call devices, and to ask an admin to clear old ones or to sign out on another device.
+  Other enrolment refusals still end `e2ee_refused`.
+
+### Changed
+
+- When the key session's call socket ends for good mid-call with a close that names no Sew
+  reason, the call ends as that close says instead of `e2ee_refused`: `credential_lost` when
+  Sew refused the credential (as when another socket takes the credential over), `network`
+  with the `network` error for a protocol error. A wait for Sew's reason already under way
+  keeps its reason. The keys' own refusals (the device key cannot sign, the key session left,
+  a key join fails) still end `e2ee_refused`.
+
+### Dependencies
+
+- Requires the Sew crates at 0.11.7 (sew-proto, sew-lkproto, sew-lk-compat, sew-e2ee and
+  sew-noise). kessel-audio stays at 0.2.5.
+
 ## 0.9.6 (2026-11-25, Sew 0.11.6)
 
 Additive: new `CameraTapItem` variants on macOS and iOS (the enum was already open to
